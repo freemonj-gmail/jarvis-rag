@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Environments
+.venv/
+.env
+
+# Editors
+.vscode/
+.idea/
+.DS_Store
+
+# Jarvis runtime data (generated caches + persistent index)
+jarvis_storage/
+
+# Logs / scratch
+run_logs.txt
+*.log

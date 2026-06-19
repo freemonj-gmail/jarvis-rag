@@ -1,0 +1,31 @@
+[project]
+name = "my-python-examples"
+version = "1.4.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "easyocr>=1.7.2",
+    "fitz>=0.0.1.dev2",
+    "frontend>=0.0.3",
+    "huggingface-hub>=1.9.0",
+    "kokoro>=0.9.4",
+    "llama-index>=0.14.20",
+    "llama-index-embeddings-huggingface>=0.7.0",
+    "llama-index-llms-ollama>=0.10.1",
+    "llama-index-readers-file>=0.6.0",
+    "numpy>=2.4.4",
+    "opencv-python-headless>=4.13.0.92",
+    "pandas>=2.3.3",
+    "pdf2image>=1.17.0",
+    "pdfplumber>=0.11.9",
+    "pillow>=12.2.0",
+    "pygame>=2.6.1",
+    "pymilvus>=3.0.0",
+    "pypandoc>=1.17",
+    "pytesseract>=0.3.13",
+    "python-pptx>=1.0.2",
+    "soundfile>=0.14.0",
+    "tabula-py>=2.10.0",
+    "unstructured>=0.22.16",
+]
