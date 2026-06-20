@@ -49,6 +49,10 @@ uv run python tests/milvus_live_test.py
 | `JARVIS_DOMAIN` | `general` | `general` or `tax` detail profile |
 | `JARVIS_DISABLE_TTS` | unset | Set to `1` to disable text-to-speech |
 | `USE_MILVUS` | `1` | Toggle the Milvus backend |
+| `JARVIS_ROUTER` | `0` | Set to `1` to enable the two-tier LLM router (escalate out-of-corpus questions to a larger model) |
+| `JARVIS_ESCALATION_MODEL` | `llama3:70b` | Ollama tag for the escalation model used when the router is enabled |
+| `JARVIS_ESCALATION_TIMEOUT` | `600` | Request timeout (seconds) for the escalation model |
+| `JARVIS_ESCALATION_TEMPERATURE` | `0.2` | Sampling temperature for the escalation model |
 
 ## Layout
 
