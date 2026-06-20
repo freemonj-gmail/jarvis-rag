@@ -1979,6 +1979,162 @@ def _strip_inline_citations(text: str) -> str:
     return stripped
 
 
+# --- Spoken-text abbreviation / numeral normalization -----------------------
+# Kokoro (and the espeak/misaki G2P front-end) has no semantic understanding of
+# context-dependent abbreviations: it cannot tell "Dr. Smith" (Doctor) from
+# "Elm Dr." (Drive), or "Henry III" (the Third) from "Section III" (three).
+# That disambiguation must happen upstream, so we expand the common cases here
+# with lightweight, context-aware rules BEFORE the text reaches the TTS engine.
+# This runs on the spoken path only; printed/displayed output is unaffected.
+
+# Roman-numeral name suffixes -> ordinal words (e.g. "Henry III" -> "the Third").
+_ROMAN_NAME_ORDINALS = {
+    "II": "the Second",
+    "III": "the Third",
+    "IV": "the Fourth",
+    "V": "the Fifth",
+    "VI": "the Sixth",
+    "VII": "the Seventh",
+    "VIII": "the Eighth",
+}
+
+# Words commonly followed by a Roman numeral that are NOT personal names, so we
+# must NOT rewrite "Section III" -> "Section the Third" or "World War II" ->
+# "World War the Second".
+_NON_NAME_BEFORE_ROMAN = frozenset({
+    "section", "chapter", "part", "volume", "article", "phase", "type",
+    "class", "appendix", "act", "book", "title", "figure", "table", "war",
+    "level", "grade", "stage", "group", "round", "episode", "step", "tier",
+})
+
+# Spoken word for each digit, used to read ZIP codes one digit at a time.
+_DIGIT_WORDS = {
+    "0": "zero", "1": "one", "2": "two", "3": "three", "4": "four",
+    "5": "five", "6": "six", "7": "seven", "8": "eight", "9": "nine",
+}
+
+# US state / territory postal abbreviations. A 5-digit number immediately
+# following one of these is treated as a ZIP code (read digit by digit).
+_US_STATE_ABBR = frozenset({
+    "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA", "HI", "ID",
+    "IL", "IN", "IA", "KS", "KY", "LA", "ME", "MD", "MA", "MI", "MN", "MS",
+    "MO", "MT", "NE", "NV", "NH", "NJ", "NM", "NY", "NC", "ND", "OH", "OK",
+    "OR", "PA", "RI", "SC", "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV",
+    "WI", "WY", "DC", "PR", "VI", "GU", "AS", "MP",
+})
+
+
+def _spell_digits(digits: str) -> str:
+    """Render a run of digits as space-separated number words, e.g.
+    "98052" -> "nine eight zero five two" (read one digit at a time)."""
+    return " ".join(_DIGIT_WORDS[d] for d in digits if d in _DIGIT_WORDS)
+
+
+# Rate units that turn a "/" into the spoken word "per" (e.g. "$7,500/month" ->
+# "7500 dollars per month"). Scoped to known denominators so ordinary slashes
+# (dates like "12/25", "and/or", "TCP/IP") are left untouched.
+_PER_UNITS = (
+    "month", "months", "mo", "year", "years", "yr", "yrs", "annum",
+    "week", "weeks", "wk", "wks", "day", "days", "hour", "hours", "hr", "hrs",
+    "minute", "minutes", "min", "mins", "second", "seconds", "sec",
+    "quarter", "quarters", "capita", "person", "unit", "units", "share",
+    "shares", "mile", "miles", "gallon", "gallons", "acre", "acres",
+)
+_PER_SLASH_RE = re.compile(
+    r"\s*/\s*(?=(?:" + "|".join(_PER_UNITS) + r")\b)",
+    re.IGNORECASE,
+)
+
+
+def _normalize_for_speech(text: str) -> str:
+    """Expand context-dependent abbreviations and numerals for natural speech.
+
+    Handles the cases TTS gets wrong on its own:
+      * Titles before a name:  "Dr./Mr./Mrs./Ms./Prof./St. <Name>" -> spoken word
+      * Address abbreviations: remaining "Dr." -> "Drive", "St." -> "Street"
+      * Generational suffixes: "Jr."/"J-R" -> "Junior", "Sr."/"S-R" -> "Senior"
+      * Name numerals:         "<Name> III"/"I-I-I" -> "<Name> the Third"
+
+    Rules are case-sensitive where it matters (e.g. "Ms" -> "Miss" but "MS",
+    which may mean Microsoft or Missouri, is left untouched). Only the spoken
+    string is affected; printed output keeps the original text.
+    """
+    if not text:
+        return text
+    s = text
+
+    # 1) Honorific / title abbreviations that are FOLLOWED by a capitalized name
+    #    read as titles. The name itself is preserved via a zero-width lookahead.
+    title_map = (
+        (r"Dr\.", "Doctor"),
+        (r"Mrs\.", "Missus"),
+        (r"Mr\.", "Mister"),
+        (r"Ms\.?", "Miss"),
+        (r"Prof\.", "Professor"),
+        (r"St\.", "Saint"),     # e.g. "St. Louis" -> "Saint Louis"
+    )
+    for abbr, full in title_map:
+        s = re.sub(rf"\b{abbr}\s+(?=[A-Z][a-z])", full + " ", s)
+
+    # 2) Remaining "Dr." / "St." are address abbreviations (not before a name).
+    s = re.sub(r"\bDr\.", "Drive", s)
+    s = re.sub(r"\bSt\.", "Street", s)
+
+    # 3) Generational suffixes (period-terminated form first so the standalone
+    #    boundary form does not re-match the same token).
+    s = re.sub(r"\bJr\.", "Junior", s)
+    s = re.sub(r"\bJr\b", "Junior", s)
+    s = re.sub(r"\bJ-R\b", "Junior", s)
+    s = re.sub(r"\bSr\.", "Senior", s)
+    s = re.sub(r"\bSr\b", "Senior", s)
+    s = re.sub(r"\bS-R\b", "Senior", s)
+
+    # 4) Roman-numeral name suffixes -> ordinal words, skipping structural words
+    #    (Section, World War, Type, ...) that are not personal names.
+    def _roman_repl(match: "re.Match[str]") -> str:
+        prefix_word = match.group(1)
+        roman = match.group(2).upper().replace("-", "").replace(".", "")
+        if prefix_word.lower() in _NON_NAME_BEFORE_ROMAN:
+            return match.group(0)
+        ordinal = _ROMAN_NAME_ORDINALS.get(roman)
+        if not ordinal:
+            return match.group(0)
+        return f"{prefix_word} {ordinal}"
+
+    s = re.sub(
+        r"\b([A-Za-z]+)\s+"
+        r"((?:I-I-I|I-I|I\.I\.I|VIII|VII|VI|IV|III|II|V))\b",
+        _roman_repl,
+        s,
+    )
+
+    # 5) ZIP codes in addresses -> read digit by digit. Only fire on a strong
+    #    address signal so ordinary 5-digit numbers (years, counts, IDs) are
+    #    left alone: (a) ZIP+4 form "12345-6789", or (b) a 5-digit number
+    #    immediately following a US state abbreviation ("WA 98052").
+    def _zip4_repl(match: "re.Match[str]") -> str:
+        return f"{_spell_digits(match.group(1))} {_spell_digits(match.group(2))}"
+
+    s = re.sub(r"\b(\d{5})-(\d{4})\b", _zip4_repl, s)
+
+    def _state_zip_repl(match: "re.Match[str]") -> str:
+        state, zip5, plus4 = match.group(1), match.group(2), match.group(3)
+        if state not in _US_STATE_ABBR:
+            return match.group(0)
+        spoken = _spell_digits(zip5)
+        if plus4:
+            spoken = f"{spoken} {_spell_digits(plus4)}"
+        return f"{state} {spoken}"
+
+    s = re.sub(r"\b([A-Z]{2})\s+(\d{5})(?:-(\d{4}))?\b", _state_zip_repl, s)
+
+    # 6) Rate slash -> "per" before a known unit, e.g. "$7,500/month" ->
+    #    "$7,500 per month". Dates ("12/25"), "and/or", "TCP/IP" etc. are
+    #    untouched because their right-hand side is not a rate unit.
+    s = _PER_SLASH_RE.sub(" per ", s)
+    return s
+
+
 def _speech_text_for_response(response_text: str) -> str:
     if not response_text:
         return ""
@@ -2693,8 +2849,12 @@ class TTSManager:
         instead of just reading a bare number.
 
         We only touch comma-grouped numbers (>= 1,000 with thousands separator)
-        to avoid mangling years, line numbers, phone digits, dates, etc."""
-        money_pattern = re.compile(r"(?<![\w$])(\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?)(?!\w)")
+        to avoid mangling years, line numbers, phone digits, dates, etc. Numbers
+        already written with the word "dollar(s)" are skipped so we don't produce
+        "dollars dollars"."""
+        money_pattern = re.compile(
+            r"(?<![\w$,])(\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?)(?!\w)(?![,\d])(?!\s*[Dd]ollars?\b)"
+        )
         keywords = cls._TTS_MONEY_KEYWORDS
         # Split on sentence boundaries while keeping the boundary characters so
         # we can rejoin without altering pause cues.
@@ -2710,6 +2870,10 @@ class TTSManager:
 
     def clean_text(self, text):
         cleaned = str(text or "")
+        # Expand context-dependent abbreviations/numerals (Dr., Jr., III, ...)
+        # before any punctuation/hyphen stripping, so the rules can see periods
+        # and hyphens (e.g. "Dr.", "J-R", "I-I-I").
+        cleaned = _normalize_for_speech(cleaned)
         cleaned = re.sub(r"https?://\S+", " link omitted ", cleaned)
         # Recognize money-shaped numbers in financial sentences (no `$` needed).
         cleaned = self._add_dollar_sign_in_financial_context(cleaned)
@@ -2734,8 +2898,9 @@ class TTSManager:
     @staticmethod
     def _spoken_dollar_amount(match):
         dollars = match.group(1).replace(",", "")
-        cents = (match.group(2) or "").ljust(2, "0")[:2]
-        if cents and cents != "00":
+        cents_raw = (match.group(2) or "").ljust(2, "0")[:2]
+        cents = int(cents_raw) if cents_raw else 0
+        if cents:
             return f"{dollars} dollars and {cents} cents"
         return f"{dollars} dollars"
 
