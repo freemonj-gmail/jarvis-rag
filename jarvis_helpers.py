@@ -1939,6 +1939,46 @@ def _evidence_present_fallback(evidence_lines: list[str], reason: str = "") -> s
     return "\n".join(lines)
 
 
+# Inline parenthetical source citations, e.g. "(Resume_2026.docx)",
+# "(report.pdf, page 3)", or "(a.docx, b.docx, c.docx)". Matched groups contain
+# at least one filename-with-extension or a page reference. Used to clean spoken
+# text only; printed/displayed output keeps citations untouched.
+# The extension set mirrors every file type Jarvis can ingest (documents +
+# images); add new extensions here if the ingest list in Jarvis.py grows.
+_CITATION_FILE_EXT = (
+    r"pdf|docx?|xlsx?|pptx?|csv|txt|rtf"          # documents
+    r"|png|jpe?g|tiff?|bmp|gif|webp|heic"          # images
+)
+_INLINE_CITATION_RE = re.compile(
+    r"\s*\([^()\n]*?"
+    r"(?:\.(?:" + _CITATION_FILE_EXT + r")\b"
+    r"|\bpages?\s*\d+|\bpp?\.\s*\d+)"
+    r"[^()\n]*?\)",
+    re.IGNORECASE,
+)
+
+
+def _strip_inline_citations(text: str) -> str:
+    """Remove inline parenthetical source citations from spoken text.
+
+    Drops groups like "(Resume_2026.docx)", "(report.pdf, page 3)", or
+    "(a.docx, b.docx, c.docx)" so the TTS engine reads the prose answer without
+    spelling out filenames and extensions ("Resume 2026 dot docx").
+
+    Only the spoken string is cleaned; printed/displayed output is unaffected.
+    The factual sentence content outside the parentheses is preserved, so the
+    answer is never truncated. Parentheticals that are NOT citations (no file
+    extension or page reference) are left in place.
+    """
+    if not text:
+        return text
+    stripped = _INLINE_CITATION_RE.sub("", text)
+    # Tidy artifacts left by removal: space before punctuation and space runs.
+    stripped = re.sub(r"\s+([.,;:!?])", r"\1", stripped)
+    stripped = re.sub(r"[ \t]{2,}", " ", stripped)
+    return stripped
+
+
 def _speech_text_for_response(response_text: str) -> str:
     if not response_text:
         return ""
@@ -2040,6 +2080,11 @@ def _spoken_response_text(response_text: str) -> str:
         line = re.sub(r"\*\*([^*]+)\*\*", r"\1", line)
         line = re.sub(r"__([^_]+)__", r"\1", line)
         line = re.sub(r"(?<!\*)\*([^*\n]+)\*(?!\*)", r"\1", line)
+        # Remove inline file/page citations so TTS doesn't read out filenames
+        # like "Resume_2026.docx" as "Resume 2026 dot docx".
+        # The printed answer (and its References block) is produced elsewhere
+        # and keeps the citations intact.
+        line = _strip_inline_citations(line)
         cleaned_lines.append(line)
 
     # Collapse runs of blank lines so the speech engine doesn't insert
