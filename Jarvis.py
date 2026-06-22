@@ -19,6 +19,7 @@ from jarvis_helpers import (
     load_documents_with_cache,
     short_text_qa_template,
     create_milvus_vector_store,
+    build_hybrid_retriever,
     build_or_load_persistent_index,
     filter_informative_documents,
     group_documents_by_source_windows,
@@ -105,8 +106,8 @@ Settings.embed_model = embed_model
 
 # has_files_with_extensions imported from jarvis_helpers
 
-# Initialize pdf_docs to prevent undefined variable errors
-pdf_docs = []
+# Initialize corpus_docs to prevent undefined variable errors
+corpus_docs = []
 
 # Helper functions (moved to `jarvis_helpers.py`).
 
@@ -116,7 +117,7 @@ document_extensions = [".pdf", ".docx", ".doc", ".xlsx", ".xls", ".ppt", ".pptx"
 EXTRACTION_CACHE_DIR = os.path.join(os.path.dirname(__file__), "jarvis_storage", "extraction_cache")
 if has_files_with_extensions(input_dir, document_extensions):
     print("\nProcessing documents...")
-    pdf_docs = load_documents_with_cache(
+    corpus_docs = load_documents_with_cache(
         input_dir=input_dir,
         required_exts=document_extensions,
         file_extractor=file_extractor,
@@ -132,7 +133,7 @@ if has_files_with_extensions(input_dir, document_extensions):
                 all_attempted_files.append(os.path.join(root, file))
     
     # Get unique file paths from extracted documents
-    all_extracted_file_paths = sorted({str(doc.metadata.get("file_path")) for doc in pdf_docs if doc.metadata.get("file_path")})
+    all_extracted_file_paths = sorted({str(doc.metadata.get("file_path")) for doc in corpus_docs if doc.metadata.get("file_path")})
     
     # Create comprehensive summary: files processed + files attempted
     summary_lines = [
@@ -154,21 +155,21 @@ if has_files_with_extensions(input_dir, document_extensions):
         text=summary_text,
         metadata={"type": "file_list", "file_path": "__summary__", "source": "summary", "is_file_list": True}
     )
-    pdf_docs.insert(0, summary_doc)
+    corpus_docs.insert(0, summary_doc)
     print(f"Added summary document for {len(all_extracted_file_paths)} extracted files from {len(all_attempted_files)} total files")
 else:
     print("\nNo documents found in directory")
 
-pdf_index = None
+doc_index = None
 storage_context = None
-pdf_chat_engine = None
-pdf_query_engine = None
+doc_chat_engine = None
+doc_query_engine = None
 
 # Load images if any exist
 image_extensions = [".jpg", ".jpeg", ".png", ".tiff", ".bmp", ".gif"]
 img_chat_engine = None
 context_chat_engine = None
-all_docs = pdf_docs or []
+all_docs = corpus_docs or []
 
 if has_files_with_extensions(input_dir, image_extensions):
     print("\nFound images, processing image files...")
@@ -256,7 +257,7 @@ if all_docs:
 
     if vector_backend == "memory":
         print("Using in-memory VectorStoreIndex.from_documents backend (pre-Milvus style).")
-        pdf_index = VectorStoreIndex.from_documents(all_docs, embed_model=embed_model)
+        doc_index = VectorStoreIndex.from_documents(all_docs, embed_model=embed_model)
         storage_context = None
         active_vector_backend = "memory"
     elif require_milvus and not use_milvus:
@@ -296,7 +297,7 @@ if all_docs:
                 vector_store = SimpleVectorStore()
 
             print("Building or loading persistent index...")
-            pdf_index, storage_context = build_or_load_persistent_index(
+            doc_index, storage_context = build_or_load_persistent_index(
                 all_docs,
                 vector_store,
                 persist_dir=PERSIST_DIR,
@@ -321,7 +322,7 @@ if all_docs:
             from llama_index.core.vector_stores.simple import SimpleVectorStore
 
             local_store = SimpleVectorStore()
-            pdf_index, storage_context = build_or_load_persistent_index(
+            doc_index, storage_context = build_or_load_persistent_index(
                 all_docs,
                 local_store,
                 persist_dir=PERSIST_DIR,
@@ -337,11 +338,15 @@ if all_docs:
     print(f"Context mode: {context_mode}")
     print(f"Detail scan domain profile: {JARVIS_DOMAIN}")
 
-    pdf_chat_engine = pdf_index.as_chat_engine(chat_mode="condense_plus_context", llm=llm)
-    pdf_retriever = pdf_index.as_retriever(
-        similarity_top_k=int(os.environ.get("JARVIS_RETRIEVAL_TOP_K", "64"))
+    doc_chat_engine = doc_index.as_chat_engine(chat_mode="condense_plus_context", llm=llm)
+    doc_retriever = build_hybrid_retriever(
+        doc_index,
+        dense_top_k=int(os.environ.get("JARVIS_RETRIEVAL_TOP_K", "64")),
+        bm25_top_k=int(os.environ.get("JARVIS_BM25_TOP_K", os.environ.get("JARVIS_RETRIEVAL_TOP_K", "64"))),
+        fusion_top_k=int(os.environ.get("JARVIS_FUSION_TOP_K", os.environ.get("JARVIS_RETRIEVAL_TOP_K", "64"))),
+        llm=llm,
     )
-    pdf_query_engine = pdf_index.as_query_engine(
+    doc_query_engine = doc_index.as_query_engine(
         llm=llm,
         similarity_top_k=int(os.environ.get("JARVIS_QUERY_TOP_K", "48")),
         response_mode="compact",
@@ -353,13 +358,13 @@ if all_docs:
         print(f"Successfully processed {len(all_docs)} documents into the persistent index")
 
     print(f"Total raw documents loaded: {len(all_docs)}")
-    if pdf_query_engine is None:
+    if doc_query_engine is None:
         raise RuntimeError("No query engine available for document retrieval.")
 else:
     print("\nNo documents available for combined context engine")
-    pdf_chat_engine = None
-    pdf_query_engine = None
-    pdf_retriever = None
+    doc_chat_engine = None
+    doc_query_engine = None
+    doc_retriever = None
 
 
 print("\n\nAsk questions about your data! Type 'exit' to quit.")
@@ -428,10 +433,10 @@ def handle_query(user_query: str, prior_turn: dict[str, object] | None = None) -
             return last_turn
 
         if response_mode == "chat":
-            if pdf_chat_engine is None:
+            if doc_chat_engine is None:
                 raise RuntimeError("No chat engine available")
 
-            response = pdf_chat_engine.chat(user_query)
+            response = doc_chat_engine.chat(user_query)
             response_text = str(response).strip()
             debug_print("[debug] Used legacy chat response mode.")
             if _response_is_dismissive(response_text):
@@ -460,10 +465,10 @@ def handle_query(user_query: str, prior_turn: dict[str, object] | None = None) -
             }
             return last_turn
 
-        if pdf_retriever is None:
+        if doc_retriever is None:
             raise RuntimeError("No retriever available")
 
-        evidence_lines, source_nodes = _retrieve_query_supported_evidence(effective_user_query, pdf_retriever)
+        evidence_lines, source_nodes = _retrieve_query_supported_evidence(effective_user_query, doc_retriever)
         evidence_lines = _evidence_lines_for_turn(
             evidence_lines,
             last_turn,
@@ -569,7 +574,7 @@ def handle_query(user_query: str, prior_turn: dict[str, object] | None = None) -
             "evidence_lines": evidence_lines,
         }
 
-        if os.environ.get("JARVIS_ENABLE_CHAT_MEMORY", "0") == "1" and pdf_index is not None and storage_context is not None:
+        if os.environ.get("JARVIS_ENABLE_CHAT_MEMORY", "0") == "1" and doc_index is not None and storage_context is not None:
             if not review_passed or _response_is_dismissive(response_text):
                 debug_print("[debug] Skipping chat memory persistence (response was a fallback or not reviewed).")
             else:
@@ -581,7 +586,7 @@ def handle_query(user_query: str, prior_turn: dict[str, object] | None = None) -
                     },
                 )
                 try:
-                    pdf_index.insert(chat_doc)
+                    doc_index.insert(chat_doc)
                     storage_context.persist(PERSIST_DIR)
                 except Exception as e:
                     print(f"Warning: chat memory persistence failed: {e}")

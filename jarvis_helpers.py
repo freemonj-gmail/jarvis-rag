@@ -1327,10 +1327,13 @@ def _force_include_source_hinted_nodes(
 
     llama-index `VectorIndexRetriever` exposes the docstore as both
     `retriever._docstore` and `retriever._index.docstore`; we try both.
+    A hybrid `QueryFusionRetriever` exposes neither, so `build_hybrid_retriever`
+    attaches the docstore as `_jarvis_docstore`; we check that first.
     """
     extra: list[object] = []
     docstore = (
-        getattr(retriever, "_docstore", None)
+        getattr(retriever, "_jarvis_docstore", None)
+        or getattr(retriever, "_docstore", None)
         or getattr(getattr(retriever, "_index", None), "docstore", None)
         or getattr(getattr(retriever, "index", None), "docstore", None)
     )
@@ -1364,6 +1367,99 @@ def _force_include_source_hinted_nodes(
         f"docstore_size={len(all_docs)} matched={len(extra)}"
     )
     return extra
+
+
+def _hybrid_enabled() -> bool:
+    """Hybrid (BM25 + dense) retrieval is the native runtime. Set
+    JARVIS_HYBRID=0 to opt out and fall back to dense-only vector retrieval."""
+    return os.environ.get("JARVIS_HYBRID", "1") != "0"
+
+
+def build_hybrid_retriever(
+    index: object,
+    dense_top_k: int,
+    bm25_top_k: Optional[int] = None,
+    fusion_top_k: Optional[int] = None,
+    llm: Optional[Any] = None,
+) -> object:
+    """Build Jarvis's default retriever: a hybrid fusion of BM25 (sparse
+    lexical) and dense vector retrieval, merged with Reciprocal Rank Fusion.
+
+    Hybrid is the native runtime because this corpus (resumes, contracts, PDFs)
+    is full of exact tokens -- names, dates, dollar amounts, IDs, defined terms
+    -- where embedding search underperforms. BM25 closes that recall gap at the
+    candidate-generation stage while the dense path keeps semantic matching.
+
+    Opt out with JARVIS_HYBRID=0 to use dense-only.
+
+    Degrades gracefully: if the BM25 package is missing, the docstore is empty,
+    or fusion construction fails for any reason, this logs the cause and returns
+    the plain dense retriever so retrieval never hard-fails.
+    """
+    dense_retriever = index.as_retriever(similarity_top_k=dense_top_k)
+
+    if not _hybrid_enabled():
+        print("[jarvis] Hybrid retrieval disabled (JARVIS_HYBRID=0); using dense-only vector retrieval.")
+        return dense_retriever
+
+    try:
+        from llama_index.retrievers.bm25 import BM25Retriever
+        from llama_index.core.retrievers import QueryFusionRetriever
+    except Exception as e:
+        print(f"[jarvis] Hybrid retrieval unavailable (BM25/fusion import failed: {e}); using dense-only.")
+        return dense_retriever
+
+    # BM25 builds from the docstore (node text), which is loaded on every
+    # startup independent of the Milvus embedding/reindex-skip path.
+    docstore = (
+        getattr(getattr(index, "storage_context", None), "docstore", None)
+        or getattr(index, "docstore", None)
+    )
+    doc_count = 0
+    if docstore is not None:
+        try:
+            doc_count = len(docstore.docs or {})
+        except Exception:
+            doc_count = 0
+    if docstore is None or doc_count == 0:
+        print(f"[jarvis] Hybrid retrieval: docstore empty or missing (docs={doc_count}); using dense-only.")
+        return dense_retriever
+
+    bm25_k = bm25_top_k or dense_top_k
+    fusion_k = fusion_top_k or dense_top_k
+    try:
+        bm25_retriever = BM25Retriever.from_defaults(
+            docstore=docstore,
+            similarity_top_k=bm25_k,
+        )
+        fusion = QueryFusionRetriever(
+            [dense_retriever, bm25_retriever],
+            similarity_top_k=fusion_k,
+            # Upstream _retrieve_query_supported_evidence already expands the
+            # query into many variants; num_queries=1 avoids an extra LLM call
+            # inside the fusion retriever (keeps the hot path LLM-free).
+            num_queries=1,
+            mode="reciprocal_rerank",
+            use_async=False,
+            verbose=False,
+            # Pass the local LLM explicitly so the constructor never resolves a
+            # default OpenAI client (it isn't used at query time when num_queries=1).
+            llm=llm,
+        )
+        # Expose the docstore so _force_include_source_hinted_nodes still works
+        # through the fusion retriever (which has no _index/_docstore attr).
+        try:
+            fusion._jarvis_docstore = docstore
+        except Exception:
+            pass
+        print(
+            f"[jarvis] Hybrid retrieval active: BM25(top_k={bm25_k}) + "
+            f"dense(top_k={dense_top_k}) -> RRF(top_k={fusion_k}) over {doc_count} chunks."
+        )
+        return fusion
+    except Exception as e:
+        print(f"[jarvis] Hybrid retrieval construction failed ({e}); using dense-only.")
+        return dense_retriever
 
 
 def _query_candidate_score(
