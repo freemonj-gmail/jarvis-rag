@@ -520,6 +520,16 @@ def _query_requests_refinement(user_query: str) -> bool:
     return any(marker in lowered for marker in refinement_markers)
 
 
+# Pronouns / anaphora that imply the user is still talking about the prior
+# turn's subject without naming it (e.g. "how long did HE work THERE?").
+# Matched with word boundaries so we never false-trigger on substrings like
+# "the", "where", "then" inside other words. Only consulted when a prior turn
+# exists, so a brand-new first question can't be mistaken for a follow-up.
+_FOLLOW_UP_PRONOUN_RE = re.compile(
+    r"\b(he|him|his|she|her|hers|they|them|their|theirs|there|this|those|these)\b"
+)
+
+
 def _looks_like_follow_up(user_query: str, last_turn: dict[str, object]) -> bool:
     if not last_turn.get("user_query"):
         return False
@@ -534,6 +544,10 @@ def _looks_like_follow_up(user_query: str, last_turn: dict[str, object]) -> bool
         "tell me more", "what about", "what does that mean",
     )
     if any(marker in lowered for marker in follow_up_markers):
+        return True
+    # Anaphoric pronouns ("he", "she", "they", "there", ...) signal the user is
+    # continuing the prior subject conversationally rather than starting fresh.
+    if _FOLLOW_UP_PRONOUN_RE.search(lowered):
         return True
     if _query_requests_reasoning(user_query) or _query_requests_refinement(user_query):
         return True
@@ -2075,6 +2089,37 @@ def _strip_inline_citations(text: str) -> str:
     return stripped
 
 
+# Runs of "the document" joined by commas/"and" that should collapse to the
+# plural "the documents" after bare filenames are neutralized for speech.
+_SPEECH_DOC_RUN_RE = re.compile(
+    r"the document(?:\s*(?:,|and|, and)\s*the document)+",
+    re.IGNORECASE,
+)
+
+
+def _strip_source_filenames_for_speech(text: str) -> str:
+    """Neutralize bare in-prose source filenames so TTS never reads them aloud.
+
+    `_strip_inline_citations` already removes fully parenthetical citations like
+    "(report.pdf, page 3)". This handles filenames the model weaves directly
+    into sentence grammar — as an object ("listed in Application.pdf") or even
+    the subject ("JOB APPLICATION.pdf lists 3.65") — where simply deleting the
+    token would leave a broken spoken sentence. Each bare filename (with any
+    trailing page reference) is replaced by the neutral phrase "the document",
+    and consecutive replacements joined by commas/"and" collapse to "the
+    documents". Spoken path only; printed output keeps the real filenames and
+    the dedicated 'References' block. Casing is irrelevant because the result is
+    fed to the speech engine, never displayed."""
+    if not text:
+        return text
+    spoken = _SOURCE_REFERENCE_RE.sub("the document", text)
+    spoken = _SPEECH_DOC_RUN_RE.sub("the documents", spoken)
+    # Tidy artifacts: space before punctuation and collapsed space runs.
+    spoken = re.sub(r"\s+([.,;:!?])", r"\1", spoken)
+    spoken = re.sub(r"[ \t]{2,}", " ", spoken)
+    return spoken
+
+
 # --- Spoken-text abbreviation / numeral normalization -----------------------
 # Kokoro (and the espeak/misaki G2P front-end) has no semantic understanding of
 # context-dependent abbreviations: it cannot tell "Dr. Smith" (Doctor) from
@@ -2352,31 +2397,67 @@ def _spoken_response_text(response_text: str) -> str:
         else:
             blank_run = False
             collapsed.append(ln)
-    return "\n".join(collapsed).strip()
+    # Neutralize any bare in-prose filenames the model wove into sentences so
+    # the speech engine never reads filenames/extensions aloud.
+    return _strip_source_filenames_for_speech("\n".join(collapsed).strip())
+
+
+# Source references named inline in an answer, e.g. "Application.pdf (page 12)",
+# "report.pdf, page 3", a bare "Rutgers_Transcript.JPG", or a spaced filename
+# like "JOB APPLICATION.pdf" / "JHU Transcript.pdf". The file group absorbs any
+# leading ALL-CAPS/numeric acronym words (filename fragments such as "JOB" or
+# "JHU") but deliberately ignores mixed-case prose words ("While", "Also",
+# "listed", "in") that merely precede a filename, then matches the final token
+# ending in a known ingest extension; an optional trailing page number is
+# captured too. This lets the printed 'References' block list each unique source
+# once instead of repeating the whole answer. `(?i:...)` keeps the extension and
+# page keyword case-insensitive while the leading-acronym class stays uppercase.
+_SOURCE_REFERENCE_RE = re.compile(
+    r"(?P<file>(?:[A-Z0-9][A-Z0-9._%\-]+\s+)*[^\s(),]+\.(?i:" + _CITATION_FILE_EXT + r"))"
+    r"(?:\s*[\(,]\s*(?i:on\s+)?(?i:pages?)\s*(?P<page>\d+)\s*\)?)?",
+)
+
+
+def _extract_source_references(text: str) -> list[str]:
+    """Collect unique source citations named in `text` into display lines.
+
+    Scans for filename tokens ending in a known ingest extension (optionally
+    followed by a page reference) and returns a de-duplicated, appearance-ordered
+    list like ["Application.pdf (page 12)", "Rutgers_Transcript.JPG"]. Used to
+    build the printed 'References' block; the answer prose itself is unchanged.
+    """
+    if not text:
+        return []
+    seen: set[tuple[str, str]] = set()
+    references: list[str] = []
+    for match in _SOURCE_REFERENCE_RE.finditer(text):
+        file_name = match.group("file").rstrip(".,;:")
+        page = match.group("page") or ""
+        key = (file_name.lower(), page)
+        if key in seen:
+            continue
+        seen.add(key)
+        references.append(f"{file_name} (page {page})" if page else file_name)
+    return references
 
 
 def _format_response_for_display(response_text: str) -> str:
-    """Render the response as: spoken summary first, then a 'References' block
-    containing the full body / evidence lines. If the response is already short
-    (the summary equals the full content), return it unchanged. If stripping
-    bullets/citations would drop substantive content (numbers, values) that the
-    body contains, also return the body unchanged so the user does not see a
-    meaningless framing-only summary."""
+    """Render the full answer followed by a 'References' block that lists each
+    unique source (file + page) named in the answer.
+
+    The answer prose — including every value and inline citation — is preserved
+    verbatim; only a de-duplicated source list is appended underneath. If the
+    answer names no sources, it is returned unchanged. Spoken/TTS output is
+    produced elsewhere (`_spoken_response_text` / `_summarize_for_speech`) and is
+    unaffected by this function."""
     if not response_text:
         return ""
-    summary = _summarize_for_speech(response_text)
     body = response_text.strip()
-    if not summary:
+    references = _extract_source_references(body)
+    if not references:
         return body
-    summary_normalized = " ".join(summary.split()).rstrip("…").strip()
-    body_normalized = " ".join(body.split())
-    if summary_normalized and summary_normalized in body_normalized and len(body_normalized) <= len(summary_normalized) + 5:
-        return body
-    body_has_values = bool(re.search(r"\d", body))
-    summary_has_values = bool(re.search(r"\d", summary))
-    if body_has_values and not summary_has_values:
-        return body
-    return f"{summary}\n\nReferences:\n{body}"
+    ref_block = "\n".join(f"  - {ref}" for ref in references)
+    return f"{body}\n\nReferences:\n{ref_block}"
 
 
 def _topic_snippet_score(text: str, terms: list[str]) -> int:

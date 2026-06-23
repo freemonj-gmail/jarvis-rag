@@ -20,8 +20,13 @@ from jarvis_helpers import (
     normalize_text,
     split_large_docs,
     text_artifact_score,
+    _effective_query_for_turn,
+    _extract_source_references,
+    _format_response_for_display,
     _is_ocr_garbage_text,
     _is_port_open,
+    _looks_like_follow_up,
+    _spoken_response_text,
     jpeg_extractor,
 )
 
@@ -106,6 +111,73 @@ def run_tests():
     assert "Page one amount 100" in grouped_docs[0].text
     assert grouped_docs[0].metadata.get("context_mode") == "source_window"
     print("- group_documents_by_source_windows OK")
+
+    # Conversational follow-up detection: a pronoun reference to the prior
+    # subject ("how long did he work there?") must be treated as a follow-up
+    # and carry the prior question's context into the effective query.
+    prior_turn = {
+        "user_query": "What is Jordan's current employer?",
+        "effective_query": "What is Jordan's current employer?",
+        "evidence_lines": [],
+    }
+    assert _looks_like_follow_up("How long did he work there?", prior_turn)
+    assert _looks_like_follow_up("Where did she go to school?", prior_turn)
+    eff_query, is_follow_up, _hints = _effective_query_for_turn(
+        "How long did he work there?", prior_turn
+    )
+    assert is_follow_up
+    assert "current employer" in eff_query and "how long did he work there" in eff_query.lower()
+    # No prior turn -> never a follow-up (first question can't be anaphoric).
+    assert not _looks_like_follow_up("How long did he work there?", {})
+    # Word-boundary guard: "the"/"where" must not false-trigger the pronoun rule.
+    assert not _looks_like_follow_up("Where is the headquarters located?", prior_turn)
+    print("- conversational follow-up detection OK")
+
+    # Display formatting: the full answer (values intact) is kept, and a
+    # de-duplicated 'References' list of the named sources is appended instead
+    # of repeating the answer body.
+    answer = (
+        "His GPA is 3.50, listed in Application.pdf (page 12) and "
+        "StateDept_CompSci.pdf (page 17). JOB APPLICATION.pdf (page 9) lists "
+        "3.65, while Rutgers_Transcript.JPG shows a cumulative average. "
+        "While JHU Transcript.pdf provides grades, "
+        "Application.pdf (page 12) repeats the 3.50 figure."
+    )
+    refs = _extract_source_references(answer)
+    assert "Application.pdf (page 12)" in refs
+    assert "StateDept_CompSci.pdf (page 17)" in refs
+    assert "JOB APPLICATION.pdf (page 9)" in refs
+    assert "Rutgers_Transcript.JPG" in refs
+    # Spaced filenames keep their internal space ("JHU Transcript.pdf").
+    assert "JHU Transcript.pdf" in refs
+    # Mixed-case prose words ("While", "listed", "in") must NOT be absorbed into
+    # a filename token.
+    assert all(not r.startswith(("While ", "listed ", "in ")) for r in refs)
+    # De-duplicated: the repeated Application.pdf (page 12) appears once.
+    assert refs.count("Application.pdf (page 12)") == 1
+    rendered = _format_response_for_display(answer)
+    # Values stay in the body, and a References block is appended.
+    assert "3.50" in rendered and "3.65" in rendered
+    assert "\n\nReferences:\n" in rendered
+    assert rendered.index("References:") > rendered.index("3.65")
+    # An answer that names no sources is returned unchanged (no References block).
+    plain = "The capital of France is Paris."
+    assert _format_response_for_display(plain) == plain
+    print("- citation-list display formatting OK")
+
+    # TTS path: filenames/extensions must NOT be read aloud. Bare in-prose
+    # filenames are replaced with "the document(s)" while the answer's values
+    # are preserved; the printed References block (eyes only) is unaffected.
+    spoken = _spoken_response_text(answer)
+    lowered_spoken = spoken.lower()
+    for ext in (".pdf", ".jpg", ".jpeg", ".docx", ".xlsx", ".pptx", ".txt", ".csv"):
+        assert ext not in lowered_spoken, f"extension {ext} leaked into TTS: {spoken!r}"
+    assert "application" not in lowered_spoken and "transcript." not in lowered_spoken
+    # Values survive the substitution.
+    assert "3.50" in spoken and "3.65" in spoken
+    # Neutral placeholder is used so the spoken sentence stays grammatical.
+    assert "the document" in lowered_spoken
+    print("- TTS citation suppression OK")
 
     # create_milvus_vector_store default values
     store = create_milvus_vector_store()

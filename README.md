@@ -46,6 +46,23 @@ hard-fail. BM25 builds in-memory from the already-loaded docstore at startup, so
 it is independent of the Milvus embedding / reindex-skip path — enabling it does
 not trigger re-embedding.
 
+## Conversation & output
+
+Jarvis keeps lightweight conversational state across turns in a single session:
+
+- **Pronoun-aware follow-ups.** A follow-up that refers back to the prior subject
+  with a pronoun ("How long did **he** work **there**?") is recognized as a
+  follow-up, so the previous question's context is carried into retrieval. This
+  matters most for multi-subject corpora, where the pronoun would otherwise be
+  ambiguous.
+- **Clean source list.** The printed answer keeps its values and inline
+  citations, followed by a de-duplicated **References** block listing each unique
+  source (`file (page N)`) once — instead of repeating the whole answer.
+- **Citations are never spoken.** Text-to-speech reads the answer's prose and
+  values but never reads filenames, extensions, or page numbers aloud. Filenames
+  the model weaves into a sentence are spoken as "the document" / "the documents"
+  so the audio stays natural; the printed output is unaffected.
+
 ## Requirements
 
 - Python >= 3.13
