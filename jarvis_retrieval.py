@@ -18,6 +18,7 @@ from jarvis_query import (
     _payment_context_score,
     _prioritize_source_hinted_evidence,
     _query_anchor_terms,
+    _query_requests_enumeration,
     _query_requests_values,
     _query_terms,
     _query_topic_coverage,
@@ -62,6 +63,8 @@ def _source_nodes_to_query_evidence_lines(
     terms = _query_terms(user_query)
     anchor_terms = _query_anchor_terms(user_query, terms)
     require_value = _query_requests_values(user_query)
+    enumerate_full = _query_requests_enumeration(user_query)
+    enum_max_chars = int(os.environ.get("JARVIS_ENUM_CHUNK_CHARS", "8000"))
     hint_basenames = {os.path.basename(h).lower() for h in (source_hints or []) if h}
 
     ranked: list[tuple[int, set[str], str]] = []
@@ -110,15 +113,37 @@ def _source_nodes_to_query_evidence_lines(
         if score <= 0:
             continue
 
-        snippet = _query_focused_snippet(node_text, terms, anchor_terms, require_value)
-        if not _query_evidence_is_supported(snippet, terms, anchor_terms, require_value):
-            continue
+        if enumerate_full:
+            # Enumeration query: send the full chunk (capped) so older/lower-density
+            # entries (e.g. the oldest jobs at the bottom of a resume) aren't severed
+            # by the query-centered focused window. score > 0 already gated relevance,
+            # so the per-snippet support check is skipped here.
+            snippet = " ".join(node_text.split())[:enum_max_chars].rstrip()
+            if len(node_text) > enum_max_chars:
+                snippet += "..."
+        else:
+            snippet = _query_focused_snippet(node_text, terms, anchor_terms, require_value)
+            if not _query_evidence_is_supported(snippet, terms, anchor_terms, require_value):
+                continue
 
         coverage = _query_topic_coverage(snippet, terms, anchor_terms)
         ranked.append((score, coverage, f"- {label}: {snippet}"))
 
     ranked.sort(key=lambda item: item[0], reverse=True)
     selected = list(forced)  # source-hinted evidence first
+
+    if enumerate_full:
+        # Aggregation queries must list EVERY matching item, so skip the
+        # topic-coverage dedup (which drops same-topic chunks such as additional
+        # resume entries) and take the highest-scored full chunks directly.
+        for _, _, line in ranked:
+            if line in selected:
+                continue
+            selected.append(line)
+            if len(selected) >= max_items:
+                break
+        return selected
+
     covered_topics: set[str] = set()
 
     for _, coverage, line in ranked:

@@ -225,6 +225,38 @@ def _query_requests_reasoning(user_query: str) -> bool:
     return conditional_reasoning or any(marker in lowered for marker in reasoning_markers)
 
 
+# Plural nouns whose presence (with an enumeration cue) signals the user wants a
+# COMPLETE list aggregated across the corpus rather than a single focused fact.
+_ENUMERATION_NOUNS = (
+    "jobs", "positions", "roles", "titles", "employers", "companies",
+    "organizations", "workplaces", "certifications", "certificates",
+    "degrees", "schools", "universities", "clearances", "projects",
+    "publications", "patents", "awards", "skills",
+)
+_ENUMERATION_CUES = (
+    "all", "every", "each", "list", "enumerate", "name the", "what",
+    "which", "how many", "give me", "show me", "tell me",
+)
+
+
+def _query_requests_enumeration(user_query: str) -> bool:
+    """True when the query asks to list EVERY matching item across the corpus.
+
+    Enumeration/aggregation queries (e.g. "what jobs has Jordan held",
+    "list every employer", "which companies did he work for") must surface the
+    complete set. For these the per-chunk focused snippet (which keeps only a
+    query-centered window) silently drops the oldest/lowest-density entries, so
+    the retrieval layer sends fuller chunks and skips topic-coverage dedup when
+    this returns True.
+    """
+    lowered = " ".join((user_query or "").lower().split())
+    if not lowered:
+        return False
+    if not any(re.search(rf"\b{re.escape(noun)}\b", lowered) for noun in _ENUMERATION_NOUNS):
+        return False
+    return any(cue in lowered for cue in _ENUMERATION_CUES)
+
+
 def _effective_query_for_turn(user_query: str, last_turn: dict[str, object]) -> tuple[str, bool, list[str]]:
     source_hints = _extract_source_hints(user_query)
     if not _looks_like_follow_up(user_query, last_turn):

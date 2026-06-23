@@ -747,7 +747,8 @@ def _synthesize_evidence_answer(
         "- Every concrete claim, number, date, name, or rule MUST be traceable to a specific evidence line. Cite the source label in parentheses when stating it.\n"
         "- Use whatever IS present in the evidence to answer as completely as possible. Partial evidence is still useful — extract names, amounts, line items, dates, and forms that match the question even if the exact phrasing differs.\n"
         "- Only after you have surfaced the relevant evidence should you note any specific sub-detail that the evidence does not contain. Never refuse outright when related evidence is present.\n"
-        "- Cautious inference is allowed ONLY when the user explicitly asked for reasoning/implications, and must be labeled as inference from the cited evidence.\n\n"
+        "- Cautious inference is allowed ONLY when the user explicitly asked for reasoning/implications, and must be labeled as inference from the cited evidence.\n"
+        "- When the question asks which jobs/positions/roles a person HELD or WORKED, do NOT count a job offer, offer letter, application, KSA, resume objective, or job announcement/posting as a held position. Those show candidacy or intent, not employment. Only list a position when the evidence shows the person actually worked there (e.g., a dated work-history entry with employer and title, a payroll/personnel record, or a role marked 'Present'). If a document is only an offer or application, you may mention it separately and explicitly as an offer/application, never as a job held.\n\n"
     )
 
     prompt = (
