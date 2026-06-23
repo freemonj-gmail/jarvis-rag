@@ -30,9 +30,62 @@ from jarvis_helpers import (
     jpeg_extractor,
 )
 
+# Frozen public API contract for jarvis_helpers. The package refactor relocates
+# implementation into jarvis_*.py modules, but every name below must remain
+# importable from jarvis_helpers (the backward-compatible facade). This guard
+# fails loudly the moment any export is dropped or renamed during the move.
+_PUBLIC_API_SURFACE = (
+    # Config / domain
+    "JARVIS_DOMAIN",
+    "debug_print",
+    "short_text_qa_template",
+    # Orchestration
+    "QueryRuntime",
+    "handle_query",
+    # Speech / TTS
+    "TTSManager",
+    "_spoken_response_text",
+    "_summarize_for_speech",
+    "_speech_text_for_response",
+    "_format_response_for_display",
+    "_extract_source_references",
+    # Extraction / loading
+    "file_extractor",
+    "jpeg_extractor",
+    "has_files_with_extensions",
+    "load_documents_with_cache",
+    # Vector store / indexing
+    "create_milvus_vector_store",
+    "build_hybrid_retriever",
+    "build_or_load_persistent_index",
+    "filter_informative_documents",
+    "group_documents_by_source_windows",
+    "chunk_text",
+    "split_large_docs",
+    # Text quality
+    "is_low_information_text",
+    "normalize_text",
+    "text_artifact_score",
+    "_is_ocr_garbage_text",
+    # Conversation / retrieval / answering
+    "_effective_query_for_turn",
+    "_looks_like_follow_up",
+    "_is_port_open",
+    "_purge_chat_memory_vectors",
+)
+
+
+def check_public_api_surface():
+    import jarvis_helpers
+
+    missing = [name for name in _PUBLIC_API_SURFACE if not hasattr(jarvis_helpers, name)]
+    assert not missing, f"jarvis_helpers is missing public API names: {missing}"
+    print(f"- public API surface OK ({len(_PUBLIC_API_SURFACE)} names exported)")
+
 
 def run_tests():
     print("Running smoke tests...")
+    check_public_api_surface()
 
     # chunk_text basic behavior
     text = "This is a test " * 50
