@@ -93,7 +93,9 @@ make smoke-test
 uv run python tests/smoke_test.py
 
 # Full Jarvis init smoke test (reuses extraction cache + index)
-uv run python smoke_test_jarvis.py "What is in my documents?"
+uv run python tests/smoke_test_jarvis.py "What is in my documents?"
+# or
+make smoke-test-e2e ARGS='"What is in my documents?"'
 
 # Live Milvus validation (requires a running Milvus server)
 uv run python tests/milvus_live_test.py

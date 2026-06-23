@@ -8,12 +8,18 @@ It does this by importing Jarvis directly so its module-level init runs once.
 TTS is stubbed out via JARVIS_DISABLE_TTS=1.
 
 Usage:
-    JARVIS_DEBUG=1 uv run python smoke_test_jarvis.py "What is the definition of weather?"
-    uv run python smoke_test_jarvis.py "Q one" "Q two"          # chained turns
-    uv run python smoke_test_jarvis.py /path/to/corpus "Q one"  # override input_dir
+    JARVIS_DEBUG=1 uv run python tests/smoke_test_jarvis.py "What is the definition of weather?"
+    uv run python tests/smoke_test_jarvis.py "Q one" "Q two"          # chained turns
+    uv run python tests/smoke_test_jarvis.py /path/to/corpus "Q one"  # override input_dir
 """
 import os
 import sys
+
+# This test lives in tests/ but imports the root-level Jarvis module, so put
+# the project root on sys.path before importing it.
+ROOT = os.path.dirname(os.path.dirname(__file__))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
 
 # Stub TTS BEFORE importing Jarvis (its module-level init reads this env var).
 os.environ.setdefault("JARVIS_DISABLE_TTS", "1")
