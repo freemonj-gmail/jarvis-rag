@@ -6,14 +6,15 @@ os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
 
 import logging
 import sys
-from datetime import UTC, datetime
 
 if os.environ.get("JARVIS_DEBUG_HTTP", "0") != "1":
     logging.getLogger("httpx").setLevel(logging.WARNING)
 from jarvis_helpers import (
     JARVIS_DOMAIN,
     TTSManager,
+    QueryRuntime,
     debug_print,
+    handle_query,
     file_extractor,
     has_files_with_extensions,
     load_documents_with_cache,
@@ -23,33 +24,8 @@ from jarvis_helpers import (
     build_or_load_persistent_index,
     filter_informative_documents,
     group_documents_by_source_windows,
-    _answer_with_review_loop,
-    _answer_from_general_knowledge,
-    _build_corpus_details_preview,
-    _build_source_details_preview,
-    _build_topic_details_preview,
-    _effective_query_for_turn,
-    _evidence_lines_for_turn,
-    _evidence_present_fallback,
-    _extractive_value_answer_from_documents,
-    _extractive_value_answer_from_evidence,
-    _latest_user_turn,
-    _query_phrase_anchors,
-    _query_page_hints,
-    _query_requests_reasoning,
-    _is_negative_evidence_feedback,
     _is_port_open,
-    _not_found_answer,
-    _prioritize_source_hinted_evidence,
     _purge_chat_memory_vectors,
-    _query_requests_corpus_details,
-    _query_requests_source_details,
-    _response_is_dismissive,
-    _retrieve_query_supported_evidence,
-    _speech_text_for_response,
-    _spoken_response_text,
-    _summarize_for_speech,
-    _format_response_for_display,
 )
 from llama_index.core import VectorStoreIndex
 from llama_index.core.readers import SimpleDirectoryReader
@@ -365,6 +341,7 @@ else:
     doc_chat_engine = None
     doc_query_engine = None
     doc_retriever = None
+    response_mode = "query"
 
 
 print("\n\nAsk questions about your data! Type 'exit' to quit.")
@@ -383,217 +360,21 @@ if os.environ.get("JARVIS_DISABLE_TTS", "0") == "1":
     tts_manager = _NoopTTS()
 else:
     tts_manager = TTSManager()
+
+# Bundle the initialized runtime objects for the query pipeline (lives in
+# jarvis_helpers.py to keep this entry script thin).
+runtime = QueryRuntime(
+    all_docs=all_docs,
+    llm=llm,
+    doc_retriever=doc_retriever,
+    doc_chat_engine=doc_chat_engine,
+    doc_index=doc_index,
+    storage_context=storage_context,
+    response_mode=response_mode,
+    tts=tts_manager,
+    persist_dir=PERSIST_DIR,
+)
 last_turn: dict[str, object] = {}
-
-
-def handle_query(user_query: str, prior_turn: dict[str, object] | None = None) -> dict[str, object]:
-    """Process a single user query through the full RAG + fallback pipeline.
-    Returns the new last_turn dict so callers (e.g. smoke tests) can chain.
-    Uses the module-level cached index/retriever/LLM — no re-initialization."""
-    global last_turn
-    if prior_turn is not None:
-        last_turn = prior_turn
-
-    print("\n[📄 Context Results]")
-    try:
-        effective_user_query, is_follow_up, source_hints = _effective_query_for_turn(user_query, last_turn)
-        if is_follow_up:
-            debug_print("[debug] Treated user input as a follow-up clarification.")
-            debug_print(f"[debug] Effective query: {effective_user_query}")
-        if source_hints:
-            debug_print(f"[debug] Source hints: {source_hints}")
-        negative_evidence_feedback = _is_negative_evidence_feedback(user_query)
-        if negative_evidence_feedback:
-            debug_print("[debug] User feedback rejected previous evidence; not merging prior evidence lines.")
-
-        if _query_requests_corpus_details(user_query):
-            response_text = _build_corpus_details_preview(all_docs)
-            debug_print("[debug] Used direct corpus details scan.")
-            print(f"Jarvis: {_format_response_for_display(response_text)}\n")
-            tts_manager.speak(_spoken_response_text(response_text))
-            last_turn = {
-                "user_query": user_query,
-                "effective_query": effective_user_query,
-                "response_text": response_text,
-                "evidence_lines": [],
-            }
-            return last_turn
-
-        if _query_requests_source_details(user_query):
-            response_text = _build_source_details_preview(effective_user_query, all_docs, llm)
-            debug_print("[debug] Used direct source details scan.")
-            print(f"Jarvis: {_format_response_for_display(response_text)}\n")
-            tts_manager.speak(_spoken_response_text(response_text))
-            last_turn = {
-                "user_query": user_query,
-                "effective_query": effective_user_query,
-                "response_text": response_text,
-                "evidence_lines": [],
-            }
-            return last_turn
-
-        if response_mode == "chat":
-            if doc_chat_engine is None:
-                raise RuntimeError("No chat engine available")
-
-            response = doc_chat_engine.chat(user_query)
-            response_text = str(response).strip()
-            debug_print("[debug] Used legacy chat response mode.")
-            if _response_is_dismissive(response_text):
-                if os.environ.get("JARVIS_ALLOW_GENERAL_KNOWLEDGE", "1") == "1":
-                    debug_print("[debug] Chat-mode response was dismissive; falling back to general LLM knowledge.")
-                    gk_answer = _answer_from_general_knowledge(effective_user_query, llm)
-                    if gk_answer:
-                        response_text = gk_answer
-                    else:
-                        response_text = (
-                            "I could not find a clear answer in the indexed documents. "
-                            "Please try rephrasing the question or asking for the relevant source file first."
-                        )
-                else:
-                    response_text = (
-                        "I could not find a clear answer in the indexed documents. "
-                        "Please try rephrasing the question or asking for the relevant source file first."
-                    )
-            print(f"Jarvis: {_format_response_for_display(response_text)}\n")
-            tts_manager.speak(_spoken_response_text(response_text))
-            last_turn = {
-                "user_query": user_query,
-                "effective_query": effective_user_query,
-                "response_text": response_text,
-                "evidence_lines": [],
-            }
-            return last_turn
-
-        if doc_retriever is None:
-            raise RuntimeError("No retriever available")
-
-        evidence_lines, source_nodes = _retrieve_query_supported_evidence(effective_user_query, doc_retriever)
-        evidence_lines = _evidence_lines_for_turn(
-            evidence_lines,
-            last_turn,
-            is_follow_up,
-            negative_evidence_feedback,
-            source_hints,
-        )
-        debug_print(f"[debug] Retrieved source chunks: {len(source_nodes)}")
-        debug_print(f"[debug] Query-supported evidence lines: {len(evidence_lines)}")
-        for evidence_line in evidence_lines:
-            debug_print(f"[debug] Evidence: {evidence_line}")
-        if evidence_lines:
-            phrase_anchors = _query_phrase_anchors(effective_user_query)
-            page_hints = _query_page_hints(effective_user_query)
-            latest_turn_is_reasoning = _query_requests_reasoning(
-                _latest_user_turn(effective_user_query)
-            )
-            allow_keyword_extractor = (
-                not phrase_anchors
-                and not page_hints
-                and not latest_turn_is_reasoning
-            )
-            response_text = (
-                _extractive_value_answer_from_evidence(effective_user_query, evidence_lines)
-                if allow_keyword_extractor
-                else ""
-            )
-            if response_text:
-                review_passed = True
-                review_reason = "answered directly from retrieved value evidence"
-                debug_print("[debug] Used extractive value answer from retrieved evidence.")
-            else:
-                if not allow_keyword_extractor:
-                    debug_print(
-                        "[debug] Skipped keyword extractor due to phrase/page hints or reasoning intent; routing to LLM review loop."
-                    )
-                doc_scan_answer = (
-                    _extractive_value_answer_from_documents(effective_user_query, all_docs)
-                    if allow_keyword_extractor
-                    else ""
-                )
-                if doc_scan_answer:
-                    response_text = doc_scan_answer
-                    review_passed = True
-                    review_reason = "answered directly from local value evidence scan"
-                    debug_print("[debug] Used extractive value answer from local document scan.")
-                else:
-                    prior_answer_for_refinement = ""
-                    if is_follow_up:
-                        prior_answer_for_refinement = str(last_turn.get("response_text") or "")
-                    response_text, review_passed, review_reason = _answer_with_review_loop(
-                        effective_user_query,
-                        evidence_lines,
-                        llm,
-                        prior_answer=prior_answer_for_refinement,
-                    )
-        else:
-            response_text = _extractive_value_answer_from_documents(effective_user_query, all_docs)
-            if response_text:
-                review_passed = True
-                review_reason = "answered directly from local value evidence scan"
-                debug_print("[debug] Used extractive value answer from local document scan.")
-            else:
-                response_text = ""
-                review_passed = False
-                review_reason = "no query-supported evidence was retrieved"
-
-        answer_was_dismissive = bool(response_text) and _response_is_dismissive(response_text)
-
-        if review_passed and answer_was_dismissive:
-            debug_print("[debug] Reviewed answer is dismissive; demoting to trigger fallback chain.")
-            review_passed = False
-            review_reason = review_reason or "reviewed answer indicated no information in evidence"
-            response_text = ""
-
-        if not review_passed:
-            debug_print(f"[debug] Initial answer did not pass review: {review_reason}")
-            if evidence_lines and not answer_was_dismissive:
-                debug_print("[debug] Returning evidence-present fallback instead of no-evidence response.")
-                response_text = _evidence_present_fallback(evidence_lines, review_reason)
-            else:
-                if answer_was_dismissive:
-                    debug_print("[debug] Evidence chunks were rejected by the answerer as irrelevant; bypassing evidence fallback.")
-                topic_preview = _build_topic_details_preview(effective_user_query, all_docs, llm)
-                if topic_preview and not _response_is_dismissive(topic_preview):
-                    debug_print("[debug] Applied direct topic corpus fallback.")
-                    response_text = topic_preview
-                elif os.environ.get("JARVIS_ALLOW_GENERAL_KNOWLEDGE", "1") == "1":
-                    debug_print("[debug] No corpus evidence found; falling back to general LLM knowledge.")
-                    gk_answer = _answer_from_general_knowledge(effective_user_query, llm)
-                    response_text = gk_answer or _not_found_answer(effective_user_query, review_reason)
-                else:
-                    response_text = _not_found_answer(effective_user_query, review_reason)
-        else:
-            debug_print("[debug] Returning reviewed answer.")
-
-        print(f"Jarvis: {_format_response_for_display(response_text)}\n")
-        tts_manager.speak(_spoken_response_text(response_text))
-        last_turn = {
-            "user_query": user_query,
-            "effective_query": effective_user_query,
-            "response_text": response_text,
-            "evidence_lines": evidence_lines,
-        }
-
-        if os.environ.get("JARVIS_ENABLE_CHAT_MEMORY", "0") == "1" and doc_index is not None and storage_context is not None:
-            if not review_passed or _response_is_dismissive(response_text):
-                debug_print("[debug] Skipping chat memory persistence (response was a fallback or not reviewed).")
-            else:
-                chat_doc = Document(
-                    text=f"User: {user_query}\nAssistant: {response_text}",
-                    metadata={
-                        "source": "chat_memory",
-                        "timestamp": datetime.now(UTC).isoformat(),
-                    },
-                )
-                try:
-                    doc_index.insert(chat_doc)
-                    storage_context.persist(PERSIST_DIR)
-                except Exception as e:
-                    print(f"Warning: chat memory persistence failed: {e}")
-    except Exception as e:
-        print("Context engine failed:", e)
-        tts_manager.speak("Sorry, I encountered an error processing your request.")
-    return last_turn
 
 
 if __name__ == "__main__":
@@ -604,4 +385,4 @@ if __name__ == "__main__":
             tts_manager.say_goodbye()
             tts_manager.cleanup()
             break
-        handle_query(user_query)
+        last_turn = handle_query(user_query, runtime, last_turn)

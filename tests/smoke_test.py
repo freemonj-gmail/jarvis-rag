@@ -131,6 +131,16 @@ def run_tests():
     assert not _looks_like_follow_up("How long did he work there?", {})
     # Word-boundary guard: "the"/"where" must not false-trigger the pronoun rule.
     assert not _looks_like_follow_up("Where is the headquarters located?", prior_turn)
+    # Topic-switch guard: a NEW named subject without a back-referring pronoun is
+    # a fresh question, even with a generic marker like "what about".
+    assert not _looks_like_follow_up("What about Microsoft's revenue?", prior_turn)
+    assert not _looks_like_follow_up("Tell me about Google instead.", prior_turn)
+    # ...but a pronoun keeps the thread even when a new object/place is named.
+    assert _looks_like_follow_up(
+        "And how about his GPA at Johns Hopkins University?", prior_turn
+    )
+    # Naming the SAME prior subject with a marker stays a follow-up.
+    assert _looks_like_follow_up("What about Jordan's salary there?", prior_turn)
     print("- conversational follow-up detection OK")
 
     # Display formatting: the full answer (values intact) is kept, and a

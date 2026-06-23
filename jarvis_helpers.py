@@ -15,7 +15,8 @@ import math
 import signal
 import hashlib
 from contextlib import contextmanager, nullcontext
-from datetime import datetime
+from dataclasses import dataclass
+from datetime import datetime, UTC
 import tempfile
 import zipfile
 from typing import Any, Dict, List, Optional, Sequence, cast
@@ -530,6 +531,45 @@ _FOLLOW_UP_PRONOUN_RE = re.compile(
 )
 
 
+# Lowercased words that are never, on their own, a "new subject" proper noun:
+# question/lead words, conjunctions, articles, and the anaphoric pronouns. Used
+# by `_names_new_subject` to avoid mistaking these for a topic switch.
+_NON_SUBJECT_WORDS = frozenset({
+    "what", "which", "who", "whom", "whose", "when", "where", "why", "how",
+    "can", "could", "would", "should", "do", "does", "did", "is", "are",
+    "was", "were", "will", "tell", "show", "find", "and", "but", "also",
+    "additionally", "conversely", "however", "so", "then", "the", "a", "an",
+    "he", "him", "his", "she", "her", "hers", "they", "them", "their",
+    "theirs", "there", "this", "those", "these", "it", "its", "that",
+})
+
+
+def _names_new_subject(user_query: str, last_turn: dict[str, object]) -> bool:
+    """True if `user_query` introduces a Title-case proper-noun subject that does
+    not appear in the prior turn — i.e. the user switched topics rather than
+    continuing the previous one.
+
+    Used to stop follow-up context from bleeding into an unrelated question. The
+    first word is skipped (sentence-initial capitalization is not a reliable
+    proper-noun signal), and anaphoric pronouns / lead/question words are never
+    treated as subjects.
+    """
+    prior_text = " ".join(
+        str(last_turn.get(key) or "") for key in ("user_query", "effective_query")
+    ).lower()
+    for idx, raw in enumerate(str(user_query or "").split()):
+        if idx == 0:
+            continue  # sentence-initial word is unreliable (verb/common noun)
+        token = re.sub(r"'s$", "", raw.strip(".,;:!?'\"()[]"))
+        if len(token) < 2 or not re.match(r"^[A-Z][a-z]", token):
+            continue
+        if token.lower() in _NON_SUBJECT_WORDS:
+            continue
+        if token.lower() not in prior_text:
+            return True
+    return False
+
+
 def _looks_like_follow_up(user_query: str, last_turn: dict[str, object]) -> bool:
     if not last_turn.get("user_query"):
         return False
@@ -543,17 +583,26 @@ def _looks_like_follow_up(user_query: str, last_turn: dict[str, object]) -> bool
         "clarify", "dig deeper", "drill down", "instead", "narrow", "refine",
         "tell me more", "what about", "what does that mean",
     )
-    if any(marker in lowered for marker in follow_up_markers):
+    has_source_hint = bool(_extract_source_hints(user_query))
+    wants_refinement = _query_requests_reasoning(user_query) or _query_requests_refinement(user_query)
+    has_pronoun = bool(_FOLLOW_UP_PRONOUN_RE.search(lowered))
+    has_marker = any(marker in lowered for marker in follow_up_markers)
+
+    # An explicit source reference ("the answer is in X.pdf") is a deliberate
+    # continuation and always stays a follow-up.
+    if has_source_hint:
         return True
-    # Anaphoric pronouns ("he", "she", "they", "there", ...) signal the user is
-    # continuing the prior subject conversationally rather than starting fresh.
-    if _FOLLOW_UP_PRONOUN_RE.search(lowered):
-        return True
-    if _query_requests_reasoning(user_query) or _query_requests_refinement(user_query):
-        return True
-    if _extract_source_hints(user_query):
-        return True
-    return False
+
+    # Topic-switch guard: if the user names a NEW proper-noun subject and does
+    # NOT refer back with a pronoun, treat it as a fresh question so the prior
+    # turn's context does not bleed in — even when a generic marker like
+    # "what about"/"instead"/"it" is present (these double as refinement and as
+    # topic-switch phrasing). A back-referring pronoun ("his GPA at Johns
+    # Hopkins") keeps the thread because the subject is still continuous.
+    if not has_pronoun and _names_new_subject(user_query, last_turn):
+        return False
+
+    return has_marker or has_pronoun or wants_refinement
 
 
 def _is_negative_evidence_feedback(user_query: str) -> bool:
@@ -2858,6 +2907,28 @@ def suppress_external_output():
         devnull.close()
 
 
+@contextmanager
+def suppress_external_stderr():
+    """Suppress Python-level stderr chatter (phonemizer 'words count mismatch'
+    warnings, Kokoro INFO lines) WITHOUT touching sys.stdout.
+
+    Used on the background TTS worker thread. The full suppress_external_output
+    replaces the process-global sys.stdout, so when synthesis overlapped with the
+    main REPL thread's input("You: ") the prompt was written to /dev/null and
+    appeared to vanish until the next turn. Leaving sys.stdout untouched keeps the
+    interactive prompt visible while still silencing the (stderr-only) TTS noise.
+    """
+    import sys
+    stderr_backup = sys.stderr
+    devnull = open(os.devnull, 'w')
+    try:
+        sys.stderr = devnull
+        yield
+    finally:
+        sys.stderr = stderr_backup
+        devnull.close()
+
+
 # Backwards-compatible alias for existing callers that imported the
 # original PDF-specific name.
 suppress_java_warnings = suppress_external_output
@@ -3132,8 +3203,11 @@ class TTSManager:
                     audio_chunks: list[np.ndarray] = []
                     # Suppress phonemizer 'words count mismatch' warnings and
                     # any other Kokoro stderr chatter on each speak() call.
+                    # stderr-only: this runs on a background worker thread, so it
+                    # must NOT touch the process-global sys.stdout that the main
+                    # REPL thread uses for the interactive "You: " prompt.
                     pipeline_ctx = (
-                        suppress_external_output() if not tts_debug
+                        suppress_external_stderr() if not tts_debug
                         else nullcontext()
                     )
                     with pipeline_ctx:
@@ -5971,3 +6045,244 @@ def load_documents_with_cache(
         + f" (out of {len(files)} files)."
     )
     return all_docs
+
+
+# ---------------------------------------------------------------------------
+# Query handling pipeline
+# ---------------------------------------------------------------------------
+@dataclass
+class QueryRuntime:
+    """Bundle of the initialized runtime objects `handle_query` needs.
+
+    The main application (`Jarvis.py`) builds the index/retriever/LLM/TTS once at
+    startup and passes them in here, keeping the entry script thin while the full
+    RAG + fallback pipeline lives in this helpers module."""
+    all_docs: list
+    llm: object
+    doc_retriever: object | None
+    doc_chat_engine: object | None = None
+    doc_index: object | None = None
+    storage_context: object | None = None
+    response_mode: str = "query"
+    tts: object | None = None
+    persist_dir: str = "jarvis_storage"
+
+
+class _SilentTTS:
+    """Fallback no-op TTS used when a runtime has no speech manager attached."""
+
+    def speak(self, _text: str) -> None:  # pragma: no cover - trivial
+        pass
+
+
+def handle_query(
+    user_query: str,
+    runtime: QueryRuntime,
+    prior_turn: dict[str, object] | None = None,
+) -> dict[str, object]:
+    """Process a single user query through the full RAG + fallback pipeline.
+
+    Stateless: `prior_turn` supplies the previous conversational turn (or None /
+    {} for a fresh start) and the new turn dict is returned, so callers (the REPL
+    loop, smoke tests) can chain turns themselves. Uses the cached
+    index/retriever/LLM carried on `runtime` — no re-initialization."""
+    last_turn: dict[str, object] = dict(prior_turn) if prior_turn else {}
+    tts = runtime.tts or _SilentTTS()
+
+    print("\n[📄 Context Results]")
+    try:
+        effective_user_query, is_follow_up, source_hints = _effective_query_for_turn(user_query, last_turn)
+        if is_follow_up:
+            debug_print("[debug] Treated user input as a follow-up clarification.")
+            debug_print(f"[debug] Effective query: {effective_user_query}")
+        if source_hints:
+            debug_print(f"[debug] Source hints: {source_hints}")
+        negative_evidence_feedback = _is_negative_evidence_feedback(user_query)
+        if negative_evidence_feedback:
+            debug_print("[debug] User feedback rejected previous evidence; not merging prior evidence lines.")
+
+        if _query_requests_corpus_details(user_query):
+            response_text = _build_corpus_details_preview(runtime.all_docs)
+            debug_print("[debug] Used direct corpus details scan.")
+            print(f"Jarvis: {_format_response_for_display(response_text)}\n")
+            tts.speak(_spoken_response_text(response_text))
+            return {
+                "user_query": user_query,
+                "effective_query": effective_user_query,
+                "response_text": response_text,
+                "evidence_lines": [],
+            }
+
+        if _query_requests_source_details(user_query):
+            response_text = _build_source_details_preview(effective_user_query, runtime.all_docs, runtime.llm)
+            debug_print("[debug] Used direct source details scan.")
+            print(f"Jarvis: {_format_response_for_display(response_text)}\n")
+            tts.speak(_spoken_response_text(response_text))
+            return {
+                "user_query": user_query,
+                "effective_query": effective_user_query,
+                "response_text": response_text,
+                "evidence_lines": [],
+            }
+
+        if runtime.response_mode == "chat":
+            if runtime.doc_chat_engine is None:
+                raise RuntimeError("No chat engine available")
+
+            response = runtime.doc_chat_engine.chat(user_query)
+            response_text = str(response).strip()
+            debug_print("[debug] Used legacy chat response mode.")
+            if _response_is_dismissive(response_text):
+                if os.environ.get("JARVIS_ALLOW_GENERAL_KNOWLEDGE", "1") == "1":
+                    debug_print("[debug] Chat-mode response was dismissive; falling back to general LLM knowledge.")
+                    gk_answer = _answer_from_general_knowledge(effective_user_query, runtime.llm)
+                    if gk_answer:
+                        response_text = gk_answer
+                    else:
+                        response_text = (
+                            "I could not find a clear answer in the indexed documents. "
+                            "Please try rephrasing the question or asking for the relevant source file first."
+                        )
+                else:
+                    response_text = (
+                        "I could not find a clear answer in the indexed documents. "
+                        "Please try rephrasing the question or asking for the relevant source file first."
+                    )
+            print(f"Jarvis: {_format_response_for_display(response_text)}\n")
+            tts.speak(_spoken_response_text(response_text))
+            return {
+                "user_query": user_query,
+                "effective_query": effective_user_query,
+                "response_text": response_text,
+                "evidence_lines": [],
+            }
+
+        if runtime.doc_retriever is None:
+            raise RuntimeError("No retriever available")
+
+        evidence_lines, source_nodes = _retrieve_query_supported_evidence(effective_user_query, runtime.doc_retriever)
+        evidence_lines = _evidence_lines_for_turn(
+            evidence_lines,
+            last_turn,
+            is_follow_up,
+            negative_evidence_feedback,
+            source_hints,
+        )
+        debug_print(f"[debug] Retrieved source chunks: {len(source_nodes)}")
+        debug_print(f"[debug] Query-supported evidence lines: {len(evidence_lines)}")
+        for evidence_line in evidence_lines:
+            debug_print(f"[debug] Evidence: {evidence_line}")
+        if evidence_lines:
+            phrase_anchors = _query_phrase_anchors(effective_user_query)
+            page_hints = _query_page_hints(effective_user_query)
+            latest_turn_is_reasoning = _query_requests_reasoning(
+                _latest_user_turn(effective_user_query)
+            )
+            allow_keyword_extractor = (
+                not phrase_anchors
+                and not page_hints
+                and not latest_turn_is_reasoning
+            )
+            response_text = (
+                _extractive_value_answer_from_evidence(effective_user_query, evidence_lines)
+                if allow_keyword_extractor
+                else ""
+            )
+            if response_text:
+                review_passed = True
+                review_reason = "answered directly from retrieved value evidence"
+                debug_print("[debug] Used extractive value answer from retrieved evidence.")
+            else:
+                if not allow_keyword_extractor:
+                    debug_print(
+                        "[debug] Skipped keyword extractor due to phrase/page hints or reasoning intent; routing to LLM review loop."
+                    )
+                doc_scan_answer = (
+                    _extractive_value_answer_from_documents(effective_user_query, runtime.all_docs)
+                    if allow_keyword_extractor
+                    else ""
+                )
+                if doc_scan_answer:
+                    response_text = doc_scan_answer
+                    review_passed = True
+                    review_reason = "answered directly from local value evidence scan"
+                    debug_print("[debug] Used extractive value answer from local document scan.")
+                else:
+                    prior_answer_for_refinement = ""
+                    if is_follow_up:
+                        prior_answer_for_refinement = str(last_turn.get("response_text") or "")
+                    response_text, review_passed, review_reason = _answer_with_review_loop(
+                        effective_user_query,
+                        evidence_lines,
+                        runtime.llm,
+                        prior_answer=prior_answer_for_refinement,
+                    )
+        else:
+            response_text = _extractive_value_answer_from_documents(effective_user_query, runtime.all_docs)
+            if response_text:
+                review_passed = True
+                review_reason = "answered directly from local value evidence scan"
+                debug_print("[debug] Used extractive value answer from local document scan.")
+            else:
+                response_text = ""
+                review_passed = False
+                review_reason = "no query-supported evidence was retrieved"
+
+        answer_was_dismissive = bool(response_text) and _response_is_dismissive(response_text)
+
+        if review_passed and answer_was_dismissive:
+            debug_print("[debug] Reviewed answer is dismissive; demoting to trigger fallback chain.")
+            review_passed = False
+            review_reason = review_reason or "reviewed answer indicated no information in evidence"
+            response_text = ""
+
+        if not review_passed:
+            debug_print(f"[debug] Initial answer did not pass review: {review_reason}")
+            if evidence_lines and not answer_was_dismissive:
+                debug_print("[debug] Returning evidence-present fallback instead of no-evidence response.")
+                response_text = _evidence_present_fallback(evidence_lines, review_reason)
+            else:
+                if answer_was_dismissive:
+                    debug_print("[debug] Evidence chunks were rejected by the answerer as irrelevant; bypassing evidence fallback.")
+                topic_preview = _build_topic_details_preview(effective_user_query, runtime.all_docs, runtime.llm)
+                if topic_preview and not _response_is_dismissive(topic_preview):
+                    debug_print("[debug] Applied direct topic corpus fallback.")
+                    response_text = topic_preview
+                elif os.environ.get("JARVIS_ALLOW_GENERAL_KNOWLEDGE", "1") == "1":
+                    debug_print("[debug] No corpus evidence found; falling back to general LLM knowledge.")
+                    gk_answer = _answer_from_general_knowledge(effective_user_query, runtime.llm)
+                    response_text = gk_answer or _not_found_answer(effective_user_query, review_reason)
+                else:
+                    response_text = _not_found_answer(effective_user_query, review_reason)
+        else:
+            debug_print("[debug] Returning reviewed answer.")
+
+        print(f"Jarvis: {_format_response_for_display(response_text)}\n")
+        tts.speak(_spoken_response_text(response_text))
+        last_turn = {
+            "user_query": user_query,
+            "effective_query": effective_user_query,
+            "response_text": response_text,
+            "evidence_lines": evidence_lines,
+        }
+
+        if os.environ.get("JARVIS_ENABLE_CHAT_MEMORY", "0") == "1" and runtime.doc_index is not None and runtime.storage_context is not None:
+            if not review_passed or _response_is_dismissive(response_text):
+                debug_print("[debug] Skipping chat memory persistence (response was a fallback or not reviewed).")
+            else:
+                chat_doc = Document(
+                    text=f"User: {user_query}\nAssistant: {response_text}",
+                    metadata={
+                        "source": "chat_memory",
+                        "timestamp": datetime.now(UTC).isoformat(),
+                    },
+                )
+                try:
+                    runtime.doc_index.insert(chat_doc)
+                    runtime.storage_context.persist(runtime.persist_dir)
+                except Exception as e:
+                    print(f"Warning: chat memory persistence failed: {e}")
+    except Exception as e:
+        print("Context engine failed:", e)
+        tts.speak("Sorry, I encountered an error processing your request.")
+    return last_turn

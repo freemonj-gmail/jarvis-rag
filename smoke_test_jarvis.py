@@ -45,9 +45,10 @@ print("=" * 70)
 print(f"[smoke] Jarvis ready. Running {len(queries)} query/queries.")
 print("=" * 70)
 
+last_turn = {}
 for i, q in enumerate(queries, start=1):
     print(f"\n[smoke] === Query {i}/{len(queries)} ===")
     print(f"[smoke] You: {q}")
-    Jarvis.handle_query(q)
+    last_turn = Jarvis.handle_query(q, Jarvis.runtime, last_turn)
 
 print("\n[smoke] All queries complete.")
