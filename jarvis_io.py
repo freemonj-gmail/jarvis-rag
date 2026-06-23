@@ -112,3 +112,12 @@ def time_limit(seconds: Optional[float], operation: str = "operation"):
     finally:
         signal.alarm(0)
         signal.signal(signal.SIGALRM, previous_handler)
+
+
+def _is_port_open(host: str, port: str, timeout: float = 2.0) -> bool:
+    import socket as _socket
+    try:
+        with _socket.create_connection((host, int(port)), timeout=timeout):
+            return True
+    except Exception:
+        return False
