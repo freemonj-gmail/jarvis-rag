@@ -39,7 +39,12 @@ print(f"[smoke] Importing Jarvis (init will reuse extraction cache + Milvus inde
 print(f"[smoke] Queries to run: {queries}")
 print("=" * 70)
 
-import Jarvis  # noqa: E402  -- triggers full Jarvis init exactly once
+import Jarvis  # noqa: E402  -- thin entry module; no side effects on import
+
+# Build the runtime explicitly (Jarvis no longer initializes at import time).
+# This still reuses the extraction cache + Milvus manifest: only files whose
+# hash changed are re-extracted and only missing chunks are re-embedded.
+runtime = Jarvis.build()
 
 print("=" * 70)
 print(f"[smoke] Jarvis ready. Running {len(queries)} query/queries.")
@@ -49,6 +54,6 @@ last_turn = {}
 for i, q in enumerate(queries, start=1):
     print(f"\n[smoke] === Query {i}/{len(queries)} ===")
     print(f"[smoke] You: {q}")
-    last_turn = Jarvis.handle_query(q, Jarvis.runtime, last_turn)
+    last_turn = Jarvis.handle_query(q, runtime, last_turn)
 
 print("\n[smoke] All queries complete.")
