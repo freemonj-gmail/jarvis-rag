@@ -25,6 +25,7 @@ from jarvis_config import (
 from jarvis_io import (
     JavaWarningFilter,
     _is_port_open,
+    read_user_query,
     suppress_external_output,
     suppress_external_stderr,
     suppress_java_warnings,

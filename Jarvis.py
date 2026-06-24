@@ -21,6 +21,7 @@ if os.environ.get("JARVIS_DEBUG_HTTP", "0") != "1":
 
 from jarvis_bootstrap import build_runtime
 from jarvis_answer import QueryRuntime, handle_query
+from jarvis_io import read_user_query
 
 
 def _resolve_input_dir(argv: list[str]) -> str:
@@ -42,10 +43,12 @@ def main(argv: list[str] | None = None) -> int:
     """Run the interactive question/answer REPL."""
     runtime = build(argv)
     print("\n\nAsk questions about your data! Type 'exit' to quit.")
+    print("For long, multi-paragraph input, type '<<<', paste your text, "
+          "then type '>>>' (or press Ctrl-D) to submit.")
 
     last_turn: dict[str, object] = {}
     while True:
-        user_query = input("You: ")
+        user_query = read_user_query("You: ")
         if user_query.strip().lower() in ["exit", "quit"]:
             print("Goodbye!")
             runtime.tts.say_goodbye()

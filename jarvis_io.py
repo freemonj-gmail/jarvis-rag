@@ -121,3 +121,49 @@ def _is_port_open(host: str, port: str, timeout: float = 2.0) -> bool:
             return True
     except Exception:
         return False
+
+
+def read_user_query(
+    prompt: str = "You: ",
+    *,
+    open_marker: str = "<<<",
+    close_marker: str = ">>>",
+) -> str:
+    """Read a query from stdin, supporting large multi-line / multi-paragraph input.
+
+    The built-in ``input()`` returns at the first newline, so pasting text that
+    contains blank lines between paragraphs only captures the first line; the
+    rest spills into later prompts. Terminals also cap a single canonical-mode
+    line at ``MAX_CANON`` (~1024 bytes on macOS), truncating very long lines
+    before Python sees them. Neither limit is related to the LLM context window.
+
+    Behaviour:
+    - Fast path (unchanged): type a line and press Enter to submit immediately.
+    - Paste / multi-line mode: enter a line that is exactly ``open_marker``
+      (``<<<``) to begin, then paste or type any number of lines (blank lines
+      and paragraph breaks are preserved), and finish with a line that is exactly
+      ``close_marker`` (``>>>``) or end-of-input (Ctrl-D). The wrapper markers
+      themselves are stripped from the returned text. Reading line-by-line also
+      sidesteps the per-line terminal cap because each line is read separately.
+
+    EOF (Ctrl-D) at the top-level prompt returns ``"exit"`` so the REPL can quit
+    cleanly instead of raising ``EOFError``.
+    """
+    try:
+        first_line = input(prompt)
+    except EOFError:
+        return "exit"
+
+    if first_line.strip() != open_marker:
+        return first_line
+
+    lines: list[str] = []
+    while True:
+        try:
+            line = input()
+        except EOFError:
+            break
+        if line.strip() == close_marker:
+            break
+        lines.append(line)
+    return "\n".join(lines)
