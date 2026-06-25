@@ -257,6 +257,67 @@ def _query_requests_enumeration(user_query: str) -> bool:
     return any(cue in lowered for cue in _ENUMERATION_CUES)
 
 
+# Verbs that signal the user wants Jarvis to AUTHOR/compose a new document
+# (organize + summarize + format) rather than answer a factual lookup. Paired
+# with a document-type noun below.
+_AUTHORING_VERBS = (
+    "create", "write", "draft", "compose", "generate", "build", "make",
+    "produce", "prepare", "put together", "assemble", "format", "tailor",
+    "update", "revise", "rewrite", "rework", "polish", "design",
+)
+# Document types Jarvis can author from ANY indexed corpus (domain-agnostic):
+# career docs, legal/financial briefs, research summaries, narratives, etc.
+_AUTHORING_NOUNS = (
+    "document", "summary", "report", "brief", "memo", "memorandum", "abstract",
+    "overview", "synopsis", "digest", "outline", "proposal", "narrative",
+    "statement", "essay", "letter", "cover letter", "bio", "biography",
+    "profile", "resume", "résumé", "cv", "curriculum vitae", "portfolio",
+    "linkedin", "elevator pitch", "objective", "headline", "write-up", "writeup",
+)
+
+
+def _query_requests_authoring(user_query: str) -> bool:
+    """True when the user asks Jarvis to COMPOSE a new document (summary, report,
+    brief, letter, resume, etc.) from the indexed material rather than answer a
+    factual question about it.
+
+    DOMAIN-AGNOSTIC: this gates purely on a generic authoring verb + a generic
+    document-type noun, with no assumption about subject matter, so it works for
+    any corpus (career records, contracts, research papers, financial filings,
+    fiction, etc.). Authoring requests need the LLM to organize, summarize, and
+    format across many documents — work the strict-grounding answer+review loop
+    rejects as "not traceable to a single evidence line". When this returns True
+    the pipeline routes to a single uncapped composition pass that uses retrieved
+    evidence as source material without the factual-review gate.
+    """
+    lowered = " ".join((user_query or "").lower().split())
+    if not lowered:
+        return False
+    # Must name a document type to author.
+    if not any(re.search(rf"\b{re.escape(noun)}\b", lowered) for noun in _AUTHORING_NOUNS):
+        return False
+    # The authoring verb must appear as an IMPERATIVE or a request addressed to
+    # the assistant — not merely co-occur inside a factual wh-question such as
+    # "what statement did he make" or "which report did they generate". This
+    # keeps the gate precise across arbitrary corpora and question phrasings.
+    verb_alt = "|".join(re.escape(verb) for verb in _AUTHORING_VERBS)
+    # (a) Imperative at/near the start, optionally after a polite lead-in.
+    if re.match(rf"^(?:please\s+|kindly\s+|pls\s+|now\s+|go\s+ahead\s+and\s+)*(?:{verb_alt})\b", lowered):
+        return True
+    # (b) Explicit request directed at the assistant, e.g. "can you draft",
+    #     "could you please write", "please generate", "i need you to compose".
+    request_lead = (
+        r"(?:can|could|would|will)\s+you(?:\s+please)?"
+        r"|please|kindly"
+        r"|i\s+(?:want|need|would\s+like|'d\s+like)\s+(?:you\s+)?to"
+        r"|help\s+me(?:\s+to)?"
+        r"|let'?s"
+    )
+    if re.search(rf"\b(?:{request_lead})\s+(?:{verb_alt})\b", lowered):
+        return True
+    return False
+
+
 def _effective_query_for_turn(user_query: str, last_turn: dict[str, object]) -> tuple[str, bool, list[str]]:
     source_hints = _extract_source_hints(user_query)
     if not _looks_like_follow_up(user_query, last_turn):

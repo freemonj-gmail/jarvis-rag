@@ -25,7 +25,9 @@ from llama_index.llms.ollama import Ollama
 from jarvis_config import JARVIS_DEBUG, debug_print
 from jarvis_textproc import is_low_information_text, normalize_text
 from jarvis_speech import (
+    _INLINE_CITATION_RE,
     _SOURCE_REFERENCE_RE,
+    _SPEECH_DOC_RUN_RE,
     _SilentTTS,
     _spoken_response_text,
 )
@@ -50,6 +52,7 @@ from jarvis_query import (
     _query_anchor_terms,
     _query_page_hints,
     _query_phrase_anchors,
+    _query_requests_authoring,
     _query_requests_corpus_details,
     _query_requests_reasoning,
     _query_requests_refinement,
@@ -701,6 +704,22 @@ def _llm_output_budget(llm_client: Ollama, num_predict: int):
             extra["num_predict"] = previous
 
 
+# Detects employment / work-history questions so the held-vs-offer grounding
+# rule below is injected ONLY for those queries, keeping the synthesis contract
+# DOMAIN-AGNOSTIC for every other corpus (legal, financial, scientific, etc.).
+_EMPLOYMENT_QUERY_RE = re.compile(
+    r"\b(jobs?|positions?|roles?|employ(?:er|ers|ee|ed|ment)?|worked|"
+    r"work\s+history|career|hired|held|hold)\b",
+    re.IGNORECASE,
+)
+# Optional grounding rule appended only for employment queries: distinguishes a
+# HELD position from a mere offer/application. Keeps the validated behavior for
+# career corpora without leaking a career assumption into other domains.
+_EMPLOYMENT_GROUNDING_RULE = (
+    "- When the question asks which jobs/positions/roles a person HELD or WORKED, do NOT count a job offer, offer letter, application, KSA, resume objective, or job announcement/posting as a held position. Those show candidacy or intent, not employment. Only list a position when the evidence shows the person actually worked there (e.g., a dated work-history entry with employer and title, a payroll/personnel record, or a role marked 'Present'). If a document is only an offer or application, you may mention it separately and explicitly as an offer/application, never as a job held.\n"
+)
+
+
 def _synthesize_evidence_answer(
     user_query: str,
     evidence_lines: list[str],
@@ -743,13 +762,17 @@ def _synthesize_evidence_answer(
     grounding_contract = (
         "STRICT GROUNDING CONTRACT (do not violate):\n"
         "- Use ONLY facts that appear in the Evidence section below (retrieved from the indexed Milvus vector store and local document manifest).\n"
-        "- Do NOT use outside knowledge, prior training data, general tax/legal/financial rules, or assumptions.\n"
+        "- Do NOT use outside knowledge, prior training data, general domain rules (e.g. tax, legal, financial, medical, scientific), or assumptions.\n"
         "- Every concrete claim, number, date, name, or rule MUST be traceable to a specific evidence line. Cite the source label in parentheses when stating it.\n"
         "- Use whatever IS present in the evidence to answer as completely as possible. Partial evidence is still useful — extract names, amounts, line items, dates, and forms that match the question even if the exact phrasing differs.\n"
         "- Only after you have surfaced the relevant evidence should you note any specific sub-detail that the evidence does not contain. Never refuse outright when related evidence is present.\n"
         "- Cautious inference is allowed ONLY when the user explicitly asked for reasoning/implications, and must be labeled as inference from the cited evidence.\n"
-        "- When the question asks which jobs/positions/roles a person HELD or WORKED, do NOT count a job offer, offer letter, application, KSA, resume objective, or job announcement/posting as a held position. Those show candidacy or intent, not employment. Only list a position when the evidence shows the person actually worked there (e.g., a dated work-history entry with employer and title, a payroll/personnel record, or a role marked 'Present'). If a document is only an offer or application, you may mention it separately and explicitly as an offer/application, never as a job held.\n\n"
     )
+    # Append the employment-specific rule ONLY for work-history queries so the
+    # contract stays domain-agnostic for every other corpus.
+    if _EMPLOYMENT_QUERY_RE.search(user_query or ""):
+        grounding_contract += _EMPLOYMENT_GROUNDING_RULE
+    grounding_contract += "\n"
 
     prompt = (
         _reasoning_guidance(user_query)
@@ -979,6 +1002,77 @@ def _answer_from_general_knowledge(user_query: str, llm_client: Any) -> str:
     return prefix + answer
 
 
+def _author_from_evidence(
+    user_query: str,
+    evidence_lines: list[str],
+    llm_client: Any,
+) -> str:
+    """Compose a NEW document of any kind (summary, report, letter, brief, bio,
+    resume, etc.) from the retrieved corpus evidence.
+
+    Unlike ``_synthesize_evidence_answer`` (factual lookup under a strict
+    grounding contract + review loop), this is the AUTHORING lane: the model may
+    organize, summarize, rephrase, and format the supplied facts into a polished
+    document. It runs a SINGLE uncapped generation pass with NO answer-review
+    loop — that loop is tuned to reject composed/structured output as "not
+    traceable to a single evidence line". The prompt is intentionally
+    DOMAIN-AGNOSTIC: it makes no assumption about the subject matter (career,
+    legal, financial, scientific, narrative, etc.). Retrieved evidence is the
+    preferred source of facts; the model is told not to fabricate specifics
+    (names, dates, numbers, quotes) absent from the material.
+    """
+    query = (user_query or "").strip()
+    if not query:
+        return ""
+    material = "\n".join(evidence_lines).strip()
+    if material:
+        source_block = (
+            "Source material — excerpts retrieved from the user's own indexed "
+            "documents. Use these as the factual basis:\n"
+            f"{material}\n\n"
+        )
+        grounding_note = (
+            "- Base every concrete fact (names, dates, numbers, amounts, terms, "
+            "quotations, identifiers) on the source material below.\n"
+            "- Do NOT invent specifics (names, dates, numbers, or quotations) that "
+            "are absent from the material. If a useful detail is missing, write a "
+            "strong line without fabricating specifics, or leave a clearly marked "
+            "[ADD: ...] placeholder for the user to fill in.\n"
+            "- You MAY rephrase, summarize, reorganize, condense, and write "
+            "polished prose and appropriate formatting from those facts.\n"
+        )
+    else:
+        source_block = ""
+        grounding_note = (
+            "- No indexed source material was retrieved for this request. Produce a "
+            "well-structured document and use clearly marked [ADD: ...] placeholders "
+            "for any specific facts the user must supply.\n"
+        )
+    prompt = (
+        "You are an expert writer and editor. Compose exactly the document the "
+        "user requests, in whatever form, subject, and structure they describe, "
+        "fully formatted and ready to use.\n"
+        "Infer the appropriate document type, tone, and layout from the user's "
+        "request itself — do not assume any particular domain.\n"
+        "Follow every structural, formatting, and length instruction in the "
+        "request precisely.\n\n"
+        + grounding_note
+        + "\n"
+        + source_block
+        + f"User request:\n{query}\n\nDocument:\n"
+    )
+    try:
+        with _llm_output_budget(llm_client, -1):
+            response = llm_client.chat([ChatMessage(role=MessageRole.USER, content=prompt)])
+        answer = (response.message.content or "").strip()
+        if not answer:
+            debug_print("[debug] Authoring LLM returned empty completion despite uncapped num_predict.")
+        return answer
+    except Exception as exc:
+        debug_print(f"[debug] Authoring LLM call failed: {exc}")
+        return ""
+
+
 def _evidence_present_fallback(evidence_lines: list[str], reason: str = "") -> str:
     if not evidence_lines:
         return ""
@@ -1017,23 +1111,55 @@ def _extract_source_references(text: str) -> list[str]:
     return references
 
 
-def _format_response_for_display(response_text: str) -> str:
-    """Render the full answer followed by a 'References' block that lists each
-    unique source (file + page) named in the answer.
+def _strip_citations_for_display(text: str) -> str:
+    """Remove inline source citations from the answer BODY for display.
 
-    The answer prose — including every value and inline citation — is preserved
-    verbatim; only a de-duplicated source list is appended underneath. If the
-    answer names no sources, it is returned unchanged. Spoken/TTS output is
-    produced elsewhere (`_spoken_response_text` / `_summarize_for_speech`) and is
-    unaffected by this function."""
+    Fully parenthetical citations like "(Resume.docx, page 3)" or "(page 12)"
+    are deleted outright; bare filenames woven into sentence grammar ("listed in
+    Application.pdf") are replaced with the neutral phrase "the document(s)" so
+    the prose stays grammatical. Factual content (values, dates, names) is kept
+    verbatim — only the source labels are removed, since they are listed once in
+    the dedicated References block underneath. This mirrors the TTS citation
+    suppression so the printed and spoken answers read consistently.
+    """
+    if not text:
+        return text
+    # 1. Drop fully parenthetical citations wholesale (incl. the parentheses).
+    cleaned = _INLINE_CITATION_RE.sub("", text)
+    # 2. Neutralize bare in-prose filenames (+ any trailing page) to a placeholder.
+    cleaned = _SOURCE_REFERENCE_RE.sub("the document", cleaned)
+    cleaned = _SPEECH_DOC_RUN_RE.sub("the documents", cleaned)
+    # 3. Recapitalize the placeholder when it begins a sentence or line.
+    cleaned = re.sub(
+        r"(^|[.!?]\s+|\n)\s*the (documents?)\b",
+        lambda m: f"{m.group(1)}The {m.group(2)}",
+        cleaned,
+    )
+    # 4. Tidy artifacts left by removal: space before punctuation, space runs.
+    cleaned = re.sub(r"\s+([.,;:!?])", r"\1", cleaned)
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+    return cleaned.strip()
+
+
+def _format_response_for_display(response_text: str) -> str:
+    """Render the answer followed by a 'References' block that lists each unique
+    source (file + page) named in the answer.
+
+    Inline source citations are stripped from the answer prose (see
+    `_strip_citations_for_display`) and collected once into the de-duplicated
+    References list appended underneath — every value, date, and name in the
+    answer is preserved. If the answer names no sources, it is returned
+    unchanged. Spoken/TTS output is produced elsewhere (`_spoken_response_text`)
+    from the raw answer and is unaffected by this function."""
     if not response_text:
         return ""
     body = response_text.strip()
     references = _extract_source_references(body)
+    display_body = _strip_citations_for_display(body)
     if not references:
-        return body
+        return display_body
     ref_block = "\n".join(f"  - {ref}" for ref in references)
-    return f"{body}\n\nReferences:\n{ref_block}"
+    return f"{display_body}\n\nReferences:\n{ref_block}"
 
 
 def _build_topic_details_preview(user_query: str, documents: list[Document], llm_client: Ollama, max_items: int = 4) -> str:
@@ -1440,6 +1566,21 @@ def handle_query(
         debug_print(f"[debug] Query-supported evidence lines: {len(evidence_lines)}")
         for evidence_line in evidence_lines:
             debug_print(f"[debug] Evidence: {evidence_line}")
+
+        if _query_requests_authoring(user_query):
+            response_text = _author_from_evidence(effective_user_query, evidence_lines, runtime.llm)
+            if response_text:
+                debug_print("[debug] Used authoring/composition path (single pass, no review loop).")
+                print(f"Jarvis: {_format_response_for_display(response_text)}\n")
+                tts.speak(_spoken_response_text(response_text))
+                return {
+                    "user_query": user_query,
+                    "effective_query": effective_user_query,
+                    "response_text": response_text,
+                    "evidence_lines": evidence_lines,
+                }
+            debug_print("[debug] Authoring path returned empty; falling through to standard pipeline.")
+
         if evidence_lines:
             phrase_anchors = _query_phrase_anchors(effective_user_query)
             page_hints = _query_page_hints(effective_user_query)
