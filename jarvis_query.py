@@ -225,36 +225,93 @@ def _query_requests_reasoning(user_query: str) -> bool:
     return conditional_reasoning or any(marker in lowered for marker in reasoning_markers)
 
 
-# Plural nouns whose presence (with an enumeration cue) signals the user wants a
-# COMPLETE list aggregated across the corpus rather than a single focused fact.
-_ENUMERATION_NOUNS = (
-    "jobs", "positions", "roles", "titles", "employers", "companies",
-    "organizations", "workplaces", "certifications", "certificates",
-    "degrees", "schools", "universities", "clearances", "projects",
-    "publications", "patents", "awards", "skills",
+# --- Enumeration / "list everything" intent (vocabulary-free) ---------------
+# Cues that signal the user wants a COMPLETE list rather than a single fact.
+# "Strong" cues imply enumeration on their own; "weak" cues only count when the
+# enumerated noun is itself plural (a morphological list signal). NO domain or
+# dataset vocabulary is hardcoded — the enumerated noun is read from the query,
+# so this works identically for resumes, contracts, recipes, case law, etc.
+_STRONG_ENUM_CUES = (
+    "list", "enumerate", "every", "each", "all of", "how many",
+    "name all", "name every", "name each",
 )
-_ENUMERATION_CUES = (
-    "all", "every", "each", "list", "enumerate", "name the", "what",
-    "which", "how many", "give me", "show me", "tell me",
+_WEAK_ENUM_CUES = (
+    "what", "which", "name the", "give me", "show me", "tell me",
 )
+# Words that are never the SUBJECT being enumerated (command/instruction verbs
+# and auxiliaries); excluded when reading the enumerated noun from the query.
+# Purely grammatical function words — not tied to any dataset.
+_NON_TARGET_WORDS = frozenset({
+    "list", "enumerate", "name", "give", "provide", "show", "tell", "find",
+    "identify", "itemize", "describe", "summarize", "summarise", "explain",
+    "define", "outline", "detail", "compare", "contrast", "create", "write",
+    "draft", "compose", "generate", "make", "build", "prepare", "produce",
+    "update", "revise", "format", "tailor", "design", "search", "get",
+    "display", "print", "return", "gather", "collect", "review",
+    "has", "have", "had", "does", "did", "are", "was", "were", "been", "being",
+    # Quantifiers / prepositions / fillers that survive the length filter but are
+    # never the enumerated subject (kept out so the boost targets stay clean).
+    "every", "each", "many", "much", "any", "some", "more", "most", "than",
+    "over", "under", "about", "into", "onto", "from", "with", "that", "this",
+    "they", "them", "their", "there", "here", "then", "also", "only", "just",
+})
+# Singular words that end in "s" -> must NOT be mistaken for plurals.
+_NON_PLURAL_S_WORDS = frozenset({
+    "status", "analysis", "diagnosis", "synopsis", "series", "species",
+    "address", "business", "process", "access", "progress", "congress",
+    "bonus", "census", "campus", "focus", "virus", "basis", "thesis",
+    "crisis", "lens", "news", "always",
+})
+
+
+def _looks_plural(term: str) -> bool:
+    """Heuristic morphological test: a content word that signals a list."""
+    t = term.lower()
+    return len(t) > 3 and t.endswith("s") and t not in _NON_PLURAL_S_WORDS
+
+
+def _query_enumeration_target(user_query: str) -> list[str]:
+    """The content noun(s) the user is asking to enumerate, read straight from
+    the query — NOT matched against any fixed vocabulary, so it works for ANY
+    dataset (publications, patents, clauses, ingredients, exhibits, ...).
+
+    Drops proper-noun anchors (names like "Jordan"), command/instruction verbs,
+    and auxiliaries, keeping the subject the user wants listed. Used to (a) detect
+    enumeration intent and (b) boost chunks that actually contain that subject.
+    """
+    terms = _query_terms(user_query)
+    anchors = set(_query_anchor_terms(user_query, terms))
+    targets = [
+        term
+        for term in terms
+        if term not in anchors and term not in _NON_TARGET_WORDS and len(term) > 3
+    ]
+    return targets[:3]
 
 
 def _query_requests_enumeration(user_query: str) -> bool:
     """True when the query asks to list EVERY matching item across the corpus.
 
-    Enumeration/aggregation queries (e.g. "what jobs has Jordan held",
-    "list every employer", "which companies did he work for") must surface the
-    complete set. For these the per-chunk focused snippet (which keeps only a
-    query-centered window) silently drops the oldest/lowest-density entries, so
-    the retrieval layer sends fuller chunks and skips topic-coverage dedup when
-    this returns True.
+    Vocabulary-free: enumeration is inferred from listing cues plus the grammar
+    of the query, never from a curated noun list. A strong listing cue
+    ("list", "every", "how many", ...) triggers on its own; a weak cue
+    ("what", "which", ...) only triggers when the enumerated noun is plural.
+
+    Enumeration queries must surface the COMPLETE set, so the retrieval layer
+    sends fuller chunks, skips topic-coverage dedup, and boosts chunks that
+    contain the enumerated subject when this returns True.
     """
     lowered = " ".join((user_query or "").lower().split())
     if not lowered:
         return False
-    if not any(re.search(rf"\b{re.escape(noun)}\b", lowered) for noun in _ENUMERATION_NOUNS):
+    targets = _query_enumeration_target(user_query)
+    if not targets:
         return False
-    return any(cue in lowered for cue in _ENUMERATION_CUES)
+    if any(cue in lowered for cue in _STRONG_ENUM_CUES):
+        return True
+    if any(cue in lowered for cue in _WEAK_ENUM_CUES) and any(_looks_plural(t) for t in targets):
+        return True
+    return False
 
 
 # Verbs that signal the user wants Jarvis to AUTHOR/compose a new document
@@ -400,9 +457,22 @@ def _query_terms(user_query: str) -> list[str]:
 
 
 def _query_anchor_terms(user_query: str, terms: list[str]) -> list[str]:
+    # Words that are NOT topical anchors even when capitalized at the start of a
+    # query. Anchors gate which chunks are considered relevant, so an imperative
+    # lead verb like "List"/"Create" must never become an anchor — otherwise it
+    # matches the common word in unrelated documents (e.g. "list" in technical
+    # PDFs) and floods retrieval with off-topic chunks, crowding the real answer
+    # out of the evidence cap.
     question_words = {
         "Answer", "Can", "Could", "Evidence", "File", "Find", "How", "It",
         "Show", "Tell", "The", "This", "What", "Which", "You",
+        # Imperative / instruction lead verbs (enumeration, description, authoring):
+        "List", "Enumerate", "Name", "Give", "Provide", "Identify", "Itemize",
+        "Describe", "Summarize", "Summarise", "Explain", "Define", "Outline",
+        "Detail", "Compare", "Contrast", "Create", "Write", "Draft", "Compose",
+        "Generate", "Make", "Build", "Prepare", "Produce", "Update", "Revise",
+        "Format", "Tailor", "Design", "Search", "Get", "Display", "Print",
+        "Return", "Gather", "Collect", "Review",
     }
     anchors = []
 

@@ -29,6 +29,21 @@ from jarvis_query import (
     _value_numbers,
 )
 
+# Reciprocal-rank-fusion damping constant for aggregating a node's relevance
+# across the multiple retrieval-query paraphrases (standard RRF k=60).
+_RRF_K = 60
+
+
+def _node_identity(node: object) -> object:
+    """Stable identity for a retrieved node, used to aggregate its relevance
+    across query variants and to look that relevance back up when ranking
+    evidence. Mirrors the dedup key used during retrieval."""
+    return (
+        getattr(node, "node_id", None)
+        or getattr(getattr(node, "node", None), "node_id", None)
+        or id(node)
+    )
+
 
 def _source_nodes_to_evidence_lines(source_nodes: list[object], max_items: int = 8) -> list[str]:
     evidence_lines = []
@@ -59,6 +74,7 @@ def _source_nodes_to_query_evidence_lines(
     source_nodes: list[object],
     max_items: int = 8,
     source_hints: list[str] | None = None,
+    node_relevance: dict[object, float] | None = None,
 ) -> list[str]:
     terms = _query_terms(user_query)
     anchor_terms = _query_anchor_terms(user_query, terms)
@@ -66,8 +82,15 @@ def _source_nodes_to_query_evidence_lines(
     enumerate_full = _query_requests_enumeration(user_query)
     enum_max_chars = int(os.environ.get("JARVIS_ENUM_CHUNK_CHARS", "8000"))
     hint_basenames = {os.path.basename(h).lower() for h in (source_hints or []) if h}
+    node_relevance = node_relevance or {}
 
-    ranked: list[tuple[int, set[str], str]] = []
+    # Each candidate carries the hybrid retriever's aggregated cross-variant
+    # relevance (RRF) as the PRIMARY ranking signal; the lexical score is kept
+    # only as a grounding gate (score > 0) and tiebreaker. The retriever already
+    # fuses BM25 + dense semantics, so trusting its relevance prevents the lexical
+    # heuristic from burying a concise on-topic section under verbose, tangential
+    # chunks that merely repeat the query words.
+    ranked: list[tuple[float, int, set[str], str]] = []
     forced: list[str] = []  # source-hint matches bypass the score filter
     for node in source_nodes:
         try:
@@ -112,6 +135,7 @@ def _source_nodes_to_query_evidence_lines(
         score = _query_candidate_score(search_text, terms, anchor_terms, require_value)
         if score <= 0:
             continue
+        relevance = node_relevance.get(_node_identity(node), 0.0)
 
         if enumerate_full:
             # Enumeration query: send the full chunk (capped) so older/lower-density
@@ -127,16 +151,17 @@ def _source_nodes_to_query_evidence_lines(
                 continue
 
         coverage = _query_topic_coverage(snippet, terms, anchor_terms)
-        ranked.append((score, coverage, f"- {label}: {snippet}"))
+        ranked.append((relevance, score, coverage, f"- {label}: {snippet}"))
 
-    ranked.sort(key=lambda item: item[0], reverse=True)
+    # Primary sort: retriever relevance (RRF). Secondary: lexical grounding score.
+    ranked.sort(key=lambda item: (item[0], item[1]), reverse=True)
     selected = list(forced)  # source-hinted evidence first
 
     if enumerate_full:
         # Aggregation queries must list EVERY matching item, so skip the
         # topic-coverage dedup (which drops same-topic chunks such as additional
-        # resume entries) and take the highest-scored full chunks directly.
-        for _, _, line in ranked:
+        # resume entries) and take the highest-ranked full chunks directly.
+        for _, _, _, line in ranked:
             if line in selected:
                 continue
             selected.append(line)
@@ -146,7 +171,7 @@ def _source_nodes_to_query_evidence_lines(
 
     covered_topics: set[str] = set()
 
-    for _, coverage, line in ranked:
+    for _, _, coverage, line in ranked:
         if line in selected:
             continue
         if coverage - covered_topics:
@@ -155,7 +180,7 @@ def _source_nodes_to_query_evidence_lines(
             if len(selected) >= max_items:
                 return selected
 
-    for _, _, line in ranked:
+    for _, _, _, line in ranked:
         if line in selected:
             continue
         selected.append(line)
@@ -193,6 +218,11 @@ def _retrieve_query_supported_evidence(
     max_evidence = max(1, int(os.environ.get("JARVIS_MAX_EVIDENCE_LINES", "30")))
     all_nodes = []
     seen_node_ids = set()
+    # Aggregate each node's relevance across all query paraphrases with RRF so a
+    # chunk consistently retrieved high by the hybrid (BM25 + dense) retriever
+    # outranks one that merely repeats the query words. This is the primary
+    # evidence-ordering signal (see _source_nodes_to_query_evidence_lines).
+    node_relevance: dict[object, float] = {}
 
     for attempt, retrieval_query in enumerate(_retrieval_query_variants(user_query)[:max_queries], start=1):
         debug_print(f"[debug] Retrieval attempt {attempt}: {retrieval_query}")
@@ -202,8 +232,9 @@ def _retrieve_query_supported_evidence(
             debug_print(f"[debug] Retrieval attempt {attempt} failed: {e}")
             continue
 
-        for node in nodes:
-            node_id = getattr(node, "node_id", None) or getattr(getattr(node, "node", None), "node_id", None) or id(node)
+        for rank, node in enumerate(nodes):
+            node_id = _node_identity(node)
+            node_relevance[node_id] = node_relevance.get(node_id, 0.0) + 1.0 / (_RRF_K + rank)
             if node_id in seen_node_ids:
                 continue
             seen_node_ids.add(node_id)
@@ -226,6 +257,7 @@ def _retrieve_query_supported_evidence(
         all_nodes,
         max_items=max_evidence,
         source_hints=source_hints,
+        node_relevance=node_relevance,
     )
     return evidence_lines, all_nodes
 
