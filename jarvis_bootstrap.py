@@ -298,6 +298,34 @@ def _build_tts():
     return TTSManager()
 
 
+def _partition_home_files(input_dir: str, indexed_docs: list) -> tuple[list[str], list[str]]:
+    """Split the launch folder's files into (indexed, excluded) basenames.
+
+    `indexed` = files that produced at least one chunk that survived extraction +
+    informativeness filtering; `excluded` = files that physically exist but
+    yielded no usable chunk (e.g. unreadable scans where OCR found no text). Both
+    are returned so the References block can list every provided-folder file —
+    indexed ones plainly, excluded ones annotated — regardless of whether the LLM
+    happened to cite them (filenames with spaces are unreliable in prose)."""
+    supported = tuple(ext.lower() for ext in (DOCUMENT_EXTENSIONS + IMAGE_EXTENSIONS))
+    present: dict[str, str] = {}
+    for root, _, files in os.walk(input_dir):
+        for fname in files:
+            if fname.lower().endswith(supported):
+                fpath = os.path.join(root, fname)
+                present[os.path.abspath(fpath).lower()] = os.path.basename(fpath)
+    indexed_keys: set[str] = set()
+    for doc in indexed_docs:
+        meta = getattr(doc, "metadata", None) or {}
+        fpath = str(meta.get("file_path") or "")
+        if fpath and fpath != "__summary__":
+            indexed_keys.add(os.path.abspath(fpath).lower())
+    items = sorted(present.items(), key=lambda kv: kv[1].lower())
+    indexed = [name for key, name in items if key in indexed_keys]
+    excluded = [name for key, name in items if key not in indexed_keys]
+    return indexed, excluded
+
+
 def build_runtime(input_dir: str) -> QueryRuntime:
     """Perform all one-time startup work and return a ready `QueryRuntime`."""
     llm = _build_llm()
@@ -357,6 +385,13 @@ def build_runtime(input_dir: str) -> QueryRuntime:
 
     tts_manager = _build_tts()
 
+    home_indexed_files, home_excluded_files = _partition_home_files(input_dir, all_docs)
+    if home_excluded_files:
+        print(
+            "[jarvis] Launch-folder files present but not indexed "
+            f"(no extractable data): {home_excluded_files}"
+        )
+
     return QueryRuntime(
         all_docs=all_docs,
         llm=llm,
@@ -367,4 +402,7 @@ def build_runtime(input_dir: str) -> QueryRuntime:
         response_mode=response_mode,
         tts=tts_manager,
         persist_dir=PERSIST_DIR,
+        home_corpus_dir=os.path.abspath(input_dir),
+        home_indexed_files=home_indexed_files,
+        home_excluded_files=home_excluded_files,
     )

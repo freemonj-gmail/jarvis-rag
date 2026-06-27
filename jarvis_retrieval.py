@@ -75,6 +75,7 @@ def _source_nodes_to_query_evidence_lines(
     max_items: int = 8,
     source_hints: list[str] | None = None,
     node_relevance: dict[object, float] | None = None,
+    home_corpus_dir: str | None = None,
 ) -> list[str]:
     terms = _query_terms(user_query)
     anchor_terms = _query_anchor_terms(user_query, terms)
@@ -83,6 +84,7 @@ def _source_nodes_to_query_evidence_lines(
     enum_max_chars = int(os.environ.get("JARVIS_ENUM_CHUNK_CHARS", "8000"))
     hint_basenames = {os.path.basename(h).lower() for h in (source_hints or []) if h}
     node_relevance = node_relevance or {}
+    home_root = (os.path.abspath(home_corpus_dir).lower() + os.sep) if home_corpus_dir else None
 
     # Each candidate carries the hybrid retriever's aggregated cross-variant
     # relevance (RRF) as the PRIMARY ranking signal; the lexical score is kept
@@ -90,8 +92,15 @@ def _source_nodes_to_query_evidence_lines(
     # fuses BM25 + dense semantics, so trusting its relevance prevents the lexical
     # heuristic from burying a concise on-topic section under verbose, tangential
     # chunks that merely repeat the query words.
-    ranked: list[tuple[float, int, set[str], str]] = []
+    ranked: list[tuple[float, int, set[str], object, str]] = []
     forced: list[str] = []  # source-hint matches bypass the score filter
+    # Launch-folder ("home") chunks kept as gate-relaxed candidates so a small
+    # provided folder is never fully crowded out of the evidence by a larger
+    # accumulated cross-directory corpus (see the home-corpus floor below).
+    home_candidates: list[tuple[float, int, object, str]] = []
+    home_node_count = 0
+    total_node_count = 0
+    selected_ids: set[object] = set()
     for node in source_nodes:
         try:
             node_text = (node.get_content() or "").strip()
@@ -133,9 +142,21 @@ def _source_nodes_to_query_evidence_lines(
             continue
 
         score = _query_candidate_score(search_text, terms, anchor_terms, require_value)
+        relevance = node_relevance.get(_node_identity(node), 0.0)
+        identity = _node_identity(node)
+        total_node_count += 1
+
+        is_home = bool(home_root) and bool(node_fpath) and node_fpath.startswith(home_root)
+        if is_home:
+            home_node_count += 1
+            home_max = int(os.environ.get("JARVIS_HOME_CHUNK_CHARS", "8000"))
+            home_snippet = " ".join(node_text.split())[:home_max].rstrip()
+            if len(node_text) > home_max:
+                home_snippet += "..."
+            home_candidates.append((relevance, score, identity, f"- {label}: {home_snippet}"))
+
         if score <= 0:
             continue
-        relevance = node_relevance.get(_node_identity(node), 0.0)
 
         if enumerate_full:
             # Enumeration query: send the full chunk (capped) so older/lower-density
@@ -151,39 +172,59 @@ def _source_nodes_to_query_evidence_lines(
                 continue
 
         coverage = _query_topic_coverage(snippet, terms, anchor_terms)
-        ranked.append((relevance, score, coverage, f"- {label}: {snippet}"))
+        ranked.append((relevance, score, coverage, identity, f"- {label}: {snippet}"))
 
     # Primary sort: retriever relevance (RRF). Secondary: lexical grounding score.
     ranked.sort(key=lambda item: (item[0], item[1]), reverse=True)
     selected = list(forced)  # source-hinted evidence first
 
+    # Home-corpus floor: when the launch folder is a MINORITY of the indexed
+    # collection (other directories' vectors dominate), reserve a bounded share
+    # of slots for the provided folder's own chunks so it is always represented.
+    # Skipped when there is no home dir or it is already the majority (the normal
+    # single-corpus case), leaving default ranking untouched.
+    home_share = (home_node_count / total_node_count) if total_node_count else 0.0
+    if home_candidates and 0.0 < home_share < 0.5:
+        home_candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        reserve = min(len(home_candidates), max(4, max_items // 3))
+        for _, _, identity, line in home_candidates[:reserve]:
+            if identity in selected_ids or line in selected:
+                continue
+            selected.append(line)
+            selected_ids.add(identity)
+            if len(selected) >= max_items:
+                break
+
     if enumerate_full:
         # Aggregation queries must list EVERY matching item, so skip the
         # topic-coverage dedup (which drops same-topic chunks such as additional
         # resume entries) and take the highest-ranked full chunks directly.
-        for _, _, _, line in ranked:
-            if line in selected:
+        for _, _, _, identity, line in ranked:
+            if identity in selected_ids or line in selected:
                 continue
             selected.append(line)
+            selected_ids.add(identity)
             if len(selected) >= max_items:
                 break
         return selected
 
     covered_topics: set[str] = set()
 
-    for _, _, coverage, line in ranked:
-        if line in selected:
+    for _, _, coverage, identity, line in ranked:
+        if identity in selected_ids or line in selected:
             continue
         if coverage - covered_topics:
             selected.append(line)
+            selected_ids.add(identity)
             covered_topics.update(coverage)
             if len(selected) >= max_items:
                 return selected
 
-    for _, _, _, line in ranked:
-        if line in selected:
+    for _, _, _, identity, line in ranked:
+        if identity in selected_ids or line in selected:
             continue
         selected.append(line)
+        selected_ids.add(identity)
         if len(selected) >= max_items:
             break
 
@@ -213,6 +254,7 @@ def _evidence_lines_for_turn(
 def _retrieve_query_supported_evidence(
     user_query: str,
     retriever: object,
+    home_corpus_dir: str | None = None,
 ) -> tuple[list[str], list[object]]:
     max_queries = max(1, int(os.environ.get("JARVIS_RETRIEVAL_ATTEMPTS", "20")))
     max_evidence = max(1, int(os.environ.get("JARVIS_MAX_EVIDENCE_LINES", "30")))
@@ -252,12 +294,25 @@ def _retrieve_query_supported_evidence(
         # Allow extra evidence slots so the forced chunks don't crowd everything else out.
         max_evidence = max(max_evidence, len(forced_nodes) + 4)
 
+    # The shared vector collection accumulates chunks from every directory ever
+    # indexed, so for a small launch folder the hybrid retriever may never even
+    # surface its (often OCR-noisy) chunks as candidates. Pull them straight from
+    # the docstore so the folder the user actually pointed at is always available
+    # to the home-corpus floor in _source_nodes_to_query_evidence_lines.
+    if home_corpus_dir:
+        home_cap = int(os.environ.get("JARVIS_HOME_CORPUS_MAX_CHUNKS", "60"))
+        home_nodes = _force_include_home_corpus_nodes(
+            retriever, home_corpus_dir, seen_node_ids, home_cap
+        )
+        all_nodes.extend(home_nodes)
+
     evidence_lines = _source_nodes_to_query_evidence_lines(
         user_query,
         all_nodes,
         max_items=max_evidence,
         source_hints=source_hints,
         node_relevance=node_relevance,
+        home_corpus_dir=home_corpus_dir,
     )
     return evidence_lines, all_nodes
 
@@ -311,6 +366,51 @@ def _force_include_source_hinted_nodes(
         f"[jarvis] source-hint force-include: hints={sorted(hint_basenames)} "
         f"docstore_size={len(all_docs)} matched={len(extra)}"
     )
+    return extra
+
+
+def _force_include_home_corpus_nodes(
+    retriever: object,
+    home_corpus_dir: str,
+    seen_node_ids: set,
+    cap: int,
+) -> list[object]:
+    """Pull chunks whose file_path is under the launch directory directly from
+    the docstore, bypassing vector ranking, so the folder the user pointed at is
+    always an evidence candidate -- even for meta-queries that don't lexically
+    match the (often OCR-noisy) file contents. Bounded by `cap`. The docstore is
+    located the same way as in _force_include_source_hinted_nodes.
+    """
+    extra: list[object] = []
+    docstore = (
+        getattr(retriever, "_jarvis_docstore", None)
+        or getattr(retriever, "_docstore", None)
+        or getattr(getattr(retriever, "_index", None), "docstore", None)
+        or getattr(getattr(retriever, "index", None), "docstore", None)
+    )
+    if docstore is None:
+        return extra
+    try:
+        all_docs = docstore.docs or {}
+    except Exception as e:
+        print(f"[jarvis] home-corpus force-include: docstore.docs access failed: {e}")
+        return extra
+    home_root = os.path.abspath(home_corpus_dir).lower() + os.sep
+    for node_id, node in all_docs.items():
+        if node_id in seen_node_ids:
+            continue
+        metadata = getattr(node, "metadata", None) or {}
+        fpath = str(metadata.get("file_path") or "").lower()
+        if fpath and fpath.startswith(home_root):
+            seen_node_ids.add(node_id)
+            extra.append(node)
+            if len(extra) >= cap:
+                break
+    if extra:
+        print(
+            f"[jarvis] home-corpus force-include: dir={home_corpus_dir} "
+            f"matched={len(extra)} (cap={cap})"
+        )
     return extra
 
 

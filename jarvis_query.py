@@ -80,15 +80,28 @@ def _normalize_source_hint(source_hint: str) -> str:
     return base_name.lower() if base_name else lowered
 
 
+def _is_real_source_hint(normalized: str) -> bool:
+    """True only for an actual file reference, not a bare extension.
+
+    A query like "summarize the .pdf files" or "any scanned jpeg" mentions a
+    file *type*, not a named file; treating ".pdf" as a hint would force-include
+    every PDF in the corpus. A genuine hint must have a non-empty stem before the
+    final extension (e.g. "resume.pdf" -> stem "resume")."""
+    if not normalized:
+        return False
+    stem = normalized.rsplit(".", 1)[0].strip()
+    return bool(stem)
+
+
 def _extract_source_hints(user_query: str) -> list[str]:
     hints = []
     for match in re.findall(r"[\w .#&()\-]+\.(?:pdf|png|jpe?g|txt|docx?|xlsx?|csv)", user_query, re.I):
         normalized = _normalize_source_hint(match)
-        if normalized and normalized not in hints:
+        if _is_real_source_hint(normalized) and normalized not in hints:
             hints.append(normalized)
     for match in re.findall(r"['\"]([^'\"]+\.(?:pdf|png|jpe?g|txt|docx?|xlsx?|csv))['\"]", user_query, re.I):
         normalized = _normalize_source_hint(match)
-        if normalized and normalized not in hints:
+        if _is_real_source_hint(normalized) and normalized not in hints:
             hints.append(normalized)
     return hints[:4]
 

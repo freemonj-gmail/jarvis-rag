@@ -1141,7 +1141,75 @@ def _strip_citations_for_display(text: str) -> str:
     return cleaned.strip()
 
 
-def _format_response_for_display(response_text: str) -> str:
+def _excluded_reference_lines(excluded_files: list[str] | None, max_items: int = 25) -> list[str]:
+    """Render launch-folder files that physically exist but produced no indexed
+    chunk (unreadable / no extractable data) as annotated References entries, so
+    they are surfaced next to the real sources rather than in the answer body.
+    Returns an empty list when there is nothing to report."""
+    if not excluded_files:
+        return []
+    shown = excluded_files[:max_items]
+    lines = [
+        f"{name} — present but not indexed (no extractable data)"
+        for name in shown
+    ]
+    extra = len(excluded_files) - len(shown)
+    if extra > 0:
+        lines.append(f"...and {extra} more present but not indexed (no extractable data)")
+    return lines
+
+
+def _home_files_in_evidence(
+    evidence_lines: list[str] | None, home_indexed_files: list[str] | None
+) -> list[str]:
+    """Return the launch-folder file basenames that actually appear in the
+    retrieved evidence fed to the model this turn. These are genuine sources for
+    the answer and must be representable in References regardless of whether the
+    LLM happened to type their (often space-containing) filename in prose."""
+    if not evidence_lines or not home_indexed_files:
+        return []
+    return [name for name in home_indexed_files if any(name in line for line in evidence_lines)]
+
+
+def _ref_basename(ref: str) -> str:
+    """Strip a trailing ' (page N)' suffix from a reference line."""
+    return re.sub(r"\s*\(page\s*\d+\)\s*$", "", ref).strip()
+
+
+def _ensure_reference_lines(
+    references: list[str], ensure_references: list[str] | None
+) -> list[str]:
+    """Guarantee each filename in `ensure_references` appears in `references`.
+
+    `references` are extracted from the LLM prose (and may miss files the model
+    cited descriptively, or capture only a fragment of a space-containing
+    filename). For each guaranteed file: if its basename is already represented,
+    leave the existing (possibly page-annotated) entry; otherwise drop any prose
+    fragment that is a trailing piece of the full name (e.g. '11.07.25 AM.png'
+    captured from 'Screenshot ... 11.07.25 AM.png') and append the full name."""
+    if not ensure_references:
+        return references
+    merged = list(references)
+    existing_lower = {_ref_basename(r).lower() for r in merged}
+    for fname in ensure_references:
+        fl = fname.lower()
+        if fl in existing_lower:
+            continue
+        if " " in fname:
+            merged = [
+                r for r in merged
+                if not (_ref_basename(r).lower() != fl and fl.endswith(_ref_basename(r).lower()))
+            ]
+        merged.append(fname)
+        existing_lower.add(fl)
+    return merged
+
+
+def _format_response_for_display(
+    response_text: str,
+    excluded_files: list[str] | None = None,
+    ensure_references: list[str] | None = None,
+) -> str:
     """Render the answer followed by a 'References' block that lists each unique
     source (file + page) named in the answer.
 
@@ -1150,16 +1218,23 @@ def _format_response_for_display(response_text: str) -> str:
     References list appended underneath — every value, date, and name in the
     answer is preserved. If the answer names no sources, it is returned
     unchanged. Spoken/TTS output is produced elsewhere (`_spoken_response_text`)
-    from the raw answer and is unaffected by this function."""
-    if not response_text:
-        return ""
-    body = response_text.strip()
-    references = _extract_source_references(body)
-    display_body = _strip_citations_for_display(body)
-    if not references:
+    from the raw answer and is unaffected by this function. `ensure_references`
+    forces launch-folder evidence files into the list even when the LLM did not
+    cite them in prose; `excluded_files` lists launch-folder files that could not
+    be indexed (bad/no extractable data), annotated. Both live inside the
+    References block, never in the answer body."""
+    excluded_refs = _excluded_reference_lines(excluded_files)
+    body = response_text.strip() if response_text else ""
+    references = _extract_source_references(body) if body else []
+    references = _ensure_reference_lines(references, ensure_references)
+    display_body = _strip_citations_for_display(body) if body else ""
+    all_refs = references + excluded_refs
+    if not all_refs:
         return display_body
-    ref_block = "\n".join(f"  - {ref}" for ref in references)
-    return f"{display_body}\n\nReferences:\n{ref_block}"
+    ref_block = "\n".join(f"  - {ref}" for ref in all_refs)
+    if display_body:
+        return f"{display_body}\n\nReferences:\n{ref_block}"
+    return f"References:\n{ref_block}"
 
 
 def _build_topic_details_preview(user_query: str, documents: list[Document], llm_client: Ollama, max_items: int = 4) -> str:
@@ -1467,6 +1542,9 @@ class QueryRuntime:
     response_mode: str = "query"
     tts: object | None = None
     persist_dir: str = "jarvis_storage"
+    home_corpus_dir: str | None = None
+    home_indexed_files: list[str] | None = None
+    home_excluded_files: list[str] | None = None
 
 
 def handle_query(
@@ -1498,7 +1576,7 @@ def handle_query(
         if _query_requests_corpus_details(user_query):
             response_text = _build_corpus_details_preview(runtime.all_docs)
             debug_print("[debug] Used direct corpus details scan.")
-            print(f"Jarvis: {_format_response_for_display(response_text)}\n")
+            print(f"Jarvis: {_format_response_for_display(response_text, runtime.home_excluded_files)}\n")
             tts.speak(_spoken_response_text(response_text))
             return {
                 "user_query": user_query,
@@ -1510,7 +1588,7 @@ def handle_query(
         if _query_requests_source_details(user_query):
             response_text = _build_source_details_preview(effective_user_query, runtime.all_docs, runtime.llm)
             debug_print("[debug] Used direct source details scan.")
-            print(f"Jarvis: {_format_response_for_display(response_text)}\n")
+            print(f"Jarvis: {_format_response_for_display(response_text, runtime.home_excluded_files)}\n")
             tts.speak(_spoken_response_text(response_text))
             return {
                 "user_query": user_query,
@@ -1542,7 +1620,7 @@ def handle_query(
                         "I could not find a clear answer in the indexed documents. "
                         "Please try rephrasing the question or asking for the relevant source file first."
                     )
-            print(f"Jarvis: {_format_response_for_display(response_text)}\n")
+            print(f"Jarvis: {_format_response_for_display(response_text, runtime.home_excluded_files)}\n")
             tts.speak(_spoken_response_text(response_text))
             return {
                 "user_query": user_query,
@@ -1554,7 +1632,9 @@ def handle_query(
         if runtime.doc_retriever is None:
             raise RuntimeError("No retriever available")
 
-        evidence_lines, source_nodes = _retrieve_query_supported_evidence(effective_user_query, runtime.doc_retriever)
+        evidence_lines, source_nodes = _retrieve_query_supported_evidence(
+            effective_user_query, runtime.doc_retriever, home_corpus_dir=runtime.home_corpus_dir
+        )
         evidence_lines = _evidence_lines_for_turn(
             evidence_lines,
             last_turn,
@@ -1567,11 +1647,16 @@ def handle_query(
         for evidence_line in evidence_lines:
             debug_print(f"[debug] Evidence: {evidence_line}")
 
+        # Launch-folder files actually present in this turn's evidence must be
+        # representable in References even if the LLM cites them descriptively or
+        # their filename contains spaces (which the prose citation regex mangles).
+        home_evidence_refs = _home_files_in_evidence(evidence_lines, runtime.home_indexed_files)
+
         if _query_requests_authoring(user_query):
             response_text = _author_from_evidence(effective_user_query, evidence_lines, runtime.llm)
             if response_text:
                 debug_print("[debug] Used authoring/composition path (single pass, no review loop).")
-                print(f"Jarvis: {_format_response_for_display(response_text)}\n")
+                print(f"Jarvis: {_format_response_for_display(response_text, runtime.home_excluded_files, home_evidence_refs)}\n")
                 tts.speak(_spoken_response_text(response_text))
                 return {
                     "user_query": user_query,
@@ -1666,7 +1751,7 @@ def handle_query(
         else:
             debug_print("[debug] Returning reviewed answer.")
 
-        print(f"Jarvis: {_format_response_for_display(response_text)}\n")
+        print(f"Jarvis: {_format_response_for_display(response_text, runtime.home_excluded_files, home_evidence_refs)}\n")
         tts.speak(_spoken_response_text(response_text))
         last_turn = {
             "user_query": user_query,
