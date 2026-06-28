@@ -16,23 +16,23 @@ from llama_index.core.settings import Settings
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from llama_index.llms.ollama import Ollama
 
-from jarvis_config import JARVIS_DOMAIN, short_text_qa_template
-from jarvis_speech import TTSManager, _SilentTTS
-from jarvis_extractors import (
+from jarvisrag.config import JARVIS_DOMAIN, short_text_qa_template
+from jarvisrag.speech import TTSManager, _SilentTTS
+from jarvisrag.extraction.extractors import (
     file_extractor,
     has_files_with_extensions,
     load_documents_with_cache,
 )
-from jarvis_vectorstore import create_milvus_vector_store
-from jarvis_indexing import (
+from jarvisrag.vectorstore import create_milvus_vector_store
+from jarvisrag.extraction.indexing import (
     build_or_load_persistent_index,
     filter_informative_documents,
     group_documents_by_source_windows,
 )
-from jarvis_retrieval import build_hybrid_retriever
-from jarvis_io import _is_port_open
-from jarvis_mcp import load_mcp_registry
-from jarvis_answer import QueryRuntime, _purge_chat_memory_vectors
+from jarvisrag.retrieval import build_hybrid_retriever
+from jarvisrag.iotools import _is_port_open
+from jarvisrag.mcp.connector import load_mcp_registry
+from jarvisrag.answer.answer import QueryRuntime, _purge_chat_memory_vectors
 
 
 PERSIST_DIR = os.path.join(os.path.dirname(__file__), "jarvis_storage")

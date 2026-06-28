@@ -47,7 +47,9 @@ if JARVIS_DOMAIN not in {"general", "tax"}:
 # connectors drop in without code changes. See jarvis_mcp.py.
 # ---------------------------------------------------------------------------
 JARVIS_ENABLE_MCP = os.environ.get("JARVIS_ENABLE_MCP", "0") == "1"
-JARVIS_MCP_CONFIG = os.environ.get("JARVIS_MCP_CONFIG", "jarvis_mcp.json")
+# Empty default => use the registry.json packaged inside jarvisrag/mcp/. Set this
+# env var to point at a custom registry file (absolute or relative to the cwd).
+JARVIS_MCP_CONFIG = os.environ.get("JARVIS_MCP_CONFIG", "")
 JARVIS_MCP_TIMEOUT = float(os.environ.get("JARVIS_MCP_TIMEOUT", "20"))
 # Where OAuth access/refresh tokens for MCP connectors are cached (file is
 # written with 0600 perms; holds tokens only, never passwords). Connectors that

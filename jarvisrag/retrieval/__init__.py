@@ -10,9 +10,9 @@ scoring/snippeting. Sits between the pure query-analysis layer
 import os
 from typing import Any, Optional, cast
 
-from jarvis_config import debug_print
-from jarvis_textproc import is_low_information_text, normalize_text
-from jarvis_query import (
+from jarvisrag.config import debug_print
+from jarvisrag.text.textproc import is_low_information_text, normalize_text
+from jarvisrag.text.query import (
     _detail_candidates,
     _extract_source_hints,
     _payment_context_score,

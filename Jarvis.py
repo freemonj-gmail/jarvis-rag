@@ -19,9 +19,9 @@ import sys
 if os.environ.get("JARVIS_DEBUG_HTTP", "0") != "1":
     logging.getLogger("httpx").setLevel(logging.WARNING)
 
-from jarvis_bootstrap import build_runtime
-from jarvis_answer import QueryRuntime, handle_query
-from jarvis_io import read_user_query
+from jarvisrag.answer.bootstrap import build_runtime
+from jarvisrag.answer.answer import QueryRuntime, handle_query
+from jarvisrag.iotools import read_user_query
 
 
 def _resolve_input_dir(argv: list[str]) -> str:

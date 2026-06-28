@@ -119,7 +119,7 @@ uv run python tests/milvus_live_test.py
 | `JARVIS_ESCALATION_TIMEOUT` | `600` | Request timeout (seconds) for the escalation model |
 | `JARVIS_ESCALATION_TEMPERATURE` | `0.2` | Sampling temperature for the escalation model |
 | `JARVIS_ENABLE_MCP` | `0` | Set to `1` to enable the MCP connector layer (off by default). See [External data via MCP connectors](#external-data-via-mcp-connectors) |
-| `JARVIS_MCP_CONFIG` | `jarvis_mcp.json` | Path to the MCP connector registry (pure data; add a source = add an entry) |
+| `JARVIS_MCP_CONFIG` | _(packaged registry)_ | Path to a custom MCP connector registry; empty uses `jarvisrag/mcp/registry.json` (pure data; add a source = add an entry) |
 | `JARVIS_MCP_TIMEOUT` | `20` | Per-call timeout (seconds) for an MCP request |
 | `JARVIS_MCP_TOKEN_CACHE` | `jarvis_storage/.mcp_tokens.json` | Where OAuth tokens are cached (written `0600`, holds tokens only, gitignored) |
 | `JARVIS_MCP_PII_GUARD` | `redact` | Outbound PII guard for MCP requests: `redact` (sanitize + warn), `block` (skip the request if PII is present), or `off` |
@@ -134,7 +134,7 @@ is **off by default** — set `JARVIS_ENABLE_MCP=1` to turn it on.
 
 It is designed to be safe and unobtrusive:
 
-- **Extensible / pure data.** Connectors live in `jarvis_mcp.json` (routing rules,
+- **Extensible / pure data.** Connectors live in `jarvisrag/mcp/registry.json` (routing rules,
   endpoint, auth, tool calls). Adding a source is a data edit, not a code change.
 - **Gated.** A connector only fires when the query matches its routing rules
   (e.g. an IRS/tax question for taxmcp.io). Non-matching questions are unaffected.
@@ -182,10 +182,20 @@ any MCP request and acts per `JARVIS_MCP_PII_GUARD`:
 ## Layout
 
 ```
-Jarvis.py            # Application entry point
-jarvis_helpers.py    # Parsers, OCR, vector store, RAG pipeline, TTS
-jarvis_mcp.py        # MCP connector layer (OAuth, transport, PII guard)
-jarvis_mcp.json      # MCP connector registry (pure data)
-tests/               # Smoke + Milvus tests
-jarvis_storage/      # Generated extraction cache + persistent index (gitignored)
+Jarvis.py              # Application entry point (thin CLI)
+jarvis_helpers.py      # Facade re-exporting the public API surface
+jarvisrag/             # Umbrella package (organized by function)
+  config/              # Settings + env-var configuration
+  iotools/             # File I/O helpers (named to avoid shadowing stdlib io)
+  text/                # Text processing + query parsing
+  extraction/          # Extractors + indexing
+  vectorstore/         # Milvus vector store
+  retrieval/           # Hybrid retrieval + fusion
+  answer/              # Answer synthesis + runtime bootstrap
+  speech/              # TTS / speech
+  mcp/                 # MCP connector layer (OAuth, transport, PII guard)
+    connector.py       #   transport + OAuth + outbound PII guard
+    registry.json      #   MCP connector registry (pure data)
+tests/                 # Smoke + Milvus tests
+jarvis_storage/        # Generated extraction cache + persistent index (gitignored)
 ```

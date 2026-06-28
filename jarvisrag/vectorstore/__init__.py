@@ -24,7 +24,7 @@ from llama_index.core.vector_stores.types import (
     VectorStoreQueryResult,
 )
 
-from jarvis_config import logger
+from jarvisrag.config import logger
 
 
 def normalize_vector(embedding: Sequence[float]) -> List[float]:

@@ -22,18 +22,18 @@ from llama_index.core.base.llms.types import ChatMessage, MessageRole
 from llama_index.core.schema import Document
 from llama_index.llms.ollama import Ollama
 
-from jarvis_config import JARVIS_DEBUG, debug_print
-from jarvis_textproc import is_low_information_text, normalize_text
-from jarvis_speech import (
+from jarvisrag.config import JARVIS_DEBUG, debug_print
+from jarvisrag.text.textproc import is_low_information_text, normalize_text
+from jarvisrag.speech import (
     _INLINE_CITATION_RE,
     _SOURCE_REFERENCE_RE,
     _SPEECH_DOC_RUN_RE,
     _SilentTTS,
     _spoken_response_text,
 )
-from jarvis_indexing import chunk_documents, split_large_docs
-from jarvis_mcp import fetch_mcp_evidence
-from jarvis_query import (
+from jarvisrag.extraction.indexing import chunk_documents, split_large_docs
+from jarvisrag.mcp.connector import fetch_mcp_evidence
+from jarvisrag.text.query import (
     _best_detail_candidate,
     _best_detail_snippet,
     _contains_all_terms,
@@ -66,7 +66,7 @@ from jarvis_query import (
     _source_label_from_evidence_line,
     _value_amounts,
 )
-from jarvis_retrieval import (
+from jarvisrag.retrieval import (
     _evidence_lines_for_turn,
     _query_candidate_score,
     _query_evidence_is_supported,

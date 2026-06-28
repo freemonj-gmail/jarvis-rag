@@ -25,13 +25,13 @@ from llama_index.core.storage.storage_context import StorageContext
 from llama_index.core.vector_stores.simple import SimpleVectorStore
 from llama_index.core.vector_stores.types import BasePydanticVectorStore
 
-from jarvis_config import (
+from jarvisrag.config import (
     INDEX_MANIFEST_FILE,
     INDEX_MANIFEST_VERSION,
     debug_print,
     logger,
 )
-from jarvis_textproc import (
+from jarvisrag.text.textproc import (
     _is_ocr_garbage_text,
     is_low_information_text,
     normalize_text,

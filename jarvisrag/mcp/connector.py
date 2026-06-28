@@ -11,7 +11,7 @@ authoritative/account data usurps the model's general knowledge when relevant.
 Design goals
 ------------
 - **Scalable / extensible:** connectors are pure DATA in a JSON registry
-  (``jarvis_mcp.json``). Adding a new source = adding an entry; no code change.
+  (``jarvisrag/mcp/registry.json``). Adding a new source = adding an entry; no code change.
 - **Gated:** a connector only fires when the query matches its routing rules
   (e.g. a Fidelity/Prudential/Raymond James question for Truthify, an IRS/tax
   question for taxmcp.io). Non-matching questions are completely unaffected.
@@ -45,7 +45,7 @@ import webbrowser
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional, Protocol
 
-from jarvis_config import (
+from jarvisrag.config import (
     JARVIS_ENABLE_MCP,
     JARVIS_MCP_CONFIG,
     JARVIS_MCP_PII_GUARD,
@@ -53,10 +53,13 @@ from jarvis_config import (
     JARVIS_MCP_TOKEN_CACHE,
     debug_print,
 )
-from jarvis_io import time_limit
+from jarvisrag.iotools import time_limit
 
 # Protocol version advertised during the MCP initialize handshake.
 _MCP_PROTOCOL_VERSION = "2025-06-18"
+# Default connector registry shipped inside this package (used when neither a
+# config_path argument nor the JARVIS_MCP_CONFIG env var is provided).
+_DEFAULT_REGISTRY = os.path.join(os.path.dirname(__file__), "registry.json")
 # Hard caps so a misbehaving/hostile server cannot flood the LLM context.
 _DEFAULT_MAX_EVIDENCE_LINES = 12
 _DEFAULT_MAX_CHARS_PER_RESULT = 1500
@@ -172,7 +175,7 @@ def load_mcp_registry(config_path: Optional[str] = None) -> MCPRegistry:
     inert registry so the rest of Jarvis is unaffected. The global
     ``JARVIS_ENABLE_MCP`` env var force-enables the layer even if the file's
     ``settings.enabled`` is false."""
-    path = config_path or JARVIS_MCP_CONFIG
+    path = config_path or JARVIS_MCP_CONFIG or _DEFAULT_REGISTRY
     if not path or not os.path.exists(path):
         if JARVIS_ENABLE_MCP:
             print(f"[mcp] JARVIS_ENABLE_MCP=1 but no connector registry found at '{path}'.")
@@ -936,5 +939,5 @@ def mcp_login(config_path: Optional[str] = None) -> int:
 
 
 if __name__ == "__main__":
-    # `python -m jarvis_mcp` / `make mcp-login` -> run the interactive sign-in.
+    # `python -m jarvisrag.mcp.connector` / `make mcp-login` -> run the interactive sign-in.
     raise SystemExit(0 if mcp_login() >= 0 else 1)

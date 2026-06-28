@@ -11,7 +11,7 @@ smoke-test:
 # Opens your browser to authorize; caches tokens in jarvis_storage/.mcp_tokens.json
 # (chmod 600, git-ignored) and refreshes them automatically afterward.
 mcp-login:
-	JARVIS_ENABLE_MCP=1 uv run python3 -m jarvis_mcp
+	JARVIS_ENABLE_MCP=1 uv run python3 -m jarvisrag.mcp.connector
 
 # End-to-end smoke test: builds the full runtime (LLM + embeddings + Milvus)
 # and runs real queries. Requires Ollama + Milvus running. Pass queries/corpus

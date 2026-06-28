@@ -12,7 +12,7 @@ os.environ.setdefault("GRPC_VERBOSITY", "ERROR")
 os.environ.setdefault("GLOG_minloglevel", "2")
 os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
 
-from jarvis_config import (
+from jarvisrag.config import (
     INDEX_MANIFEST_FILE,
     INDEX_MANIFEST_VERSION,
     JARVIS_DEBUG,
@@ -22,7 +22,7 @@ from jarvis_config import (
     short_text_qa_template,
 )
 
-from jarvis_io import (
+from jarvisrag.iotools import (
     JavaWarningFilter,
     _is_port_open,
     read_user_query,
@@ -32,7 +32,7 @@ from jarvis_io import (
     time_limit,
 )
 
-from jarvis_textproc import (
+from jarvisrag.text.textproc import (
     is_low_information_text,
     normalize_text,
     text_artifact_score,
@@ -40,7 +40,7 @@ from jarvis_textproc import (
     _load_system_english_vocab,
 )
 
-from jarvis_speech import (
+from jarvisrag.speech import (
     TTSManager,
     _CITATION_FILE_EXT,
     _INLINE_CITATION_RE,
@@ -55,14 +55,14 @@ from jarvis_speech import (
     _summarize_for_speech,
 )
 
-from jarvis_vectorstore import (
+from jarvisrag.vectorstore import (
     MilvusVectorStore,
     _metadata_filters_to_milvus_expr,
     create_milvus_vector_store,
     normalize_vector,
 )
 
-from jarvis_indexing import (
+from jarvisrag.extraction.indexing import (
     build_or_load_persistent_index,
     chunk_documents,
     chunk_text,
@@ -73,7 +73,7 @@ from jarvis_indexing import (
     sync_documents_with_index,
 )
 
-from jarvis_extractors import (
+from jarvisrag.extraction.extractors import (
     CombinedPDFReader,
     DeferredExtractor,
     DoclingReader,
@@ -89,7 +89,7 @@ from jarvis_extractors import (
     load_documents_with_cache,
 )
 
-from jarvis_query import (
+from jarvisrag.text.query import (
     DOMAIN_BOILERPLATE_MARKERS,
     DOMAIN_DETAIL_KEYWORDS,
     GENERIC_BOILERPLATE_MARKERS,
@@ -146,7 +146,7 @@ from jarvis_query import (
     _value_numbers,
 )
 
-from jarvis_retrieval import (
+from jarvisrag.retrieval import (
     _evidence_lines_for_turn,
     _force_include_source_hinted_nodes,
     _hybrid_enabled,
@@ -159,7 +159,7 @@ from jarvis_retrieval import (
     build_hybrid_retriever,
 )
 
-from jarvis_answer import (
+from jarvisrag.answer.answer import (
     QueryRuntime,
     _answer_from_general_knowledge,
     _answer_with_review_loop,

@@ -24,8 +24,8 @@ from contextlib import nullcontext
 
 import numpy as np
 
-from jarvis_config import logger
-from jarvis_io import suppress_external_output, suppress_external_stderr
+from jarvisrag.config import logger
+from jarvisrag.iotools import suppress_external_output, suppress_external_stderr
 
 
 # Inline parenthetical source citations the model emits in prose, e.g.

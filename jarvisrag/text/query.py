@@ -12,8 +12,8 @@ import re
 
 from llama_index.core.schema import Document
 
-from jarvis_config import JARVIS_DOMAIN
-from jarvis_textproc import (
+from jarvisrag.config import JARVIS_DOMAIN
+from jarvisrag.text.textproc import (
     is_low_information_text,
     normalize_text,
     text_artifact_score,

@@ -28,10 +28,10 @@ from pptx import Presentation
 from llama_index.core.schema import Document
 from llama_index.readers.file.unstructured import UnstructuredReader
 
-from jarvis_config import JARVIS_DEBUG, logger
-from jarvis_io import suppress_java_warnings, time_limit
-from jarvis_textproc import normalize_text
-from jarvis_indexing import chunk_text
+from jarvisrag.config import JARVIS_DEBUG, logger
+from jarvisrag.iotools import suppress_java_warnings, time_limit
+from jarvisrag.text.textproc import normalize_text
+from jarvisrag.extraction.indexing import chunk_text
 
 
 # Surya / TrOCR optional imports
