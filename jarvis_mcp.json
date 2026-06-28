@@ -1,0 +1,84 @@
+{
+  "_comment": "Jarvis MCP connector registry. Pure data — add a connector by adding an entry; no code changes. Disabled by default; enable the layer with settings.enabled=true or env JARVIS_ENABLE_MCP=1, and toggle each connector with its own 'enabled'. Secrets are NEVER stored here: 'auth_env' names the environment variable that holds the token. A connector only fires when the query matches its 'match_any' substrings or 'match_regex'. Any fetch failure is caught and skipped, so a down/absent server never breaks a query.",
+  "settings": {
+    "enabled": false,
+    "timeout_seconds": 20,
+    "max_evidence_lines": 12,
+    "max_chars_per_result": 1500
+  },
+  "connectors": [
+    {
+      "name": "truthify",
+      "enabled": false,
+      "_note": "Financial institutions: Prudential, Fidelity, Raymond James. Disabled until Truthify's MCP endpoint, tool name(s), and auth are confirmed. Set the real 'url', the 'tool' name(s), export the token named by 'auth_env', then flip 'enabled' to true. If Truthify does not expose MCP, leave this disabled — taxmcp.io keeps working independently.",
+      "transport": "http",
+      "url": "https://REPLACE-WITH-TRUTHIFY-MCP-URL/mcp",
+      "auth": "bearer",
+      "auth_env": "TRUTHIFY_MCP_TOKEN",
+      "source_label": "Truthify (account/market data)",
+      "precedence": 200,
+      "match_any": [
+        "prudential",
+        "fidelity",
+        "raymond james",
+        "brokerage",
+        "401k",
+        "401(k)",
+        "ira",
+        "roth",
+        "portfolio",
+        "holdings",
+        "my account",
+        "account balance",
+        "statement",
+        "dividend",
+        "cost basis"
+      ],
+      "calls": [
+        {
+          "tool": "search",
+          "args": { "query": "{query}" }
+        }
+      ]
+    },
+    {
+      "name": "taxmcp",
+      "enabled": true,
+      "_note": "IRS / U.S. federal tax authority via taxmcp.io. Remote streamable-HTTP MCP at https://app.taxmcp.io/mcp. Auth is OAuth 2.0 only (no static API key): the first tax query opens your browser once to sign in and approve scope 'mcp:use'; the access/refresh tokens are then cached in jarvis_storage/.mcp_tokens.json (chmod 600, git-ignored) and refreshed automatically on later runs. If sign-in is declined or unavailable, the connector is skipped and the turn still answers from local evidence. Plan tiers gate results (Free=IRC only, 20/day; Pro=all federal; Pro+=case law+state). Primary tool is 'search-tax-law'.",
+      "transport": "http",
+      "url": "https://app.taxmcp.io/mcp",
+      "auth": "oauth",
+      "oauth_scope": "mcp:use",
+      "source_label": "taxmcp.io (IRC/Treasury Regs/IRS — cited)",
+      "precedence": 150,
+      "match_any": [
+        "irs",
+        "tax",
+        "taxes",
+        "deduction",
+        "deductible",
+        "1099",
+        "1040",
+        "w-2",
+        "w2",
+        "depreciation",
+        "qbi",
+        "capital gain",
+        "tax year",
+        "irc",
+        "treasury reg",
+        "revenue ruling",
+        "withholding",
+        "estimated tax",
+        "amortization",
+        "credit"
+      ],
+      "calls": [
+        {
+          "tool": "search-tax-law-tool",
+          "args": { "query": "{query}", "limit": 5 }
+        }
+      ]
+    }
+  ]
+}

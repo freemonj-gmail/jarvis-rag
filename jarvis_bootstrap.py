@@ -31,6 +31,7 @@ from jarvis_indexing import (
 )
 from jarvis_retrieval import build_hybrid_retriever
 from jarvis_io import _is_port_open
+from jarvis_mcp import load_mcp_registry
 from jarvis_answer import QueryRuntime, _purge_chat_memory_vectors
 
 
@@ -392,6 +393,8 @@ def build_runtime(input_dir: str) -> QueryRuntime:
             f"(no extractable data): {home_excluded_files}"
         )
 
+    mcp_registry = load_mcp_registry()
+
     return QueryRuntime(
         all_docs=all_docs,
         llm=llm,
@@ -405,4 +408,5 @@ def build_runtime(input_dir: str) -> QueryRuntime:
         home_corpus_dir=os.path.abspath(input_dir),
         home_indexed_files=home_indexed_files,
         home_excluded_files=home_excluded_files,
+        mcp_registry=mcp_registry,
     )

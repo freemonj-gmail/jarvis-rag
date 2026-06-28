@@ -1976,12 +1976,13 @@ wheels = [
 
 [[package]]
 name = "my-python-examples"
-version = "1.8.2"
+version = "1.8.3"
 source = { virtual = "." }
 dependencies = [
     { name = "docling" },
     { name = "easyocr" },
     { name = "frontend" },
+    { name = "httpx" },
     { name = "huggingface-hub" },
     { name = "kokoro" },
     { name = "llama-index" },
@@ -2010,6 +2011,7 @@ requires-dist = [
     { name = "docling", specifier = ">=2.107.0" },
     { name = "easyocr", specifier = ">=1.7.2" },
     { name = "frontend", specifier = ">=0.0.3" },
+    { name = "httpx", specifier = ">=0.27" },
     { name = "huggingface-hub", specifier = ">=1.9.0" },
     { name = "kokoro", specifier = ">=0.9.4" },
     { name = "llama-index", specifier = ">=0.14.20" },

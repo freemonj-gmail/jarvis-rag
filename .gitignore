@@ -6,14 +6,46 @@ __pycache__/
 # Environments
 .venv/
 .env
+.env.*
+!.env.example
 
 # Editors
 .vscode/
 .idea/
 .DS_Store
 
-# Jarvis runtime data (generated caches + persistent index)
+# Jarvis runtime data (generated caches + persistent index).
+# Also holds indexed-document content and the MCP OAuth token cache, so it
+# must never be committed (may contain PII and access/refresh tokens).
 jarvis_storage/
+
+# Security: never commit credentials, auth tokens, or keys of any kind.
+.mcp_tokens.json
+*mcp_tokens*.json
+*.token
+*.tokens
+secrets.json
+*secret*
+*credential*
+*credentials*
+.netrc
+# Private keys / certificates
+*.pem
+*.key
+*.pfx
+*.p12
+*.keystore
+id_rsa*
+id_ed25519*
+# OAuth / service-account material
+*service-account*.json
+*.oauth.json
+
+# PII / personal data exports (do not commit raw account or financial data)
+*.pii
+account_data/
+financial_data/
+personal_data/
 
 # Logs / scratch
 run_logs.txt

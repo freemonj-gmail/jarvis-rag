@@ -118,12 +118,74 @@ uv run python tests/milvus_live_test.py
 | `JARVIS_ESCALATION_MODEL` | `llama3:70b` | Ollama tag for the escalation model used when the router is enabled |
 | `JARVIS_ESCALATION_TIMEOUT` | `600` | Request timeout (seconds) for the escalation model |
 | `JARVIS_ESCALATION_TEMPERATURE` | `0.2` | Sampling temperature for the escalation model |
+| `JARVIS_ENABLE_MCP` | `0` | Set to `1` to enable the MCP connector layer (off by default). See [External data via MCP connectors](#external-data-via-mcp-connectors) |
+| `JARVIS_MCP_CONFIG` | `jarvis_mcp.json` | Path to the MCP connector registry (pure data; add a source = add an entry) |
+| `JARVIS_MCP_TIMEOUT` | `20` | Per-call timeout (seconds) for an MCP request |
+| `JARVIS_MCP_TOKEN_CACHE` | `jarvis_storage/.mcp_tokens.json` | Where OAuth tokens are cached (written `0600`, holds tokens only, gitignored) |
+| `JARVIS_MCP_PII_GUARD` | `redact` | Outbound PII guard for MCP requests: `redact` (sanitize + warn), `block` (skip the request if PII is present), or `off` |
+
+## External data via MCP connectors
+
+Jarvis can pull **fresh, authoritative facts** (e.g. current tax law) and
+**private account data** from external [Model Context Protocol](https://modelcontextprotocol.io/)
+servers and inject them as the **highest-precedence evidence** for a question, so
+live data overrides the model's stale general knowledge when relevant. The layer
+is **off by default** — set `JARVIS_ENABLE_MCP=1` to turn it on.
+
+It is designed to be safe and unobtrusive:
+
+- **Extensible / pure data.** Connectors live in `jarvis_mcp.json` (routing rules,
+  endpoint, auth, tool calls). Adding a source is a data edit, not a code change.
+- **Gated.** A connector only fires when the query matches its routing rules
+  (e.g. an IRS/tax question for taxmcp.io). Non-matching questions are unaffected.
+- **Fail-safe.** Any failure (server down, missing credentials, protocol error,
+  timeout) is caught and the connector is silently skipped — a failed MCP pull
+  never breaks a turn; the answer proceeds on local/document evidence as before.
+- **Untrusted by default.** External content is treated as DATA, not instructions
+  (labeled, size-capped, control-characters stripped) to blunt prompt injection.
+
+### Authentication (OAuth)
+
+Connectors that require browser sign-in (e.g. taxmcp.io) use OAuth 2.0 with
+Dynamic Client Registration + PKCE. Authorize once up front:
+
+```bash
+make mcp-login
+```
+
+This opens your browser, completes the sign-in, and caches the access/refresh
+tokens in `jarvis_storage/.mcp_tokens.json` (mode `0600`, gitignored). Later runs
+reuse and silently refresh that token, so they are non-interactive.
+
+### Privacy: what leaves your machine
+
+The **only** thing sent to an MCP provider is your **question text** (substituted
+into the connector's tool call). Your local documents, retrieved chunks, and the
+vector store **never** egress — they are assembled locally for the LLM *after* the
+MCP call.
+
+As a backstop, an **outbound PII guard** scans the query text immediately before
+any MCP request and acts per `JARVIS_MCP_PII_GUARD`:
+
+- `redact` (default) — replaces detected PII (SSN/EIN, email, phone, credit card,
+  IP, street address) with placeholders **and warns you**, then sends the
+  sanitized query.
+- `block` — if any PII is detected, the request is **refused** (nothing is sent)
+  and the answer proceeds on local evidence only.
+- `off` — sends the query verbatim (no scanning).
+
+> The guard detects **structured** PII by pattern. Free-form identifiers such as a
+> person's name cannot be detected by regex alone — keep names out of MCP queries,
+> or use `JARVIS_MCP_PII_GUARD=block` for a hard stop. Credit-card matches are
+> Luhn-validated so section numbers, years, and long IDs are not false-flagged.
 
 ## Layout
 
 ```
 Jarvis.py            # Application entry point
 jarvis_helpers.py    # Parsers, OCR, vector store, RAG pipeline, TTS
+jarvis_mcp.py        # MCP connector layer (OAuth, transport, PII guard)
+jarvis_mcp.json      # MCP connector registry (pure data)
 tests/               # Smoke + Milvus tests
 jarvis_storage/      # Generated extraction cache + persistent index (gitignored)
 ```
