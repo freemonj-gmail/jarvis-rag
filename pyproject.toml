@@ -1,6 +1,6 @@
 [project]
 name = "my-python-examples"
-version = "1.8.3"
+version = "1.9.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
@@ -25,9 +25,18 @@ dependencies = [
     "pygame>=2.6.1",
     "pymilvus>=3.0.0",
     "pypandoc>=1.17",
+    "pymupdf>=1.24.0",
     "pytesseract>=0.3.13",
     "python-pptx>=1.0.2",
     "soundfile>=0.14.0",
     "tabula-py>=2.10.0",
     "unstructured>=0.22.16",
 ]
+
+# NOTE: The Surya layout/recognition backend for the confidence-routed page
+# pipeline (JARVIS_ENABLE_SURYA) is intentionally NOT declared here. Current
+# ``surya-ocr`` releases pin ``pillow<11`` which conflicts with this project's
+# ``pillow>=12.2.0``, so it cannot be co-resolved in the main lockfile. The
+# pipeline runs without it (native PyMuPDF text + pytesseract/easyocr fallback);
+# to try Surya, install a compatible build into an isolated environment. Once a
+# ``pillow>=12`` compatible ``surya-ocr`` ships, add it as an ``ocr`` extra.

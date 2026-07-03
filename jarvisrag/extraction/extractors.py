@@ -28,10 +28,24 @@ from pptx import Presentation
 from llama_index.core.schema import Document
 from llama_index.readers.file.unstructured import UnstructuredReader
 
-from jarvisrag.config import JARVIS_DEBUG, logger
+from jarvisrag.config import (
+    JARVIS_DEBUG,
+    JARVIS_ENABLE_PAGE_PIPELINE,
+    JARVIS_ENABLE_SURYA,
+    JARVIS_OCR_MIN_CONF,
+    JARVIS_PDF_MIN_CHARS_PER_PAGE,
+    JARVIS_PDF_OCR_DPI,
+    logger,
+)
 from jarvisrag.iotools import suppress_java_warnings, time_limit
 from jarvisrag.text.textproc import normalize_text
 from jarvisrag.extraction.indexing import chunk_text
+from jarvisrag.extraction.pagepipe import (
+    Page,
+    PageProcessor,
+    open_pdf,
+    pymupdf_available,
+)
 
 
 # Surya / TrOCR optional imports
@@ -48,6 +62,32 @@ try:
     trocr_available = True
 except Exception:
     trocr_available = False
+
+
+def _documents_from_page(page: "Page", file_path_str: str, file_name: str) -> List["Document"]:
+    """Chunk a page-pipeline :class:`Page` into Documents in reading order.
+
+    Page-level provenance (which engine produced the text) and the mean
+    recognition confidence are recorded in metadata so later phases can prefer
+    high-confidence native text over rescued OCR when ranking.
+    """
+    text = page.text()
+    if not text:
+        return []
+    confidence = round(page.mean_confidence(), 4)
+    docs: List[Document] = []
+    for chunk_index, chunk in enumerate(chunk_text(text)):
+        metadata = {
+            "file_path": file_path_str,
+            "file_name": file_name,
+            "chunk_index": chunk_index,
+            "extracted_by": page.source,
+            "ocr_confidence": confidence,
+        }
+        if page.page_number is not None:
+            metadata["page_number"] = page.page_number
+        docs.append(Document(text=chunk, metadata=metadata))
+    return docs
 
 
 class ZipExtractor:
@@ -417,6 +457,56 @@ class JpegExtractor:
         return len(tokens) >= 3
 
     # -------------------------------------------------
+    # PAGE-PIPELINE FALLBACK OCR
+    # -------------------------------------------------
+
+    def _pipeline_fallback_ocr(self, crop):
+        """Re-OCR a low-confidence region crop for the page pipeline.
+
+        Tries pytesseract (fast, exposes per-word confidence) then easyocr, and
+        returns ``(text, confidence)`` with confidence normalized to 0.0-1.0.
+        """
+        try:
+            processed = self._preprocess_image(crop)
+        except Exception:
+            processed = crop
+
+        try:
+            data = pytesseract.image_to_data(
+                processed, output_type=pytesseract.Output.DICT
+            )
+            words: List[str] = []
+            confs: List[float] = []
+            for word, conf in zip(data.get("text", []), data.get("conf", [])):
+                if word and word.strip():
+                    words.append(word)
+                    try:
+                        c = float(conf)
+                    except (TypeError, ValueError):
+                        c = -1.0
+                    if c >= 0:
+                        confs.append(c / 100.0)
+            text = normalize_text(" ".join(words))
+            if text:
+                return text, (sum(confs) / len(confs) if confs else 0.0)
+        except Exception as e:
+            logger.info(f"pytesseract fallback failed: {e}")
+
+        try:
+            reader = JpegExtractor._easyocr_reader
+            if reader is not None:
+                result = reader.readtext(np.array(processed), detail=1)
+                texts = [r[1] for r in result if len(r) >= 2 and r[1]]
+                confs = [float(r[2]) for r in result if len(r) >= 3]
+                text = normalize_text("\n".join(texts))
+                if text:
+                    return text, (sum(confs) / len(confs) if confs else 0.0)
+        except Exception as e:
+            logger.info(f"easyocr fallback failed: {e}")
+
+        return "", 0.0
+
+    # -------------------------------------------------
     # MAIN LOAD
     # -------------------------------------------------
 
@@ -432,6 +522,30 @@ class JpegExtractor:
 
         if image is None:
             return documents
+
+        # -----------------------------------------
+        # CONFIDENCE-ROUTED PAGE PIPELINE (opt-in)
+        # -----------------------------------------
+        # When enabled, run Surya layout + reading order + per-region
+        # recognition confidence, routing only the low-confidence regions to the
+        # pytesseract/easyocr fallback below. Falls back to the legacy cascade if
+        # the pipeline yields nothing or errors.
+        if JARVIS_ENABLE_PAGE_PIPELINE:
+            try:
+                processor = PageProcessor(fallback_ocr=self._pipeline_fallback_ocr)
+                page = processor.process_image(image)
+                pipeline_docs = _documents_from_page(page, file_path_str, file_name)
+                if pipeline_docs:
+                    return pipeline_docs
+                logger.info(
+                    f"Page pipeline produced no text for {file_name}; "
+                    f"falling back to the legacy OCR cascade."
+                )
+            except Exception as e:
+                logger.warning(
+                    f"Page pipeline failed for {file_name} ({e}); "
+                    f"falling back to the legacy OCR cascade."
+                )
 
         processed_image = self._preprocess_image(image)
 
@@ -717,12 +831,83 @@ class CombinedPDFReader:
             docs.append(Document(text=chunk, metadata=chunk_meta))
         return docs
 
+    def _pipeline_fallback_ocr(self, crop):
+        """easyocr-based fallback for the page pipeline; returns (text, conf)."""
+        try:
+            reader = self._get_easyocr_reader()
+            result = reader.readtext(np.array(crop), detail=1)
+            texts = [r[1] for r in result if len(r) >= 2 and r[1]]
+            confs = [float(r[2]) for r in result if len(r) >= 3]
+            text = normalize_text("\n".join(texts))
+            if text:
+                return text, (sum(confs) / len(confs) if confs else 0.0)
+        except Exception as e:
+            logger.info(f"PDF pipeline easyocr fallback failed: {e}")
+        return "", 0.0
+
+    def _load_with_pipeline(self, file_path: str, file_name: str, **kwargs):
+        """Confidence-routed path: native PyMuPDF text per page, OCR only for
+        image-only/sparse pages. Returns ``None`` if the PDF can't be opened
+        (signalling the caller to use the legacy pdfplumber path)."""
+        doc = open_pdf(file_path)
+        if doc is None:
+            return None
+        all_docs: List[Document] = []
+        processor = PageProcessor(fallback_ocr=self._pipeline_fallback_ocr)
+        try:
+            with time_limit(self.pdf_file_timeout_seconds, f"PDF pipeline for {file_name}"):
+                for page_index in range(doc.page_count):
+                    fitz_page = doc.load_page(page_index)
+                    page = processor.process_pdf_page(fitz_page, page_number=page_index + 1)
+                    all_docs.extend(_documents_from_page(page, file_path, file_name))
+        except TimeoutError as e:
+            logger.warning(f"{e}. Returning partial content for {file_name}.")
+        except Exception as e:
+            logger.info(f"PDF pipeline extraction error for {file_name}: {e}")
+        finally:
+            try:
+                doc.close()
+            except Exception:
+                pass
+        # Tables stay on pdfplumber/tabula — they extract tabular structure far
+        # better than page OCR does.
+        try:
+            table_docs = self.table_reader.load_data(file_path, **kwargs)
+            if table_docs:
+                all_docs.extend(table_docs)
+        except Exception as e:
+            logger.info(f"Table extraction failed for {file_name}: {e}")
+        return all_docs
+
     def load_data(self, file_path: str, **kwargs):
         import pdfplumber
         all_docs = []
         file_name = os.path.basename(file_path)
         started = time.time()
         logger.info(f"Reading PDF: {file_name}")
+
+        # -----------------------------------------
+        # CONFIDENCE-ROUTED PAGE PIPELINE (opt-in)
+        # -----------------------------------------
+        if JARVIS_ENABLE_PAGE_PIPELINE and pymupdf_available:
+            try:
+                pipeline_docs = self._load_with_pipeline(file_path, file_name, **kwargs)
+                if pipeline_docs:
+                    logger.info(
+                        f"Finished PDF (pipeline): {file_name} -> "
+                        f"{len(pipeline_docs)} chunks in {time.time() - started:.1f}s"
+                    )
+                    return pipeline_docs
+                if pipeline_docs is not None:
+                    logger.info(
+                        f"Page pipeline produced no content for {file_name}; "
+                        f"falling back to the legacy PDF path."
+                    )
+            except Exception as e:
+                logger.warning(
+                    f"Page pipeline failed for {file_name} ({e}); "
+                    f"falling back to the legacy PDF path."
+                )
 
         try:
             with time_limit(self.pdf_file_timeout_seconds, f"PDF extraction for {file_name}"):
@@ -902,12 +1087,29 @@ def has_files_with_extensions(directory, extensions):
     return False
 
 
-EXTRACTION_CACHE_VERSION = 1
+EXTRACTION_CACHE_VERSION = 2
 
 
 def _extraction_cache_path(cache_dir: str, file_path: str) -> str:
     key = hashlib.sha256(os.path.abspath(file_path).encode("utf-8")).hexdigest()
     return os.path.join(cache_dir, f"{key}.json")
+
+
+def _extraction_mode_signature() -> str:
+    """Signature of the settings that change extraction OUTPUT.
+
+    Folded into the cache validation so that toggling the page pipeline, Surya,
+    or the OCR/native-text thresholds automatically invalidates stale cached
+    extractions (otherwise a prior run's docs would be replayed under a new
+    mode, masking the change).
+    """
+    return (
+        f"pipeline={int(JARVIS_ENABLE_PAGE_PIPELINE)};"
+        f"surya={int(JARVIS_ENABLE_SURYA)};"
+        f"minconf={JARVIS_OCR_MIN_CONF};"
+        f"minchars={JARVIS_PDF_MIN_CHARS_PER_PAGE};"
+        f"dpi={JARVIS_PDF_OCR_DPI}"
+    )
 
 
 def _serialize_documents_for_cache(docs: List[Document]) -> List[Dict[str, Any]]:
@@ -999,6 +1201,7 @@ def load_documents_with_cache(
     cache_hits = 0
     cache_misses = 0
     extract_failures = 0
+    mode_sig = _extraction_mode_signature()
 
     for file_path in files:
         try:
@@ -1020,6 +1223,7 @@ def load_documents_with_cache(
         if (
             cached
             and cached.get("version") == EXTRACTION_CACHE_VERSION
+            and cached.get("extraction_mode") == mode_sig
             and cached.get("mtime_ns") == mtime_ns
             and cached.get("size") == size
             and cached.get("file_path") == os.path.abspath(file_path)
@@ -1037,6 +1241,8 @@ def load_documents_with_cache(
                 reasons = []
                 if cached.get("version") != EXTRACTION_CACHE_VERSION:
                     reasons.append(f"version({cached.get('version')}!={EXTRACTION_CACHE_VERSION})")
+                if cached.get("extraction_mode") != mode_sig:
+                    reasons.append(f"mode({cached.get('extraction_mode')}!={mode_sig})")
                 if cached.get("mtime_ns") != mtime_ns:
                     reasons.append(f"mtime({cached.get('mtime_ns')}!={mtime_ns})")
                 if cached.get("size") != size:
@@ -1062,6 +1268,7 @@ def load_documents_with_cache(
         all_docs.extend(docs)
         payload = {
             "version": EXTRACTION_CACHE_VERSION,
+            "extraction_mode": mode_sig,
             "file_path": os.path.abspath(file_path),
             "mtime_ns": mtime_ns,
             "size": size,

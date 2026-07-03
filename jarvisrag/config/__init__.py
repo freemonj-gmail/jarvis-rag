@@ -70,3 +70,36 @@ JARVIS_MCP_TOKEN_CACHE = os.environ.get(
 #   "off"              — send the query verbatim (no scanning).
 JARVIS_MCP_PII_GUARD = os.environ.get("JARVIS_MCP_PII_GUARD", "redact").strip().lower()
 
+# ---------------------------------------------------------------------------
+# Confidence-routed page extraction pipeline (OCR/scanned-doc enhancement,
+# Phase 1). Opt-in and disabled by default so existing corpora and the smoke
+# test are untouched. When enabled, scanned PDFs and image files flow through
+# jarvisrag/extraction/pagepipe.py, which:
+#   1. prefers the native PDF text layer (PyMuPDF) with proper block reading
+#      order whenever a page actually contains extractable text, and
+#   2. for image-only / sparse pages, uses Surya for layout + reading order and
+#      per-line recognition confidence, routing ONLY the low-confidence regions
+#      to the existing pytesseract/easyocr fallback.
+# Every stage records per-region provenance + confidence in Document metadata,
+# which later phases (Florence-2 VLM, LLM normalization, confidence-aware
+# ranking) build on. The whole feature degrades gracefully: if PyMuPDF or Surya
+# are not installed, the extractors fall back to their original behavior.
+# ---------------------------------------------------------------------------
+JARVIS_ENABLE_PAGE_PIPELINE = os.environ.get("JARVIS_ENABLE_PAGE_PIPELINE", "0") == "1"
+# Enable the Surya layout + recognition stage specifically. It requires the
+# optional ``surya-ocr`` dependency (see the ``ocr`` extra in pyproject.toml);
+# when off (or Surya is unavailable) the pipeline still uses the native PDF text
+# layer and the pytesseract/easyocr fallback.
+JARVIS_ENABLE_SURYA = os.environ.get("JARVIS_ENABLE_SURYA", "0") == "1"
+# A recognition region whose confidence is at or above this threshold is trusted
+# as-is; anything below it is re-OCR'd with the pytesseract/easyocr fallback and
+# the higher-confidence result is kept. Range 0.0-1.0.
+JARVIS_OCR_MIN_CONF = float(os.environ.get("JARVIS_OCR_MIN_CONF", "0.65"))
+# Minimum characters of extractable native text a PDF page must yield before it
+# is treated as a real (born-digital) text layer. Below this the page is deemed
+# image-only/scanned and is escalated to the OCR path.
+JARVIS_PDF_MIN_CHARS_PER_PAGE = int(os.environ.get("JARVIS_PDF_MIN_CHARS_PER_PAGE", "40"))
+# Resolution (DPI) used to rasterize a PDF page when it must be sent through the
+# OCR path. 300 DPI is the accuracy/latency sweet spot for document OCR.
+JARVIS_PDF_OCR_DPI = int(os.environ.get("JARVIS_PDF_OCR_DPI", "300"))
+
