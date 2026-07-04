@@ -48,7 +48,7 @@ def main(argv: list[str] | None = None) -> int:
 
     last_turn: dict[str, object] = {}
     while True:
-        user_query = read_user_query("You: ")
+        user_query = read_user_query("\n\nYou: ")
         if user_query.strip().lower() in ["exit", "quit"]:
             print("Goodbye!")
             runtime.tts.say_goodbye()
