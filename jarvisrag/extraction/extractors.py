@@ -29,7 +29,10 @@ from llama_index.core.schema import Document
 from llama_index.readers.file.unstructured import UnstructuredReader
 
 from jarvisrag.config import (
+    JARVIS_APPLE_OCR_LANGS,
+    JARVIS_APPLE_OCR_LEVEL,
     JARVIS_DEBUG,
+    JARVIS_ENABLE_APPLE_OCR,
     JARVIS_ENABLE_PAGE_PIPELINE,
     JARVIS_ENABLE_SURYA,
     JARVIS_ENABLE_VLM,
@@ -1093,8 +1096,8 @@ def has_files_with_extensions(directory, extensions):
 # Bump whenever extraction OUTPUT changes in a way not captured by
 # _extraction_mode_signature() (e.g. VLM dtype/preprocessing/generation changes
 # in jarvisrag/extraction/vlm.py). v3: SmolVLM2 float32 + EXIF transpose +
-# downscale + repetition controls.
-EXTRACTION_CACHE_VERSION = 3
+# downscale + repetition controls. v4: Apple Vision OCR backend on the text path.
+EXTRACTION_CACHE_VERSION = 4
 
 
 def _extraction_cache_path(cache_dir: str, file_path: str) -> str:
@@ -1118,7 +1121,10 @@ def _extraction_mode_signature() -> str:
         f"dpi={JARVIS_PDF_OCR_DPI};"
         f"vlm={int(JARVIS_ENABLE_VLM)};"
         f"vlmmodel={JARVIS_VLM_MODEL if JARVIS_ENABLE_VLM else ''};"
-        f"vlmcaption={int(JARVIS_VLM_CAPTION)}"
+        f"vlmcaption={int(JARVIS_VLM_CAPTION)};"
+        f"appleocr={int(JARVIS_ENABLE_APPLE_OCR)};"
+        f"applelangs={JARVIS_APPLE_OCR_LANGS if JARVIS_ENABLE_APPLE_OCR else ''};"
+        f"applelevel={JARVIS_APPLE_OCR_LEVEL if JARVIS_ENABLE_APPLE_OCR else ''}"
     )
 
 

@@ -1,7 +1,27 @@
 # Jarvis RAG
 
 A local document Retrieval-Augmented Generation (RAG) assistant with multi-format
-parsing, OCR fallbacks, a Milvus / local vector store, and optional text-to-speech.
+parsing, on-device OCR, a Milvus / local vector store, and optional text-to-speech.
+
+## Document extraction & OCR
+
+Jarvis extracts text from scanned pages and images through a **confidence-routed
+page pipeline** that is **on by default** (`JARVIS_ENABLE_PAGE_PIPELINE=1`). Native
+text is read directly; low-confidence regions and image-only pages are routed to OCR.
+
+On **macOS**, the default document-OCR engine is **Apple Vision OCR** (via the
+on-device `Vision` framework) — it is verbatim, fast (~200 ms/image), fully local,
+and free. It runs ahead of everything else on the OCR path, so text is transcribed
+exactly as written rather than paraphrased or hallucinated.
+
+The solution **remains cross-platform**. Apple Vision is *preferred* on macOS, not
+required: off macOS it self-disables and the pipeline automatically falls back to
+the existing Surya / pytesseract / easyocr OCR path. A vision-language model (VLM)
+remains available for **optional image captioning** only (`JARVIS_VLM_CAPTION=1`);
+it is no longer on the verbatim-text path.
+
+To disable Apple Vision OCR on macOS (e.g. to force the cross-platform OCR path),
+set `JARVIS_ENABLE_APPLE_OCR=0`.
 
 ## Retrieval architecture (hybrid search)
 
@@ -110,6 +130,10 @@ uv run python tests/milvus_live_test.py
 | `JARVIS_CONTEXT_MODE` | `chunk` | `chunk` or `source_window` |
 | `JARVIS_DOMAIN` | `general` | `general` or `tax` detail profile |
 | `JARVIS_DISABLE_TTS` | unset | Set to `1` to disable text-to-speech |
+| `JARVIS_ENABLE_PAGE_PIPELINE` | `1` | Confidence-routed page extraction pipeline (native text + OCR). On by default; set to `0` to opt out |
+| `JARVIS_ENABLE_APPLE_OCR` | `1` | On macOS, use on-device Apple Vision OCR as the default document-OCR engine (verbatim, fast, local). Self-disables off macOS (falls back to Surya / pytesseract / easyocr). Set to `0` to force the cross-platform OCR path |
+| `JARVIS_APPLE_OCR_LANGS` | `en-US` | Comma-separated language-preference list passed to Apple Vision OCR |
+| `JARVIS_APPLE_OCR_LEVEL` | `accurate` | Apple Vision recognition level: `accurate` or `fast` |
 | `USE_MILVUS` | `1` | Toggle the Milvus backend |
 | `JARVIS_HYBRID` | `1` | Hybrid BM25 + dense retrieval (Reciprocal Rank Fusion) is the native runtime. Set to `0` to opt out and use dense-only vector retrieval. Falls back to dense-only automatically if BM25 is unavailable or the docstore is empty |
 | `JARVIS_BM25_TOP_K` | `JARVIS_RETRIEVAL_TOP_K` | Sparse (BM25) candidates retrieved before fusion |
@@ -189,6 +213,8 @@ jarvisrag/             # Umbrella package (organized by function)
   iotools/             # File I/O helpers (named to avoid shadowing stdlib io)
   text/                # Text processing + query parsing
   extraction/          # Extractors + indexing
+    pagepipe.py        #   confidence-routed page extraction pipeline
+    apple_ocr.py       #   Apple Vision OCR engine (macOS, default document OCR)
   vectorstore/         # Milvus vector store
   retrieval/           # Hybrid retrieval + fusion
   answer/              # Answer synthesis + runtime bootstrap

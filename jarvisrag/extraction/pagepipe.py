@@ -32,10 +32,12 @@ Design constraints:
 * It has no dependency on the extractor/indexing layer (the readers pass their
   OCR fallback in as a callable), which keeps the import graph acyclic.
 
-Later phases plug into the same ``Region`` stream: Phase 2 escalates
-low-confidence / figure regions to a VLM such as SmolVLM2, and Phase 3 runs a
-constrained local-LLM normalization pass over low-confidence regions before
-embedding.
+Later phases plug into the same ``Region`` stream. On macOS, an optional Apple
+Vision OCR backend (``JARVIS_ENABLE_APPLE_OCR``) transcribes low-confidence /
+whole scanned pages *ahead of* the VLM on the text path — it is verbatim, fast,
+and on-device. Phase 2 then reserves the VLM (e.g. SmolVLM2) for captioning
+figure/photo regions, and Phase 3 runs a constrained local-LLM normalization
+pass over low-confidence regions before embedding.
 """
 
 from __future__ import annotations
@@ -45,6 +47,7 @@ from dataclasses import dataclass, field
 from typing import Callable, List, Optional, Sequence, Tuple
 
 from jarvisrag.config import (
+    JARVIS_ENABLE_APPLE_OCR,
     JARVIS_ENABLE_SURYA,
     JARVIS_ENABLE_VLM,
     JARVIS_OCR_MIN_CONF,
@@ -463,6 +466,19 @@ class PageProcessor:
             if crop is None:
                 continue
 
+            # 0) Apple Vision OCR on the region crop — verbatim and preferred.
+            # When it returns text we trust it (mark it above the OCR threshold)
+            # and move on, rather than letting the cheaper engines or the VLM
+            # overwrite an accurate transcription.
+            if JARVIS_ENABLE_APPLE_OCR:
+                apple_text, apple_conf = self._apple_ocr(crop)
+                apple_text = (apple_text or "").strip()
+                if apple_text:
+                    region.text = apple_text
+                    region.confidence = max(apple_conf, self.min_confidence)
+                    region.source = "apple_ocr"
+                    continue
+
             # 1) Cheap OCR fallback (pytesseract/easyocr) on the region crop.
             if self.fallback_ocr is not None:
                 try:
@@ -488,9 +504,19 @@ class PageProcessor:
     def _whole_page_fallback(self, image, width: float, height: float) -> Page:
         text, conf, source = "", 0.0, "unavailable"
 
-        # With no Surya layout available, the VLM is the strongest whole-page
-        # reader we have, so try it first when enabled; otherwise use OCR.
-        if JARVIS_ENABLE_VLM:
+        # Apple Vision OCR is the preferred whole-page text engine when enabled:
+        # verbatim, hardware-accelerated, and free. It runs ahead of the VLM so
+        # scanned/photographed pages (IDs, receipts, forms) are transcribed
+        # exactly rather than paraphrased.
+        if JARVIS_ENABLE_APPLE_OCR:
+            apple_text, apple_conf = self._apple_ocr(image)
+            if apple_text and apple_text.strip():
+                text, conf, source = apple_text.strip(), max(apple_conf, self.min_confidence), "apple_ocr"
+
+        # With no Surya layout and no Apple OCR text, the VLM is the strongest
+        # remaining whole-page reader, so try it next when enabled; otherwise
+        # fall back to the caller's pytesseract/easyocr engine.
+        if not text and JARVIS_ENABLE_VLM:
             vlm_text = self._vlm_ocr(image)
             if vlm_text:
                 text, conf, source = vlm_text, JARVIS_VLM_CONF, "vlm"
@@ -530,6 +556,18 @@ class PageProcessor:
         for order, region in enumerate(regions):
             region.reading_order = order
         return Page(regions=regions, width=width, height=height, source=regions[0].source)
+
+    # -- Apple Vision OCR helper (lazy import; never raises) -------------
+    def _apple_ocr(self, image) -> Tuple[str, float]:
+        if image is None:
+            return "", 0.0
+        try:
+            from jarvisrag.extraction import apple_ocr
+
+            return apple_ocr.apple_ocr(image)
+        except Exception as e:
+            logger.info(f"Apple OCR unavailable: {e}")
+            return "", 0.0
 
     # -- VLM helpers (lazy import; never raise) --------------------------
     def _vlm_ocr(self, image) -> str:

@@ -1,6 +1,6 @@
 [project]
 name = "my-python-examples"
-version = "1.9.1"
+version = "1.10.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
@@ -33,6 +33,7 @@ dependencies = [
     "tabula-py>=2.10.0",
     "transformers>=4.44.0",
     "unstructured>=0.22.16",
+    "ocrmac>=1.0.0 ; sys_platform == 'darwin'",
 ]
 
 # NOTE: The Surya layout/recognition backend for the confidence-routed page

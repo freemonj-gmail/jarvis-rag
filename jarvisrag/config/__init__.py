@@ -72,20 +72,20 @@ JARVIS_MCP_PII_GUARD = os.environ.get("JARVIS_MCP_PII_GUARD", "redact").strip().
 
 # ---------------------------------------------------------------------------
 # Confidence-routed page extraction pipeline (OCR/scanned-doc enhancement,
-# Phase 1). Opt-in and disabled by default so existing corpora and the smoke
-# test are untouched. When enabled, scanned PDFs and image files flow through
+# Phase 1). Enabled by default: scanned PDFs and image files flow through
 # jarvisrag/extraction/pagepipe.py, which:
 #   1. prefers the native PDF text layer (PyMuPDF) with proper block reading
 #      order whenever a page actually contains extractable text, and
-#   2. for image-only / sparse pages, uses Surya for layout + reading order and
-#      per-line recognition confidence, routing ONLY the low-confidence regions
-#      to the existing pytesseract/easyocr fallback.
-# Every stage records per-region provenance + confidence in Document metadata,
-# which later phases (Florence-2 VLM, LLM normalization, confidence-aware
-# ranking) build on. The whole feature degrades gracefully: if PyMuPDF or Surya
-# are not installed, the extractors fall back to their original behavior.
+#   2. for image-only / sparse pages, transcribes text with Apple Vision OCR on
+#      macOS (see JARVIS_ENABLE_APPLE_OCR) — or, when that is unavailable, uses
+#      Surya for layout + per-line recognition confidence, routing ONLY the
+#      low-confidence regions to the pytesseract/easyocr fallback.
+# Every stage records per-region provenance + confidence in Document metadata.
+# The whole feature degrades gracefully: if PyMuPDF/Apple Vision/Surya are not
+# installed, the extractors fall back to their original behavior. Set
+# JARVIS_ENABLE_PAGE_PIPELINE=0 to force the legacy extraction path.
 # ---------------------------------------------------------------------------
-JARVIS_ENABLE_PAGE_PIPELINE = os.environ.get("JARVIS_ENABLE_PAGE_PIPELINE", "0") == "1"
+JARVIS_ENABLE_PAGE_PIPELINE = os.environ.get("JARVIS_ENABLE_PAGE_PIPELINE", "1") == "1"
 # Enable the Surya layout + recognition stage specifically. It requires the
 # optional ``surya-ocr`` dependency (see the ``ocr`` extra in pyproject.toml);
 # when off (or Surya is unavailable) the pipeline still uses the native PDF text
@@ -130,4 +130,26 @@ JARVIS_VLM_CONF = float(os.environ.get("JARVIS_VLM_CONF", "0.75"))
 # with the VLM so non-text visual content (IDs, charts, signatures) becomes
 # searchable. Off by default to avoid adding descriptive noise to text corpora.
 JARVIS_VLM_CAPTION = os.environ.get("JARVIS_VLM_CAPTION", "0") == "1"
+
+# ---------------------------------------------------------------------------
+# Apple Vision OCR backend for the page pipeline (on-device text recognition).
+# Enabled by default on macOS; a no-op elsewhere. When the ``ocrmac`` wrapper
+# around Apple's Vision framework is available, scanned/photographed pages and
+# low-confidence regions are transcribed with Apple Vision *ahead of* the VLM on
+# the text path. Unlike a general VLM, Vision OCR is verbatim (it does not
+# paraphrase or fabricate field values), hardware-accelerated (sub-second per
+# image, no timeouts), and free — the preferred text engine for documents such
+# as IDs, receipts, and forms; the VLM is reserved for captioning visual content
+# (JARVIS_VLM_CAPTION). Requires the page pipeline (JARVIS_ENABLE_PAGE_PIPELINE,
+# also on by default). It self-disables on non-macOS platforms (and on any
+# import/inference failure), falling back to the Surya/pytesseract/easyocr path,
+# so non-Apple users get the legacy OCR behavior automatically. Set
+# JARVIS_ENABLE_APPLE_OCR=0 to force it off.
+# ---------------------------------------------------------------------------
+JARVIS_ENABLE_APPLE_OCR = os.environ.get("JARVIS_ENABLE_APPLE_OCR", "1") == "1"
+# Comma-separated Vision language preferences for post-processing/recognition,
+# e.g. "en-US" or "en-US,de-DE". See the IANA language-subtag registry for codes.
+JARVIS_APPLE_OCR_LANGS = os.environ.get("JARVIS_APPLE_OCR_LANGS", "en-US").strip()
+# Vision recognition level: "accurate" (default, best fidelity) or "fast".
+JARVIS_APPLE_OCR_LEVEL = os.environ.get("JARVIS_APPLE_OCR_LEVEL", "accurate").strip()
 
