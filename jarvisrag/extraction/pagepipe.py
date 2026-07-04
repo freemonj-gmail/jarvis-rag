@@ -46,8 +46,11 @@ from typing import Callable, List, Optional, Sequence, Tuple
 
 from jarvisrag.config import (
     JARVIS_ENABLE_SURYA,
+    JARVIS_ENABLE_VLM,
     JARVIS_OCR_MIN_CONF,
     JARVIS_PDF_MIN_CHARS_PER_PAGE,
+    JARVIS_VLM_CAPTION,
+    JARVIS_VLM_CONF,
     logger,
 )
 from jarvisrag.text.textproc import normalize_text
@@ -433,55 +436,123 @@ class PageProcessor:
             return self._whole_page_fallback(image, width, height)
 
         routed = self._route_low_confidence(image, regions)
-        source = "surya"
-        if any(r.source == "ocr_fallback" for r in routed):
-            source = "surya+ocr_fallback"
+        sources = sorted({r.source for r in routed if r.text and r.text.strip()})
+        source = "+".join(sources) if sources else "surya"
         return Page(regions=routed, width=width, height=height, source=source)
 
     def _route_low_confidence(self, image, regions: List[Region]) -> List[Region]:
-        if self.fallback_ocr is None:
-            return regions
         for region in regions:
+            is_figure = region.region_type in ("figure", "picture", "image")
+
+            # Figure/photo regions: caption with the VLM (when enabled) so the
+            # non-text visual content becomes searchable, then move on.
+            if is_figure and JARVIS_ENABLE_VLM and JARVIS_VLM_CAPTION:
+                crop = _crop(image, region.bbox)
+                caption = self._vlm_caption(crop) if crop is not None else ""
+                if caption:
+                    region.text = caption
+                    region.region_type = "figure"
+                    region.source = "florence2_caption"
+                    region.confidence = max(region.confidence, JARVIS_VLM_CONF)
+                continue
+
             if region.confidence >= self.min_confidence:
                 continue
+
             crop = _crop(image, region.bbox)
             if crop is None:
                 continue
-            try:
-                text, conf = self.fallback_ocr(crop)
-            except Exception as e:
-                logger.info(f"Fallback OCR failed on low-confidence region: {e}")
-                continue
-            text = (text or "").strip()
-            if not text:
-                continue
-            # Keep whichever result we trust more; when the fallback engine gives
-            # no confidence (0.0) but Surya was below threshold, prefer the
-            # fallback text only if Surya produced nothing usable.
-            if conf >= region.confidence or not region.text.strip():
-                region.text = text
-                region.confidence = max(conf, region.confidence)
-                region.source = "ocr_fallback"
+
+            # 1) Cheap OCR fallback (pytesseract/easyocr) on the region crop.
+            if self.fallback_ocr is not None:
+                try:
+                    text, conf = self.fallback_ocr(crop)
+                except Exception as e:
+                    logger.info(f"Fallback OCR failed on low-confidence region: {e}")
+                    text, conf = "", 0.0
+                text = (text or "").strip()
+                if text and (conf >= region.confidence or not region.text.strip()):
+                    region.text = text
+                    region.confidence = max(conf, region.confidence)
+                    region.source = "ocr_fallback"
+
+            # 2) VLM escalation when the region is still below threshold.
+            if region.confidence < self.min_confidence and JARVIS_ENABLE_VLM:
+                vlm_text = self._vlm_ocr(crop)
+                if vlm_text:
+                    region.text = vlm_text
+                    region.confidence = max(region.confidence, JARVIS_VLM_CONF)
+                    region.source = "florence2"
         return regions
 
     def _whole_page_fallback(self, image, width: float, height: float) -> Page:
-        if self.fallback_ocr is None:
+        text, conf, source = "", 0.0, "unavailable"
+
+        # With no Surya layout available, the VLM is the strongest whole-page
+        # reader we have, so try it first when enabled; otherwise use OCR.
+        if JARVIS_ENABLE_VLM:
+            vlm_text = self._vlm_ocr(image)
+            if vlm_text:
+                text, conf, source = vlm_text, JARVIS_VLM_CONF, "florence2"
+
+        if not text and self.fallback_ocr is not None:
+            try:
+                t, c = self.fallback_ocr(image)
+            except Exception as e:
+                logger.info(f"Whole-page fallback OCR failed: {e}")
+                t, c = "", 0.0
+            if t and t.strip():
+                text, conf, source = t.strip(), c, "ocr_fallback"
+
+        regions: List[Region] = []
+        if text:
+            regions.append(
+                Region(text=text, bbox=(0.0, 0.0, width, height), confidence=conf, source=source)
+            )
+
+        # Optionally describe the page image itself (helps photo-only pages such
+        # as ID cards where OCR alone misses the visual content).
+        if JARVIS_ENABLE_VLM and JARVIS_VLM_CAPTION:
+            caption = self._vlm_caption(image)
+            if caption:
+                regions.append(
+                    Region(
+                        text=caption,
+                        bbox=(0.0, 0.0, width, height),
+                        region_type="figure",
+                        confidence=JARVIS_VLM_CONF,
+                        source="florence2_caption",
+                    )
+                )
+
+        if not regions:
             return Page(width=width, height=height, source="unavailable")
+        for order, region in enumerate(regions):
+            region.reading_order = order
+        return Page(regions=regions, width=width, height=height, source=regions[0].source)
+
+    # -- VLM helpers (lazy import; never raise) --------------------------
+    def _vlm_ocr(self, image) -> str:
+        if image is None:
+            return ""
         try:
-            text, conf = self.fallback_ocr(image)
+            from jarvisrag.extraction import vlm
+
+            return vlm.vlm_ocr(image)
         except Exception as e:
-            logger.info(f"Whole-page fallback OCR failed: {e}")
-            return Page(width=width, height=height, source="unavailable")
-        text = (text or "").strip()
-        if not text:
-            return Page(width=width, height=height, source="unavailable")
-        region = Region(
-            text=text,
-            bbox=(0.0, 0.0, width, height),
-            confidence=conf,
-            source="ocr_fallback",
-        )
-        return Page(regions=[region], width=width, height=height, source="ocr_fallback")
+            logger.info(f"VLM OCR unavailable: {e}")
+            return ""
+
+    def _vlm_caption(self, image) -> str:
+        if image is None:
+            return ""
+        try:
+            from jarvisrag.extraction import vlm
+
+            return vlm.vlm_caption(image)
+        except Exception as e:
+            logger.info(f"VLM caption unavailable: {e}")
+            return ""
 
 
 def open_pdf(file_path: str):

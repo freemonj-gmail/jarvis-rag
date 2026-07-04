@@ -32,9 +32,12 @@ from jarvisrag.config import (
     JARVIS_DEBUG,
     JARVIS_ENABLE_PAGE_PIPELINE,
     JARVIS_ENABLE_SURYA,
+    JARVIS_ENABLE_VLM,
     JARVIS_OCR_MIN_CONF,
     JARVIS_PDF_MIN_CHARS_PER_PAGE,
     JARVIS_PDF_OCR_DPI,
+    JARVIS_VLM_CAPTION,
+    JARVIS_VLM_MODEL,
     logger,
 )
 from jarvisrag.iotools import suppress_java_warnings, time_limit
@@ -1108,7 +1111,10 @@ def _extraction_mode_signature() -> str:
         f"surya={int(JARVIS_ENABLE_SURYA)};"
         f"minconf={JARVIS_OCR_MIN_CONF};"
         f"minchars={JARVIS_PDF_MIN_CHARS_PER_PAGE};"
-        f"dpi={JARVIS_PDF_OCR_DPI}"
+        f"dpi={JARVIS_PDF_OCR_DPI};"
+        f"vlm={int(JARVIS_ENABLE_VLM)};"
+        f"vlmmodel={JARVIS_VLM_MODEL if JARVIS_ENABLE_VLM else ''};"
+        f"vlmcaption={int(JARVIS_VLM_CAPTION)}"
     )
 
 
