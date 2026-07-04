@@ -1090,7 +1090,11 @@ def has_files_with_extensions(directory, extensions):
     return False
 
 
-EXTRACTION_CACHE_VERSION = 2
+# Bump whenever extraction OUTPUT changes in a way not captured by
+# _extraction_mode_signature() (e.g. VLM dtype/preprocessing/generation changes
+# in jarvisrag/extraction/vlm.py). v3: SmolVLM2 float32 + EXIF transpose +
+# downscale + repetition controls.
+EXTRACTION_CACHE_VERSION = 3
 
 
 def _extraction_cache_path(cache_dir: str, file_path: str) -> str:
