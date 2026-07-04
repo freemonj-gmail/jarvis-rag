@@ -486,6 +486,17 @@ def _query_anchor_terms(user_query: str, terms: list[str]) -> list[str]:
         "Generate", "Make", "Build", "Prepare", "Produce", "Update", "Revise",
         "Format", "Tailor", "Design", "Search", "Get", "Display", "Print",
         "Return", "Gather", "Collect", "Review",
+        # Sentence-lead framing words, prepositions, conjunctions and auxiliaries
+        # that are capitalized only by sentence position (not because they are
+        # proper nouns). Left in, they become spurious anchors that no on-topic
+        # chunk contains, which zeroes the candidate score and hides the real
+        # evidence (e.g. "Based on the reminder screenshot file, ...").
+        "Based", "According", "Using", "Regarding", "Given", "Considering",
+        "Concerning", "About", "Also", "Additionally", "Please", "From",
+        "With", "Within", "Per", "Via", "And", "But", "For", "As", "By",
+        "Are", "Is", "Was", "Were", "Do", "Does", "Did", "Should", "Would",
+        "Will", "Have", "Has", "Had", "Please", "When", "Where", "Why",
+        "Who", "Whom", "Whose", "Here", "There", "Then", "Only", "Just",
     }
     anchors = []
 

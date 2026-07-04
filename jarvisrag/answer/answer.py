@@ -1744,12 +1744,24 @@ def handle_query(
 
         if not review_passed:
             debug_print(f"[debug] Initial answer did not pass review: {review_reason}")
-            if evidence_lines and not answer_was_dismissive:
-                debug_print("[debug] Returning evidence-present fallback instead of no-evidence response.")
+            # When ANY query-supported evidence was retrieved it has already
+            # passed the anchor/topic gate, so it is on-topic for this question.
+            # Surface it rather than routing to a general-knowledge answer that
+            # would wrongly deny the corpus. This holds even when the drafted LLM
+            # answer was dismissive because the chunks don't literally spell out
+            # the asked-for detail — showing what WAS found is more honest and
+            # trustworthy than pretending indexed files don't exist. No explicit
+            # filename mention is required to reach this path.
+            if evidence_lines:
+                if answer_was_dismissive:
+                    debug_print(
+                        "[debug] Drafted answer was dismissive but on-topic evidence exists; "
+                        "showing the evidence preview instead of a general-knowledge denial."
+                    )
+                else:
+                    debug_print("[debug] Returning evidence-present fallback instead of no-evidence response.")
                 response_text = _evidence_present_fallback(evidence_lines, review_reason)
             else:
-                if answer_was_dismissive:
-                    debug_print("[debug] Evidence chunks were rejected by the answerer as irrelevant; bypassing evidence fallback.")
                 topic_preview = _build_topic_details_preview(effective_user_query, runtime.all_docs, runtime.llm)
                 if topic_preview and not _response_is_dismissive(topic_preview):
                     debug_print("[debug] Applied direct topic corpus fallback.")
