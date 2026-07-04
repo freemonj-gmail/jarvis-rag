@@ -166,6 +166,37 @@ _PER_SLASH_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Sub-second time-unit abbreviations -> spoken words. Only expanded when the
+# unit is attached to a number (e.g. "200 ms" / "5us" / "10 ns"), so the plain
+# English word "us" ("tell us") and unrelated tokens are left untouched. The
+# micro sign (µ) and the letter "u" both stand in for "micro". Case-sensitive
+# match ("ms" not "MS") so "MS" (Microsoft/Missouri/degree) is unaffected.
+_TIME_UNIT_WORDS = {
+    "ms": "millisecond",
+    "us": "microsecond",
+    "\u00b5s": "microsecond",  # µs (micro sign)
+    "ns": "nanosecond",
+    "ps": "picosecond",
+}
+_TIME_UNIT_RE = re.compile(
+    r"(?<![A-Za-z])(\d+(?:\.\d+)?)\s*(ms|us|\u00b5s|ns|ps)\b"
+)
+
+
+def _expand_time_units(text: str) -> str:
+    """Read attached sub-second durations in full: "200 ms" -> "200 milliseconds",
+    "1 ms" -> "1 millisecond". Pluralizes based on the numeric value."""
+    def _repl(match: "re.Match[str]") -> str:
+        number, unit = match.group(1), match.group(2)
+        word = _TIME_UNIT_WORDS[unit]
+        try:
+            plural = float(number) != 1.0
+        except ValueError:
+            plural = True
+        return f"{number} {word}{'s' if plural else ''}"
+
+    return _TIME_UNIT_RE.sub(_repl, text)
+
 
 def _normalize_for_speech(text: str) -> str:
     """Expand context-dependent abbreviations and numerals for natural speech.
@@ -253,6 +284,10 @@ def _normalize_for_speech(text: str) -> str:
     #    "$7,500 per month". Dates ("12/25"), "and/or", "TCP/IP" etc. are
     #    untouched because their right-hand side is not a rate unit.
     s = _PER_SLASH_RE.sub(" per ", s)
+
+    # 7) Sub-second time units attached to a number: "200 ms" -> "200
+    #    milliseconds", "5us" -> "5 microseconds", "10 ns" -> "10 nanoseconds".
+    s = _expand_time_units(s)
     return s
 
 
