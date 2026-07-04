@@ -108,18 +108,20 @@ JARVIS_PDF_OCR_DPI = int(os.environ.get("JARVIS_PDF_OCR_DPI", "300"))
 # enhancement, Phase 2). Opt-in and disabled by default. When enabled (and the
 # ``transformers`` stack is installed), regions the cheaper OCR stages could not
 # read confidently — and, when Surya is unavailable, whole scanned pages — are
-# escalated to a local, non-Chinese vision-language model (default Florence-2 by
-# Microsoft, MIT-licensed) for a second-opinion OCR. Optionally, figure/photo
+# escalated to a local vision-language model (default SmolVLM2 by Hugging Face,
+# Apache-2.0-licensed) for a second-opinion OCR. Optionally, figure/photo
 # regions can be captioned so non-text visual content becomes searchable.
 # Runs at index time on region crops, is cached, and degrades gracefully: any
 # load/inference failure falls back to the pytesseract/easyocr result.
 # ---------------------------------------------------------------------------
 JARVIS_ENABLE_VLM = os.environ.get("JARVIS_ENABLE_VLM", "0") == "1"
-# Hugging Face model id for the VLM. Defaults to the lighter Florence-2-base for
-# Apple Silicon; set to "microsoft/Florence-2-large" for higher accuracy, or any
-# other non-Chinese VLM you prefer (e.g. a PaliGemma 2 or Kosmos-2.5 build).
-JARVIS_VLM_MODEL = os.environ.get("JARVIS_VLM_MODEL", "microsoft/Florence-2-base").strip()
-# Confidence assigned to VLM-recovered text. Florence-2 exposes no numeric
+# Hugging Face model id for the VLM. Defaults to SmolVLM2-2.2B-Instruct (Hugging
+# Face, Apache-2.0): a modern-transformers-native image-text-to-text model that
+# runs on Apple Silicon without any frozen remote code. Set
+# "HuggingFaceTB/SmolVLM2-500M-Video-Instruct" for a lighter/faster (lower
+# fidelity) run, or point at any other VLM transformers supports.
+JARVIS_VLM_MODEL = os.environ.get("JARVIS_VLM_MODEL", "HuggingFaceTB/SmolVLM2-2.2B-Instruct").strip()
+# Confidence assigned to VLM-recovered text. The VLM exposes no numeric
 # confidence, so this fixed value marks the span as trusted (above the OCR
 # threshold) while remaining distinguishable from native text (1.0) for later
 # confidence-aware ranking. Range 0.0-1.0.

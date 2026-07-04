@@ -33,9 +33,9 @@ Design constraints:
   OCR fallback in as a callable), which keeps the import graph acyclic.
 
 Later phases plug into the same ``Region`` stream: Phase 2 escalates
-low-confidence / figure regions to a (non-Chinese) VLM such as Florence-2, and
-Phase 3 runs a constrained local-LLM normalization pass over low-confidence
-regions before embedding.
+low-confidence / figure regions to a VLM such as SmolVLM2, and Phase 3 runs a
+constrained local-LLM normalization pass over low-confidence regions before
+embedding.
 """
 
 from __future__ import annotations
@@ -452,7 +452,7 @@ class PageProcessor:
                 if caption:
                     region.text = caption
                     region.region_type = "figure"
-                    region.source = "florence2_caption"
+                    region.source = "vlm_caption"
                     region.confidence = max(region.confidence, JARVIS_VLM_CONF)
                 continue
 
@@ -482,7 +482,7 @@ class PageProcessor:
                 if vlm_text:
                     region.text = vlm_text
                     region.confidence = max(region.confidence, JARVIS_VLM_CONF)
-                    region.source = "florence2"
+                    region.source = "vlm"
         return regions
 
     def _whole_page_fallback(self, image, width: float, height: float) -> Page:
@@ -493,7 +493,7 @@ class PageProcessor:
         if JARVIS_ENABLE_VLM:
             vlm_text = self._vlm_ocr(image)
             if vlm_text:
-                text, conf, source = vlm_text, JARVIS_VLM_CONF, "florence2"
+                text, conf, source = vlm_text, JARVIS_VLM_CONF, "vlm"
 
         if not text and self.fallback_ocr is not None:
             try:
@@ -521,7 +521,7 @@ class PageProcessor:
                         bbox=(0.0, 0.0, width, height),
                         region_type="figure",
                         confidence=JARVIS_VLM_CONF,
-                        source="florence2_caption",
+                        source="vlm_caption",
                     )
                 )
 
