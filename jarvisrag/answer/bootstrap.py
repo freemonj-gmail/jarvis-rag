@@ -47,7 +47,7 @@ IMAGE_EXTENSIONS = [".jpg", ".jpeg", ".png", ".tiff", ".bmp", ".gif"]
 def _build_llm() -> Ollama:
     # make sure ollama is running: `ollama run llama3`
     return Ollama(
-        model="gemma4:31b",
+        model="gemma4:31b-mlx",
         request_timeout=600,
         temperature=0.2,
         additional_kwargs={"num_predict": 256},
