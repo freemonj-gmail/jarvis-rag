@@ -45,6 +45,25 @@ def _node_identity(node: object) -> object:
     )
 
 
+def _extraction_quality(metadata: dict) -> float:
+    """Extraction cleanliness in [0.0, 1.0], used ONLY as a ranking tiebreaker.
+
+    Native / structured extractions (born-digital PDF text, docx via docling)
+    record no OCR uncertainty and are treated as fully clean (1.0). OCR-derived
+    text carries an ``ocr_confidence`` reflecting recognition certainty; that
+    value is used directly. This is never a primary ranking signal — it only
+    separates candidates that already tie on retriever relevance and lexical
+    grounding score, gently preferring a cleaner extraction over a noisier one.
+    """
+    conf = (metadata or {}).get("ocr_confidence")
+    if conf is None:
+        return 1.0
+    try:
+        return max(0.0, min(1.0, float(conf)))
+    except (TypeError, ValueError):
+        return 1.0
+
+
 def _source_nodes_to_evidence_lines(source_nodes: list[object], max_items: int = 8) -> list[str]:
     evidence_lines = []
     for node in source_nodes[:max_items]:
@@ -91,13 +110,15 @@ def _source_nodes_to_query_evidence_lines(
     # only as a grounding gate (score > 0) and tiebreaker. The retriever already
     # fuses BM25 + dense semantics, so trusting its relevance prevents the lexical
     # heuristic from burying a concise on-topic section under verbose, tangential
-    # chunks that merely repeat the query words.
-    ranked: list[tuple[float, int, set[str], object, str]] = []
+    # chunks that merely repeat the query words. Extraction quality (OCR
+    # confidence) is folded in only as a final tiebreaker so a cleaner extraction
+    # wins when candidates are otherwise equally relevant and grounded.
+    ranked: list[tuple[float, int, float, set[str], object, str]] = []
     forced: list[str] = []  # source-hint matches bypass the score filter
     # Launch-folder ("home") chunks kept as gate-relaxed candidates so a small
     # provided folder is never fully crowded out of the evidence by a larger
     # accumulated cross-directory corpus (see the home-corpus floor below).
-    home_candidates: list[tuple[float, int, object, str]] = []
+    home_candidates: list[tuple[float, int, float, object, str]] = []
     home_node_count = 0
     total_node_count = 0
     selected_ids: set[object] = set()
@@ -144,6 +165,7 @@ def _source_nodes_to_query_evidence_lines(
         score = _query_candidate_score(search_text, terms, anchor_terms, require_value)
         relevance = node_relevance.get(_node_identity(node), 0.0)
         identity = _node_identity(node)
+        quality = _extraction_quality(metadata)
         total_node_count += 1
 
         is_home = bool(home_root) and bool(node_fpath) and node_fpath.startswith(home_root)
@@ -153,7 +175,7 @@ def _source_nodes_to_query_evidence_lines(
             home_snippet = " ".join(node_text.split())[:home_max].rstrip()
             if len(node_text) > home_max:
                 home_snippet += "..."
-            home_candidates.append((relevance, score, identity, f"- {label}: {home_snippet}"))
+            home_candidates.append((relevance, score, quality, identity, f"- {label}: {home_snippet}"))
 
         if score <= 0:
             continue
@@ -172,10 +194,11 @@ def _source_nodes_to_query_evidence_lines(
                 continue
 
         coverage = _query_topic_coverage(snippet, terms, anchor_terms)
-        ranked.append((relevance, score, coverage, identity, f"- {label}: {snippet}"))
+        ranked.append((relevance, score, quality, coverage, identity, f"- {label}: {snippet}"))
 
     # Primary sort: retriever relevance (RRF). Secondary: lexical grounding score.
-    ranked.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    # Tertiary: extraction quality (cleaner OCR breaks ties).
+    ranked.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
     selected = list(forced)  # source-hinted evidence first
 
     # Home-corpus floor: when the launch folder is a MINORITY of the indexed
@@ -185,9 +208,9 @@ def _source_nodes_to_query_evidence_lines(
     # single-corpus case), leaving default ranking untouched.
     home_share = (home_node_count / total_node_count) if total_node_count else 0.0
     if home_candidates and 0.0 < home_share < 0.5:
-        home_candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        home_candidates.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
         reserve = min(len(home_candidates), max(4, max_items // 3))
-        for _, _, identity, line in home_candidates[:reserve]:
+        for _, _, _, identity, line in home_candidates[:reserve]:
             if identity in selected_ids or line in selected:
                 continue
             selected.append(line)
@@ -199,7 +222,7 @@ def _source_nodes_to_query_evidence_lines(
         # Aggregation queries must list EVERY matching item, so skip the
         # topic-coverage dedup (which drops same-topic chunks such as additional
         # resume entries) and take the highest-ranked full chunks directly.
-        for _, _, _, identity, line in ranked:
+        for _, _, _, _, identity, line in ranked:
             if identity in selected_ids or line in selected:
                 continue
             selected.append(line)
@@ -210,7 +233,7 @@ def _source_nodes_to_query_evidence_lines(
 
     covered_topics: set[str] = set()
 
-    for _, _, coverage, identity, line in ranked:
+    for _, _, _, coverage, identity, line in ranked:
         if identity in selected_ids or line in selected:
             continue
         if coverage - covered_topics:
@@ -220,7 +243,7 @@ def _source_nodes_to_query_evidence_lines(
             if len(selected) >= max_items:
                 return selected
 
-    for _, _, _, identity, line in ranked:
+    for _, _, _, _, identity, line in ranked:
         if identity in selected_ids or line in selected:
             continue
         selected.append(line)
