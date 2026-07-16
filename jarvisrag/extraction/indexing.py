@@ -20,6 +20,7 @@ import shutil
 from typing import Any, Dict, List, Optional
 
 from llama_index.core import VectorStoreIndex
+from llama_index.core.ingestion import run_transformations
 from llama_index.core.schema import Document
 from llama_index.core.storage.storage_context import StorageContext
 from llama_index.core.vector_stores.simple import SimpleVectorStore
@@ -36,6 +37,11 @@ from jarvisrag.text.textproc import (
     is_low_information_text,
     normalize_text,
 )
+
+# Number of chunks embedded + inserted into Milvus per delta-sync batch. Batching
+# avoids the per-chunk embedding call + Milvus round-trip that one-at-a-time
+# index.insert(doc) incurs.
+_DELTA_SYNC_BATCH_SIZE = 64
 
 
 def filter_informative_documents(documents: List[Document]) -> List[Document]:
@@ -547,22 +553,40 @@ def _apply_manifest_delta(
         new_docs = [doc for doc in current_documents if doc.id_ in insert_set]
         total = len(new_docs)
         print(f"[index] delta-sync: embedding {total} new/changed chunk(s)...")
-        for i, doc in enumerate(new_docs, start=1):
+        # Insert in batches so the embedding model and Milvus process many chunks
+        # per call. index.insert(doc) embeds a single chunk and does one Milvus
+        # round-trip per call, which is dramatically slower on large corpora.
+        for start in range(0, total, _DELTA_SYNC_BATCH_SIZE):
+            batch = new_docs[start:start + _DELTA_SYNC_BATCH_SIZE]
             try:
-                index.insert(doc)
-                inserted_count += 1
-            except Exception as exc:
-                skipped_count += 1
-                meta = doc.metadata or {}
+                nodes = run_transformations(batch, index._transformations)
+                index.insert_nodes(nodes)
+                for doc in batch:
+                    index.docstore.set_document_hash(doc.id_, doc.hash)
+                inserted_count += len(batch)
+            except Exception as batch_exc:
+                # Fall back to per-doc so a single bad chunk (e.g. metadata too
+                # long for Milvus) doesn't drop the whole batch.
                 logger.warning(
-                    f"Skipped chunk {doc.id_} from "
-                    f"{meta.get('file_name', meta.get('file_path', '?'))}: {exc}"
+                    f"Batch insert failed ({batch_exc}); retrying "
+                    f"{len(batch)} chunk(s) individually"
                 )
-            if i % 25 == 0 or i == total:
-                print(
-                    f"[index] delta-sync: embedded {i}/{total} chunk(s) "
-                    f"(skipped={skipped_count})"
-                )
+                for doc in batch:
+                    try:
+                        index.insert(doc)
+                        inserted_count += 1
+                    except Exception as exc:
+                        skipped_count += 1
+                        meta = doc.metadata or {}
+                        logger.warning(
+                            f"Skipped chunk {doc.id_} from "
+                            f"{meta.get('file_name', meta.get('file_path', '?'))}: {exc}"
+                        )
+            done = min(start + _DELTA_SYNC_BATCH_SIZE, total)
+            print(
+                f"[index] delta-sync: embedded {done}/{total} chunk(s) "
+                f"(skipped={skipped_count})"
+            )
 
     return inserted_count, deleted_count
 

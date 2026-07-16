@@ -59,7 +59,9 @@ def _build_embed_model() -> HuggingFaceEmbedding:
     # strong retrieval ranking on heterogeneous content (resumes, contracts, PDFs).
     # Do NOT add query/text instructions — bge-m3 is not prefix-trained and adding
     # them degrades retrieval quality.
-    return HuggingFaceEmbedding(model_name="BAAI/bge-m3")
+    # embed_batch_size raised from the default (10) so bulk indexing embeds more
+    # chunks per forward pass.
+    return HuggingFaceEmbedding(model_name="BAAI/bge-m3", embed_batch_size=32)
 
 
 def _load_corpus_documents(input_dir: str) -> list:

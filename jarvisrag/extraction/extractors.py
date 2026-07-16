@@ -1097,7 +1097,8 @@ def has_files_with_extensions(directory, extensions):
 # _extraction_mode_signature() (e.g. VLM dtype/preprocessing/generation changes
 # in jarvisrag/extraction/vlm.py). v3: SmolVLM2 float32 + EXIF transpose +
 # downscale + repetition controls. v4: Apple Vision OCR backend on the text path.
-EXTRACTION_CACHE_VERSION = 4
+# v5: Apple Vision OCR row-band assembly (preserves table rows/columns).
+EXTRACTION_CACHE_VERSION = 5
 
 
 def _extraction_cache_path(cache_dir: str, file_path: str) -> str:

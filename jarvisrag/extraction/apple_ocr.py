@@ -97,15 +97,26 @@ class AppleOCREngine:
 
 
 def _assemble(annotations) -> Tuple[str, float]:
-    """Order recognized lines into natural reading order and join them.
+    """Reconstruct reading order from Vision's line boxes, preserving rows.
 
-    ``ocrmac`` returns ``(text, confidence, [x, y, w, h])`` per line, where the
-    bounding box is normalized to 0.0-1.0 with a *bottom-left* origin (Vision
-    convention): a larger ``y`` is higher on the page. We therefore sort by
-    descending ``y`` (top-to-bottom) then ascending ``x`` (left-to-right).
+    ``ocrmac`` returns ``(text, confidence, [x, y, w, h])`` per recognized line,
+    normalized 0.0-1.0 with a *bottom-left* origin (Vision convention): a larger
+    ``y`` is higher on the page.
+
+    A naive global sort by ``y`` interleaves cells from different columns of a
+    table (e.g. a scanned transcript) into one flat stream, destroying the
+    row/column association. Instead we group lines into horizontal *rows* (band
+    the page by vertical position, using the line height as the tolerance), then
+    order each row left-to-right by ``x``. Cells that share a visual row stay
+    together on one output line, and rows stay in top-to-bottom order — so
+    tabular data (a label next to its value) remains readable for downstream
+    retrieval and synthesis, while ordinary prose is unaffected (each paragraph
+    line is simply its own single-cell row).
     """
-    items: List[Tuple[float, float, str]] = []
+    # (center_y, x, height, text) per line.
+    items: List[Tuple[float, float, float, str]] = []
     confidences: List[float] = []
+    heights: List[float] = []
     for annotation in annotations or []:
         try:
             text = str(annotation[0] or "").strip()
@@ -117,18 +128,56 @@ def _assemble(annotations) -> Tuple[str, float]:
             bbox = annotation[2] if len(annotation) > 2 else (0.0, 0.0, 0.0, 0.0)
             x = float(bbox[0])
             y = float(bbox[1])
+            h = float(bbox[3]) if len(bbox) > 3 else 0.0
         except Exception:
             continue
         if not text:
             continue
-        items.append((y, x, text))
+        items.append((y + h / 2.0, x, h, text))
         confidences.append(confidence)
+        if h > 0:
+            heights.append(h)
 
     if not items:
         return "", 0.0
 
-    items.sort(key=lambda item: (-item[0], item[1]))
-    text = "\n".join(item[2] for item in items)
+    # Row-band tolerance: half the median line height (fall back to a small
+    # constant when Vision does not report usable heights). Two lines whose
+    # vertical centers are within this distance are treated as the same row.
+    if heights:
+        heights.sort()
+        median_h = heights[len(heights) // 2]
+    else:
+        median_h = 0.0
+    tol = (median_h / 2.0) if median_h > 0 else 0.012
+
+    # Sort top-to-bottom (descending center_y), then cluster into rows.
+    items.sort(key=lambda item: -item[0])
+    rows: List[List[Tuple[float, float, float, str]]] = []
+    current: List[Tuple[float, float, float, str]] = []
+    band_center: Optional[float] = None
+    for item in items:
+        center_y = item[0]
+        if band_center is None or abs(center_y - band_center) <= tol:
+            current.append(item)
+            # Running mean keeps the band anchored as lines accrete.
+            band_center = (
+                center_y
+                if band_center is None
+                else (band_center * (len(current) - 1) + center_y) / len(current)
+            )
+        else:
+            rows.append(current)
+            current = [item]
+            band_center = center_y
+    if current:
+        rows.append(current)
+
+    lines: List[str] = []
+    for row in rows:
+        row.sort(key=lambda item: item[1])  # left-to-right within the row
+        lines.append(" ".join(item[3] for item in row))
+    text = "\n".join(lines)
     confidence = sum(confidences) / len(confidences) if confidences else 0.0
     return text, confidence
 
