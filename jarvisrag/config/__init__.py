@@ -99,6 +99,15 @@ JARVIS_OCR_MIN_CONF = float(os.environ.get("JARVIS_OCR_MIN_CONF", "0.65"))
 # is treated as a real (born-digital) text layer. Below this the page is deemed
 # image-only/scanned and is escalated to the OCR path.
 JARVIS_PDF_MIN_CHARS_PER_PAGE = int(os.environ.get("JARVIS_PDF_MIN_CHARS_PER_PAGE", "40"))
+# Document-level OCR quality validator + escalation. When a whole scanned page's
+# assembled text fails a vocabulary-grounded garbage/empty check, the pipeline
+# does NOT blindly keep that first result: it escalates to the other enabled
+# local engines (the VLM when on, then the pytesseract/easyocr fallback) and
+# keeps the highest-quality, non-garbage transcription. This closes the
+# "confidently-wrong or empty page slips through" gap using only local engines
+# already present — no new dependency, no cloud, no fee. On by default; set
+# JARVIS_OCR_ESCALATE_ON_FAILURE=0 to restore first-non-empty-wins behavior.
+JARVIS_OCR_ESCALATE_ON_FAILURE = os.environ.get("JARVIS_OCR_ESCALATE_ON_FAILURE", "1") == "1"
 # Resolution (DPI) used to rasterize a PDF page when it must be sent through the
 # OCR path. 300 DPI is the accuracy/latency sweet spot for document OCR.
 JARVIS_PDF_OCR_DPI = int(os.environ.get("JARVIS_PDF_OCR_DPI", "300"))

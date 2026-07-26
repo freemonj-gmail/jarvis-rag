@@ -36,6 +36,7 @@ from jarvisrag.config import (
     JARVIS_ENABLE_PAGE_PIPELINE,
     JARVIS_ENABLE_SURYA,
     JARVIS_ENABLE_VLM,
+    JARVIS_OCR_ESCALATE_ON_FAILURE,
     JARVIS_OCR_MIN_CONF,
     JARVIS_PDF_MIN_CHARS_PER_PAGE,
     JARVIS_PDF_OCR_DPI,
@@ -1098,7 +1099,8 @@ def has_files_with_extensions(directory, extensions):
 # in jarvisrag/extraction/vlm.py). v3: SmolVLM2 float32 + EXIF transpose +
 # downscale + repetition controls. v4: Apple Vision OCR backend on the text path.
 # v5: Apple Vision OCR row-band assembly (preserves table rows/columns).
-EXTRACTION_CACHE_VERSION = 5
+# v6: document-level OCR validator + escalation on whole-page failure.
+EXTRACTION_CACHE_VERSION = 6
 
 
 def _extraction_cache_path(cache_dir: str, file_path: str) -> str:
@@ -1125,7 +1127,8 @@ def _extraction_mode_signature() -> str:
         f"vlmcaption={int(JARVIS_VLM_CAPTION)};"
         f"appleocr={int(JARVIS_ENABLE_APPLE_OCR)};"
         f"applelangs={JARVIS_APPLE_OCR_LANGS if JARVIS_ENABLE_APPLE_OCR else ''};"
-        f"applelevel={JARVIS_APPLE_OCR_LEVEL if JARVIS_ENABLE_APPLE_OCR else ''}"
+        f"applelevel={JARVIS_APPLE_OCR_LEVEL if JARVIS_ENABLE_APPLE_OCR else ''};"
+        f"ocrescalate={int(JARVIS_OCR_ESCALATE_ON_FAILURE)}"
     )
 
 

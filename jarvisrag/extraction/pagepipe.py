@@ -38,6 +38,12 @@ whole scanned pages *ahead of* the VLM on the text path — it is verbatim, fast
 and on-device. Phase 2 then reserves the VLM (e.g. SmolVLM2) for captioning
 figure/photo regions, and Phase 3 runs a constrained local-LLM normalization
 pass over low-confidence regions before embedding.
+
+A document-level quality validator (``JARVIS_OCR_ESCALATE_ON_FAILURE``) guards
+the whole-page path: when a scanned page's assembled text fails a
+vocabulary-grounded garbage/empty check, the pipeline escalates to the other
+enabled local engines and keeps the best (non-garbage, higher-confidence)
+transcription, instead of blindly keeping the first non-empty result.
 """
 
 from __future__ import annotations
@@ -50,13 +56,36 @@ from jarvisrag.config import (
     JARVIS_ENABLE_APPLE_OCR,
     JARVIS_ENABLE_SURYA,
     JARVIS_ENABLE_VLM,
+    JARVIS_OCR_ESCALATE_ON_FAILURE,
     JARVIS_OCR_MIN_CONF,
     JARVIS_PDF_MIN_CHARS_PER_PAGE,
     JARVIS_VLM_CAPTION,
     JARVIS_VLM_CONF,
     logger,
 )
-from jarvisrag.text.textproc import normalize_text
+from jarvisrag.text.textproc import _is_ocr_garbage_text, normalize_text
+
+
+def ocr_extraction_failed(text: str) -> Tuple[bool, str]:
+    """Return ``(failed, reason)`` for a whole-page OCR transcription.
+
+    A document-level quality gate used to decide whether to *escalate* a scanned
+    page to another local engine. It reports failure only for the two
+    unambiguous cases — an empty result, or text the vocabulary-grounded garbage
+    detector rejects — so a merely sparse (but genuine) page is not needlessly
+    re-OCR'd. It never raises; on any error it reports "not failed" so extraction
+    proceeds with whatever text is in hand.
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return True, "empty"
+    try:
+        is_garbage, reason = _is_ocr_garbage_text(raw)
+    except Exception:
+        return False, ""
+    if is_garbage:
+        return True, reason or "garbage"
+    return False, ""
 
 # A fallback OCR callable takes a PIL image (a region crop or a whole page) and
 # returns (text, confidence in 0.0-1.0). Confidence may be 0.0 when the engine
@@ -501,34 +530,79 @@ class PageProcessor:
                     region.source = "vlm"
         return regions
 
+    def _best_extraction(self, candidates: List[Tuple[str, float, str]]) -> Tuple[str, float, str]:
+        """Pick the strongest whole-page transcription among engine candidates.
+
+        Ranks by: passes the garbage/empty validator first, then higher
+        confidence, then longer coverage. This means a non-garbage result from a
+        later engine beats a garbage result from an earlier one, while still
+        preferring a confident primary read when it is valid.
+        """
+        if not candidates:
+            return "", 0.0, "unavailable"
+
+        def _rank(item: Tuple[str, float, str]) -> Tuple[int, float, int]:
+            text, conf, _source = item
+            failed, _ = ocr_extraction_failed(text)
+            return (0 if failed else 1, float(conf), len(text))
+
+        return max(candidates, key=_rank)
+
     def _whole_page_fallback(self, image, width: float, height: float) -> Page:
-        text, conf, source = "", 0.0, "unavailable"
+        # Collect a candidate transcription from each enabled local engine, in
+        # cost order (Apple Vision -> VLM -> pytesseract/easyocr). With the
+        # document-level validator on (JARVIS_OCR_ESCALATE_ON_FAILURE), a page
+        # whose first transcription fails the garbage/empty gate escalates to the
+        # next engine instead of being blindly kept; the best (non-garbage,
+        # higher-confidence) result wins. With it off, the first non-empty result
+        # wins, preserving the legacy short-circuit behavior.
+        candidates: List[Tuple[str, float, str]] = []
+        escalate = JARVIS_OCR_ESCALATE_ON_FAILURE
+
+        def _consider(raw_text: str, conf: float, source: str) -> bool:
+            """Record a non-empty candidate; return True when it is good enough
+            to stop escalating (i.e. it passed the validator, or escalation is
+            disabled)."""
+            text = (raw_text or "").strip()
+            if not text:
+                return False
+            candidates.append((text, conf, source))
+            if not escalate:
+                return True
+            failed, reason = ocr_extraction_failed(text)
+            if failed:
+                logger.info(
+                    f"OCR whole-page result from '{source}' failed validation ({reason}); "
+                    f"escalating to the next available engine."
+                )
+            return not failed
 
         # Apple Vision OCR is the preferred whole-page text engine when enabled:
         # verbatim, hardware-accelerated, and free. It runs ahead of the VLM so
         # scanned/photographed pages (IDs, receipts, forms) are transcribed
         # exactly rather than paraphrased.
+        satisfied = False
         if JARVIS_ENABLE_APPLE_OCR:
             apple_text, apple_conf = self._apple_ocr(image)
-            if apple_text and apple_text.strip():
-                text, conf, source = apple_text.strip(), max(apple_conf, self.min_confidence), "apple_ocr"
+            floored = max(apple_conf, self.min_confidence) if (apple_text or "").strip() else apple_conf
+            satisfied = _consider(apple_text, floored, "apple_ocr")
 
-        # With no Surya layout and no Apple OCR text, the VLM is the strongest
-        # remaining whole-page reader, so try it next when enabled; otherwise
-        # fall back to the caller's pytesseract/easyocr engine.
-        if not text and JARVIS_ENABLE_VLM:
+        # With no Surya layout and no acceptable Apple OCR text, the VLM is the
+        # strongest remaining whole-page reader, so try it next when enabled;
+        # otherwise fall back to the caller's pytesseract/easyocr engine.
+        if not satisfied and JARVIS_ENABLE_VLM:
             vlm_text = self._vlm_ocr(image)
-            if vlm_text:
-                text, conf, source = vlm_text, JARVIS_VLM_CONF, "vlm"
+            satisfied = _consider(vlm_text, JARVIS_VLM_CONF, "vlm")
 
-        if not text and self.fallback_ocr is not None:
+        if not satisfied and self.fallback_ocr is not None:
             try:
                 t, c = self.fallback_ocr(image)
             except Exception as e:
                 logger.info(f"Whole-page fallback OCR failed: {e}")
                 t, c = "", 0.0
-            if t and t.strip():
-                text, conf, source = t.strip(), c, "ocr_fallback"
+            _consider(t, c, "ocr_fallback")
+
+        text, conf, source = self._best_extraction(candidates)
 
         regions: List[Region] = []
         if text:
