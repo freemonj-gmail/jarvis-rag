@@ -40,6 +40,7 @@ EXTRACTION_CACHE_DIR = os.path.join(PERSIST_DIR, "extraction_cache")
 
 DOCUMENT_EXTENSIONS = [
     ".pdf", ".docx", ".doc", ".xlsx", ".xls", ".ppt", ".pptx", ".txt", ".csv", ".rtf",
+    ".html", ".htm", ".mhtml", ".mht",
 ]
 IMAGE_EXTENSIONS = [".jpg", ".jpeg", ".png", ".tiff", ".bmp", ".gif"]
 

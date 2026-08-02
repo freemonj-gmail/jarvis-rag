@@ -1060,8 +1060,72 @@ class DoclingReader:
         return docs
 
 
+class MHTMLReader:
+    """Parse .mhtml/.mht MIME web-archive files (single-file "webpage, complete"
+    saves). The container is a MIME multipart message; extract its primary
+    text/html part with the stdlib ``email`` parser, then delegate the HTML to
+    ``html_reader`` (Docling, with its UnstructuredReader fallback) so extraction
+    stays identical to a plain .html file."""
+
+    def __init__(self, html_reader):
+        self._html_reader = html_reader
+
+    @staticmethod
+    def _extract_html(file_path_str: str) -> Optional[str]:
+        import email
+        from email import policy
+
+        with open(file_path_str, "rb") as handle:
+            message = email.message_from_binary_file(handle, policy=policy.default)
+        html_part = None
+        text_part = None
+        for part in message.walk():
+            content_type = part.get_content_type()
+            if content_type == "text/html" and html_part is None:
+                html_part = part
+            elif content_type == "text/plain" and text_part is None:
+                text_part = part
+        chosen = html_part or text_part
+        if chosen is None:
+            return None
+        content = chosen.get_content()
+        return content if isinstance(content, str) else str(content)
+
+    def load_data(self, file_path, **kwargs):
+        file_path_str = str(file_path)
+        file_name = os.path.basename(file_path_str)
+        try:
+            html = self._extract_html(file_path_str)
+        except Exception as e:
+            logger.error(f"MHTMLReader could not parse {file_name}: {e}")
+            return []
+        if not html:
+            logger.info(f"MHTMLReader found no text/html or text/plain part in {file_name}.")
+            return []
+        tmp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                "w", suffix=".html", delete=False, encoding="utf-8"
+            ) as tmp:
+                tmp.write(html)
+                tmp_path = tmp.name
+            docs = self._html_reader.load_data(tmp_path, **kwargs) or []
+        except Exception as e:
+            logger.error(f"MHTMLReader failed to extract HTML from {file_name}: {e}")
+            return []
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        # Rewrite provenance from the temp .html back to the original archive.
+        for doc in docs:
+            doc.metadata["file_path"] = file_path_str
+            doc.metadata["file_name"] = file_name
+        return docs
+
+
 jpeg_extractor = DeferredExtractor(JpegExtractor)
 docling_reader = DoclingReader()
+mhtml_reader = MHTMLReader(docling_reader)
 file_extractor = {
     ".pdf": CombinedPDFReader(),
     ".docx": docling_reader,
@@ -1069,6 +1133,10 @@ file_extractor = {
     ".rtf": UnstructuredReader(),
     ".csv": UnstructuredReader(),
     ".txt": None,
+    ".html": docling_reader,
+    ".htm": docling_reader,
+    ".mhtml": mhtml_reader,
+    ".mht": mhtml_reader,
     ".jpeg": jpeg_extractor,
     ".jpg": jpeg_extractor,
     ".png": jpeg_extractor,
@@ -1100,7 +1168,8 @@ def has_files_with_extensions(directory, extensions):
 # downscale + repetition controls. v4: Apple Vision OCR backend on the text path.
 # v5: Apple Vision OCR row-band assembly (preserves table rows/columns).
 # v6: document-level OCR validator + escalation on whole-page failure.
-EXTRACTION_CACHE_VERSION = 6
+# v7: HTML (.html/.htm via Docling) + MHTML (.mhtml/.mht) extraction support.
+EXTRACTION_CACHE_VERSION = 7
 
 
 def _extraction_cache_path(cache_dir: str, file_path: str) -> str:
