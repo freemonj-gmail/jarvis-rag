@@ -24,6 +24,7 @@ from llama_index.llms.ollama import Ollama
 
 from jarvisrag.config import JARVIS_DEBUG, debug_print
 from jarvisrag.text.textproc import is_low_information_text, normalize_text
+from jarvisrag.iotools import Spinner
 from jarvisrag.speech import (
     _INLINE_CITATION_RE,
     _SOURCE_REFERENCE_RE,
@@ -818,56 +819,65 @@ def _answer_with_review_loop(
     # with a caveat instead.
     reasoning_requested = _query_requests_reasoning(user_query)
 
-    for attempt in range(1, max_attempts + 1):
-        answer = _synthesize_evidence_answer(
-            user_query,
-            evidence_lines,
-            llm_client,
-            review_feedback=review_feedback,
-            prior_answer=prior_answer,
-        )
-        if not answer:
-            fallback_answer = _extractive_reasoning_answer_from_evidence(user_query, evidence_lines)
-            if fallback_answer:
-                debug_print(f"[debug] Used extractive reasoning fallback on attempt {attempt}.")
-                return fallback_answer, True, "answered with extractive reasoning fallback"
-            # Prefer an LLM-distilled answer over a raw snippet dump: when primary
-            # synthesis returns empty, first ask the model to distill the (possibly
-            # noisy) evidence into a succinct answer. Only if that also yields
-            # nothing do we surface raw snippets. This keeps every query getting a
-            # synthesized answer when one is possible, instead of pasting chunks.
-            distilled = _distill_answer_from_evidence(user_query, evidence_lines, llm_client)
-            if distilled:
-                debug_print(f"[debug] Used LLM distillation fallback on attempt {attempt}.")
-                return distilled, True, "answered with LLM-distilled evidence fallback"
-            fallback_answer = _extractive_summary_answer_from_evidence(user_query, evidence_lines)
-            if fallback_answer:
-                debug_print(f"[debug] Used extractive summary fallback on attempt {attempt}.")
-                return fallback_answer, True, "answered with extractive evidence summary fallback"
-            fallback_answer = _forced_extractive_summary_from_evidence(user_query, evidence_lines)
-            if fallback_answer:
-                debug_print(f"[debug] Used forced extractive summary fallback on attempt {attempt}.")
-                return fallback_answer, True, "answered with forced extractive evidence summary fallback"
-            last_review_reason = "answer synthesis returned no text"
-            break
+    # One elegant in-place status line spans every attempt. Each attempt runs one
+    # or two uncapped 31B generations over a large evidence context, so without
+    # this the multi-minute wait between the retrieval log and the final answer
+    # looks like a hang. The label switches per phase instead of reprinting.
+    with Spinner("Synthesizing") as spin:
+        for attempt in range(1, max_attempts + 1):
+            if attempt > 1:
+                spin.update("Refining")
+            answer = _synthesize_evidence_answer(
+                user_query,
+                evidence_lines,
+                llm_client,
+                review_feedback=review_feedback,
+                prior_answer=prior_answer,
+            )
+            if not answer:
+                fallback_answer = _extractive_reasoning_answer_from_evidence(user_query, evidence_lines)
+                if fallback_answer:
+                    debug_print(f"[debug] Used extractive reasoning fallback on attempt {attempt}.")
+                    return fallback_answer, True, "answered with extractive reasoning fallback"
+                # Prefer an LLM-distilled answer over a raw snippet dump: when primary
+                # synthesis returns empty, first ask the model to distill the (possibly
+                # noisy) evidence into a succinct answer. Only if that also yields
+                # nothing do we surface raw snippets. This keeps every query getting a
+                # synthesized answer when one is possible, instead of pasting chunks.
+                spin.update("Distilling")
+                distilled = _distill_answer_from_evidence(user_query, evidence_lines, llm_client)
+                if distilled:
+                    debug_print(f"[debug] Used LLM distillation fallback on attempt {attempt}.")
+                    return distilled, True, "answered with LLM-distilled evidence fallback"
+                fallback_answer = _extractive_summary_answer_from_evidence(user_query, evidence_lines)
+                if fallback_answer:
+                    debug_print(f"[debug] Used extractive summary fallback on attempt {attempt}.")
+                    return fallback_answer, True, "answered with extractive evidence summary fallback"
+                fallback_answer = _forced_extractive_summary_from_evidence(user_query, evidence_lines)
+                if fallback_answer:
+                    debug_print(f"[debug] Used forced extractive summary fallback on attempt {attempt}.")
+                    return fallback_answer, True, "answered with forced extractive evidence summary fallback"
+                last_review_reason = "answer synthesis returned no text"
+                break
 
-        if not best_answer:
+            if not best_answer:
+                best_answer = answer
+
+            spin.update("Reviewing")
+            review_passed, review_reason = _review_answer_against_evidence(
+                user_query,
+                answer,
+                evidence_lines,
+                llm_client,
+            )
+            if review_passed:
+                debug_print(f"[debug] Answer review passed on attempt {attempt}.")
+                return answer, True, review_reason
+
+            debug_print(f"[debug] Answer review failed on attempt {attempt}: {review_reason}")
+            last_review_reason = review_reason
+            review_feedback = review_reason
             best_answer = answer
-
-        review_passed, review_reason = _review_answer_against_evidence(
-            user_query,
-            answer,
-            evidence_lines,
-            llm_client,
-        )
-        if review_passed:
-            debug_print(f"[debug] Answer review passed on attempt {attempt}.")
-            return answer, True, review_reason
-
-        debug_print(f"[debug] Answer review failed on attempt {attempt}: {review_reason}")
-        last_review_reason = review_reason
-        review_feedback = review_reason
-        best_answer = answer
 
     if best_answer:
         hallucination_markers = ("hallucinat", "outside", "not present", "not in the evidence", "invent", "external", "made up", "fabricat")
@@ -1070,7 +1080,7 @@ def _author_from_evidence(
         + f"User request:\n{query}\n\nDocument:\n"
     )
     try:
-        with _llm_output_budget(llm_client, -1):
+        with Spinner("Composing document"), _llm_output_budget(llm_client, -1):
             response = llm_client.chat([ChatMessage(role=MessageRole.USER, content=prompt)])
         answer = (response.message.content or "").strip()
         if not answer:

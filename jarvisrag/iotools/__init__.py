@@ -9,6 +9,9 @@ import logging
 import math
 import os
 import signal
+import sys
+import threading
+import time
 from contextlib import contextmanager
 from typing import Optional
 
@@ -112,6 +115,143 @@ def time_limit(seconds: Optional[float], operation: str = "operation"):
     finally:
         signal.alarm(0)
         signal.signal(signal.SIGALRM, previous_handler)
+
+
+class Spinner:
+    """Single-line, in-place progress indicator for long synchronous calls.
+
+    While active it animates one terminal line (rewritten with ``\\r``) showing a
+    spinner frame, the current phase label, and the elapsed time, instead of
+    emitting a fresh ``print`` for every phase/attempt. A daemon thread keeps it
+    ticking while the calling thread blocks in a synchronous LLM request. Because
+    generation is uncapped (no known total), elapsed time + motion is the honest
+    signal -- there is no meaningful percentage to show.
+
+    On exit it leaves a **persistent** one-line summary showing the total
+    duration and a per-phase breakdown (aggregated by label, in first-seen
+    order), so the timing stays on screen after the answer prints::
+
+        ✓ 2m05s total  ·  Synthesizing 78s  ·  Reviewing 32s  ·  Refining 15s
+
+    Degrades gracefully: only animates on an interactive TTY. When stdout is
+    redirected (pipes, tests, non-interactive runs) it prints one plain line per
+    distinct phase, then the same summary. Never raises into the caller.
+
+    Usage::
+
+        with Spinner("Synthesizing answer") as spin:
+            answer = llm.chat(...)
+            spin.update("Reviewing answer")
+            ok = review(...)
+    """
+
+    _FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+    def __init__(self, label: str, stream=None, interval: float = 0.1):
+        self._stream = stream if stream is not None else sys.stdout
+        self._label = label
+        self._interval = interval
+        self._start = time.monotonic()
+        self._phase_start = self._start
+        self._stop = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+        self._last_plain: Optional[str] = None
+        # Per-phase durations aggregated by label, preserving first-seen order.
+        self._phase_order: list[str] = [label]
+        self._phase_totals: dict[str, float] = {label: 0.0}
+        try:
+            self._tty = bool(self._stream.isatty())
+        except Exception:
+            self._tty = False
+
+    @staticmethod
+    def _format_duration(seconds: float, force_minutes: bool = False) -> str:
+        seconds = max(0.0, seconds)
+        if force_minutes or seconds >= 60:
+            minutes, secs = divmod(int(round(seconds)), 60)
+            return f"{minutes}m{secs:02d}s"
+        if seconds < 10:
+            return f"{seconds:.1f}s"
+        return f"{seconds:.0f}s"
+
+    def _write(self, text: str) -> None:
+        try:
+            self._stream.write(text)
+            self._stream.flush()
+        except Exception:
+            pass
+
+    def _emit_plain(self) -> None:
+        if self._label != self._last_plain:
+            self._last_plain = self._label
+            self._write(f"[jarvis] {self._label}...\n")
+
+    def _close_phase(self) -> None:
+        now = time.monotonic()
+        self._phase_totals[self._label] = (
+            self._phase_totals.get(self._label, 0.0) + (now - self._phase_start)
+        )
+        self._phase_start = now
+
+    def _run(self) -> None:
+        i = 0
+        while not self._stop.is_set():
+            frame = self._FRAMES[i % len(self._FRAMES)]
+            elapsed = time.monotonic() - self._start
+            self._write(
+                f"\r\033[K{frame} {self._label}... {self._format_duration(elapsed)}"
+            )
+            i += 1
+            self._stop.wait(self._interval)
+
+    def _summary_line(self) -> str:
+        total = time.monotonic() - self._start
+        # When the total crosses a minute, render every step in the same m/s
+        # format so the breakdown stays visually consistent with the total.
+        force_minutes = total >= 60
+        parts = [
+            f"{label} {self._format_duration(self._phase_totals.get(label, 0.0), force_minutes)}"
+            for label in self._phase_order
+        ]
+        if len(parts) == 1:
+            # Single phase: total == that phase, so don't repeat it.
+            return f"✓ {self._phase_order[0]} {self._format_duration(total, force_minutes)}"
+        breakdown = "  ·  ".join(parts)
+        return f"✓ {self._format_duration(total, force_minutes)} total  ·  {breakdown}"
+
+    def update(self, label: str) -> None:
+        """Switch the phase label shown on the live line, banking the elapsed
+        time against the phase that just ended (or emit a new plain line when not
+        attached to a TTY)."""
+        if label == self._label:
+            return
+        self._close_phase()
+        self._label = label
+        if label not in self._phase_totals:
+            self._phase_totals[label] = 0.0
+            self._phase_order.append(label)
+        if not self._tty:
+            self._emit_plain()
+
+    def __enter__(self) -> "Spinner":
+        if self._tty:
+            self._thread = threading.Thread(target=self._run, daemon=True)
+            self._thread.start()
+        else:
+            self._emit_plain()
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=0.5)
+        self._close_phase()
+        # Replace the transient animated line with a persistent timing summary so
+        # the duration stays on screen after the answer is displayed.
+        if self._tty:
+            self._write("\r\033[K")
+        self._write(self._summary_line() + "\n")
+        return False
 
 
 def _is_port_open(host: str, port: str, timeout: float = 2.0) -> bool:
