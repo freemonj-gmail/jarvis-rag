@@ -1,0 +1,885 @@
+"""Conservative query routing for Jarvis's deterministic calculator lane."""
+
+from __future__ import annotations
+
+import ast
+import re
+from dataclasses import dataclass
+from decimal import Decimal, ROUND_HALF_UP
+from typing import Callable
+
+from .operations import (
+    ArithmeticOperations,
+    MathOperationError,
+    ProbabilityOperations,
+    StatisticsOperations,
+    to_decimal,
+)
+
+
+_NUMBER = r"[-+]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?"
+_NUMBER_RE = re.compile(_NUMBER)
+_PERCENT_MARKER_RE = re.compile(r"%|\bpercent(?:age)?\b|\bper\s+cent\b", re.I)
+_DATE_LIKE_RE = re.compile(r"^\d{4}-\d{1,2}-\d{1,2}$")
+_TOKEN_RE = re.compile(r"-?\d+|[a-z]+")
+_CARDINALS = {
+    "one": 1,
+    "two": 2,
+    "three": 3,
+    "four": 4,
+    "five": 5,
+    "six": 6,
+    "seven": 7,
+    "eight": 8,
+    "nine": 9,
+    "ten": 10,
+    "eleven": 11,
+    "twelve": 12,
+    "thirteen": 13,
+    "fourteen": 14,
+    "fifteen": 15,
+    "sixteen": 16,
+    "seventeen": 17,
+    "eighteen": 18,
+    "nineteen": 19,
+    "twenty": 20,
+    "thirty": 30,
+    "forty": 40,
+    "fifty": 50,
+    "sixty": 60,
+    "seventy": 70,
+    "eighty": 80,
+    "ninety": 90,
+    "hundred": 100,
+}
+_EVENT_QUALIFIERS = {
+    "above", "below", "between", "even", "except", "greater", "less",
+    "multiple", "odd", "over", "prime", "under",
+}
+_OUTCOME_VERBS = {"get", "gets", "getting", "land", "landing", "lands", "roll", "rolling", "rolls"}
+# A die is six-faced unless stated otherwise, mirroring the two-sided coin default.
+_STANDARD_DIE_SIDES = 6
+_MULTIPLE_OBJECT_WORDS = {"pair", "both"}
+# Questions that point at indexed material belong to retrieval, never to the calculator.
+_DOCUMENT_CONTEXT_RE = re.compile(
+    r"\b(?:document|documents|report|reports|file|files|pdf|spreadsheet|manual|"
+    r"filing|invoice|contract|transcript|attachment|attached|described|mentioned|"
+    r"stated|listed|according\s+to|in\s+the\s+text)\b",
+    re.I,
+)
+# Words that may introduce a supplied dataset. Anything else between the
+# statistic and its numbers means the numbers belong to prose, not to a dataset.
+_STAT_LEAD_RE = re.compile(
+    r"^(?:\s*(?:of|for|from|the|these|those|this|that|a|an|is|are|was|were|"
+    r"numbers?|values?|data|dataset|set|list|series|observations|readings|"
+    r"scores|sample|population|following)\b|\s*[:=,-])+",
+    re.I,
+)
+_LIST_SEPARATOR_RE = re.compile(r"\band\b|[,;&]", re.I)
+_PERCENT_CHANGE_RE = re.compile(
+    r"\b(increases?d?|growth|grew|rises?|rose|gains?|"
+    r"decreases?d?|declines?d?|drops?(?:ped)?|falls?|fell|losses?|loss)\b",
+    re.I,
+)
+_DECREASE_WORDS = ("decreas", "declin", "drop", "fall", "fell", "loss")
+# Applying a rate to a base ("a 5% increase") rather than comparing two amounts.
+_APPLY_INCREASE_RE = re.compile(
+    r"\b(?:increase[sd]?|raise[sd]?|raising|rise[sn]?|rose|up|plus|added|adding|"
+    r"markup|marked\s+up|gain(?:s|ed)?|growth|grew)\b",
+    re.I,
+)
+_APPLY_DECREASE_RE = re.compile(
+    r"\b(?:decrease[sd]?|reduc(?:e|es|ed|ing|tion)|discount(?:ed)?|off|minus|"
+    r"deduct(?:s|ed|ing|ion|ions)?|after|net|drop(?:s|ped)?|decline[sd]?|falls?|"
+    r"fell|cut|withheld|withholding|subtract(?:s|ed|ing)?)\b",
+    re.I,
+)
+# Net/after-deduction framing, where a single rate is not the whole story.
+_NET_RESULT_RE = re.compile(
+    r"\btake[-\s]?home\b|\bbring\s+home\b|"
+    r"\bnet\s+(?:pay|salary|income|amount|earnings|proceeds|wage[s]?)\b|"
+    r"\bafter\s+(?:tax|taxes|deduction[s]?|withholding[s]?|fees|expenses)\b",
+    re.I,
+)
+_NET_DEDUCTION_NOTE = (
+    "This applies only the rate you gave; other withholdings and deductions are not included."
+)
+# Currency words are limited to unambiguous ones so "pounds" of weight is not money.
+_CURRENCY_RE = re.compile(r"[$\u20ac\u00a3\u00a5]|\b(?:dollars?|usd)\b", re.I)
+_CURRENCY_WORD_SYMBOLS = {"dollar": "$", "dollars": "$", "usd": "$"}
+_THRESHOLD_RE = re.compile(
+    r"\b(greater\s+than|more\s+than|larger\s+than|above|over|"
+    r"less\s+than|fewer\s+than|smaller\s+than|below|under|"
+    r"at\s+least|at\s+most)\s+([\w-]+)",
+    re.I,
+)
+_REQUEST_PREFIX_RE = re.compile(
+    r"^(?:(?:please|kindly)\s+|(?:can|could|would|will)\s+you(?:\s+please)?\s+|"
+    r"i(?:'d|\s+would)\s+like\s+you\s+to\s+)*",
+    re.IGNORECASE,
+)
+_ACTION_PREFIX_RE = re.compile(
+    r"^(?:what\s+is|what's|calculate|compute|solve|find)\s+",
+    re.IGNORECASE,
+)
+
+
+@dataclass(frozen=True)
+class CalculationResult:
+    """A calculation answer and its machine-readable provenance."""
+
+    category: str
+    operation: str
+    expression: str
+    value: Decimal | None
+    response_text: str
+    currency: str | None = None
+
+    def metadata(self) -> dict[str, str | None]:
+        return {
+            "category": self.category,
+            "operation": self.operation,
+            "expression": self.expression,
+            "value": _format_decimal(self.value)[0] if self.value is not None else None,
+            "currency": self.currency,
+        }
+
+
+@dataclass(frozen=True)
+class _UniformSampleSpace:
+    """A finite experiment whose elementary outcomes are equally likely."""
+
+    kind: str
+    size: int
+
+
+@dataclass(frozen=True)
+class _NumericTerm:
+    value: Decimal
+    start: int
+    end: int
+
+
+def _numbers(text: str) -> list[Decimal]:
+    return [to_decimal(match.group(0).replace(",", "")) for match in _NUMBER_RE.finditer(text)]
+
+
+def _numeric_terms(text: str) -> list[_NumericTerm]:
+    return [
+        _NumericTerm(
+            value=to_decimal(match.group(0).replace(",", "")),
+            start=match.start(),
+            end=match.end(),
+        )
+        for match in _NUMBER_RE.finditer(text)
+    ]
+
+
+def _format_decimal(value: Decimal) -> tuple[str, bool]:
+    """Format a Decimal for display/TTS, rounding only beyond 12 places."""
+    if not value.is_finite():
+        raise MathOperationError("The result is not a finite number.")
+    if value == value.to_integral_value():
+        return format(value.quantize(Decimal(1)), "f"), False
+
+    text = format(value, "f")
+    fractional = text.partition(".")[2]
+    if len(fractional) <= 12:
+        return text.rstrip("0").rstrip("."), False
+
+    rounded = value.quantize(Decimal("0.000000000001"), rounding=ROUND_HALF_UP)
+    return format(rounded, "f").rstrip("0").rstrip("."), rounded != value
+
+
+def _value_result(
+    category: str,
+    operation: str,
+    expression: str,
+    value: Decimal,
+    note: str = "",
+    currency: str | None = None,
+) -> CalculationResult:
+    if currency:
+        rendered, approximate = _format_amount(value, currency), False
+    else:
+        rendered, approximate = _format_decimal(value)
+    qualifier = "approximately " if approximate else ""
+    response_text = f"{expression} equals {qualifier}{rendered}."
+    return CalculationResult(
+        category=category,
+        operation=operation,
+        expression=expression,
+        value=value,
+        response_text=f"{response_text} {note}" if note else response_text,
+        currency=currency,
+    )
+
+
+def _currency_symbol(query: str) -> str | None:
+    match = _CURRENCY_RE.search(query)
+    if match is None:
+        return None
+    token = match.group(0)
+    return _CURRENCY_WORD_SYMBOLS.get(token.lower(), token)
+
+
+def _format_amount(value: Decimal, symbol: str) -> str:
+    return f"{symbol}{value.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP):,.2f}"
+
+
+def _money(value: Decimal, currency: str | None) -> str:
+    return _format_amount(value, currency) if currency else _format_decimal(value)[0]
+
+
+def _probability_result(operation: str, expression: str, value: Decimal) -> CalculationResult:
+    rendered, approximate = _format_decimal(value)
+    percent, percent_approximate = _format_decimal(value * Decimal(100))
+    qualifier = "approximately " if approximate else ""
+    percent_qualifier = "approximately " if percent_approximate else ""
+    return CalculationResult(
+        category="probability",
+        operation=operation,
+        expression=expression,
+        value=value,
+        response_text=(
+            f"{expression} is {qualifier}{rendered}, or "
+            f"{percent_qualifier}{percent} percent."
+        ),
+    )
+
+
+def _percentage_rate_result(
+    expression: str,
+    value: Decimal,
+    operation: str = "percentage rate",
+) -> CalculationResult:
+    rendered, approximate = _format_decimal(value)
+    qualifier = "approximately " if approximate else ""
+    return CalculationResult(
+        category="arithmetic",
+        operation=operation,
+        expression=expression,
+        value=value,
+        response_text=f"{expression} equals {qualifier}{rendered} percent.",
+    )
+
+
+def _finite_probability_result(
+    operation: str,
+    expression: str,
+    favorable: int,
+    total: int,
+) -> CalculationResult:
+    value = ProbabilityOperations.favorable_over_total(favorable, total)
+    decimal_value = value.quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+    percent_value = (value * Decimal(100)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    return CalculationResult(
+        category="probability",
+        operation=operation,
+        expression=expression,
+        value=value,
+        response_text=(
+            f"{expression} is {favorable} out of {total}, or approximately "
+            f"{decimal_value} ({percent_value} percent)."
+        ),
+    )
+
+
+def _tokenize(text: str) -> list[str]:
+    return _TOKEN_RE.findall(text.lower())
+
+
+def _cardinal_value(token: str) -> int | None:
+    if re.fullmatch(r"-?\d+", token):
+        return int(token)
+    return _CARDINALS.get(token)
+
+
+def _cardinal_before(tokens: list[str], index: int) -> int | None:
+    if index < 1:
+        return None
+    value = _cardinal_value(tokens[index - 1])
+    if value is None:
+        return None
+    if index >= 2 and tokens[index - 2] in _CARDINALS:
+        leading = _CARDINALS[tokens[index - 2]]
+        if leading >= 20 and leading % 10 == 0 and value < 10:
+            return leading + value
+    return value
+
+
+def _object_count_before(tokens: list[str], index: int) -> int | None:
+    for offset in range(1, 4):
+        position = index - offset
+        if position < 0:
+            return None
+        token = tokens[position]
+        if token in {"of", "a", "an", "the"}:
+            continue
+        if token in _MULTIPLE_OBJECT_WORDS:
+            return 2
+        return _cardinal_value(token)
+    return None
+
+
+def _uniform_sample_space(tokens: list[str]) -> _UniformSampleSpace | None:
+    """Extract a supported uniform experiment without depending on sentence order."""
+    for object_index, token in enumerate(tokens):
+        if token not in {"die", "dice"}:
+            continue
+        for sided_index in range(object_index - 1, max(-1, object_index - 4), -1):
+            if tokens[sided_index] != "sided":
+                continue
+            sides = _cardinal_before(tokens, sided_index)
+            if sides is not None:
+                _reject_multiple_objects(_object_count_before(tokens, sided_index - 1))
+                return _UniformSampleSpace("die", sides)
+        _reject_multiple_objects(_object_count_before(tokens, object_index))
+        return _UniformSampleSpace("die", _STANDARD_DIE_SIDES)
+    for object_index, token in enumerate(tokens):
+        if token in {"coin", "coins"}:
+            _reject_multiple_objects(_object_count_before(tokens, object_index))
+            return _UniformSampleSpace("coin", 2)
+    return None
+
+
+def _reject_multiple_objects(count: int | None) -> None:
+    if count is not None and count > 1:
+        raise MathOperationError(
+            "Only a single die or coin is supported; state the favorable and total outcomes instead."
+        )
+
+
+def _has_conditioned_event(tokens: list[str]) -> bool:
+    if _EVENT_QUALIFIERS.intersection(tokens):
+        return True
+    joined = " ".join(tokens)
+    return bool(
+        re.search(r"\b(?:at\s+(?:least|most)|more\s+than|less\s+than)\b", joined)
+        or re.search(r"\bfrom\s+\w+\s+to\s+\w+\b", joined)
+    )
+
+
+def _explicit_die_outcome(tokens: list[str]) -> int | None:
+    for index, token in enumerate(tokens):
+        if token not in _OUTCOME_VERBS:
+            continue
+        for candidate_index in range(index + 1, min(len(tokens), index + 4)):
+            candidate = tokens[candidate_index]
+            if candidate in {"a", "an", "the"}:
+                continue
+            value = _cardinal_value(candidate)
+            if value is None:
+                break
+            if candidate_index + 1 < len(tokens) and tokens[candidate_index + 1] == "sided":
+                break
+            return value
+    return None
+
+
+def _event_predicates(query: str, tokens: list[str]) -> list[tuple[str, Callable[[int], bool]]]:
+    """Build face predicates for the supported conditioned events."""
+    predicates: list[tuple[str, Callable[[int], bool]]] = []
+    if "even" in tokens:
+        predicates.append(("an even number", lambda face: face % 2 == 0))
+    if "odd" in tokens:
+        predicates.append(("an odd number", lambda face: face % 2 == 1))
+    for match in _THRESHOLD_RE.finditer(query):
+        comparison = " ".join(match.group(1).lower().split())
+        bound = _cardinal_value(match.group(2).lower())
+        if bound is None:
+            continue
+        if comparison in {"greater than", "more than", "larger than", "above", "over"}:
+            predicates.append((f"a number greater than {bound}", lambda face, b=bound: face > b))
+        elif comparison in {"less than", "fewer than", "smaller than", "below", "under"}:
+            predicates.append((f"a number less than {bound}", lambda face, b=bound: face < b))
+        elif comparison == "at least":
+            predicates.append((f"a number of at least {bound}", lambda face, b=bound: face >= b))
+        elif comparison == "at most":
+            predicates.append((f"a number of at most {bound}", lambda face, b=bound: face <= b))
+    return predicates
+
+
+def _dataset_after(text: str) -> list[Decimal] | None:
+    """Read an explicitly supplied list of numbers, or ``None`` when the text is prose."""
+    cleaned = _STAT_LEAD_RE.sub("", text).strip().rstrip("?.!").strip()
+    if not cleaned:
+        return None
+    residue = _CURRENCY_RE.sub(" ", cleaned)
+    residue = _LIST_SEPARATOR_RE.sub(" ", _NUMBER_RE.sub(" ", residue))
+    if residue.strip():
+        return None
+    values = _numbers(cleaned)
+    return values if len(values) >= 2 else None
+
+
+def _error_result(category: str, operation: str, expression: str, message: str) -> CalculationResult:
+    return CalculationResult(category, operation, expression, None, f"I could not calculate that: {message}")
+
+
+class _ExpressionEvaluator:
+    """Evaluate only decimal literals and the four supported binary operators."""
+
+    _OPERATORS: dict[type[ast.operator], Callable[[Decimal, Decimal], Decimal]] = {
+        ast.Add: lambda left, right: ArithmeticOperations.add([left, right]),
+        ast.Sub: ArithmeticOperations.subtract,
+        ast.Mult: lambda left, right: ArithmeticOperations.multiply([left, right]),
+        ast.Div: ArithmeticOperations.divide,
+    }
+
+    @classmethod
+    def evaluate(cls, expression: str) -> Decimal:
+        if len(expression) > 200:
+            raise MathOperationError("The expression is too long.")
+        try:
+            tree = ast.parse(expression, mode="eval")
+        except SyntaxError as exc:
+            raise MathOperationError("The arithmetic expression is not valid.") from exc
+        if sum(1 for _ in ast.walk(tree)) > 100:
+            raise MathOperationError("The expression is too complex.")
+        return cls._evaluate_node(tree.body, expression)
+
+    @classmethod
+    def _evaluate_node(cls, node: ast.AST, source: str) -> Decimal:
+        if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)) and not isinstance(node.value, bool):
+            literal = ast.get_source_segment(source, node)
+            if literal is None:
+                raise MathOperationError("A number in the expression could not be read.")
+            return to_decimal(literal)
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
+            value = cls._evaluate_node(node.operand, source)
+            return value if isinstance(node.op, ast.UAdd) else -value
+        if isinstance(node, ast.BinOp) and type(node.op) in cls._OPERATORS:
+            left = cls._evaluate_node(node.left, source)
+            right = cls._evaluate_node(node.right, source)
+            return cls._OPERATORS[type(node.op)](left, right)
+        raise MathOperationError("Only addition, subtraction, multiplication, and division are supported.")
+
+
+class MathQueryRouter:
+    """Recognize and execute self-contained queries in the supported math scope."""
+
+    _STATISTICS = (
+        (re.compile(r"\b(?:population\s+|sample\s+)?standard\s+deviation\b|\bstd\.?\s+dev(?:iation)?\b", re.I),
+         "standard deviation"),
+        (re.compile(r"\b(?:population\s+|sample\s+)?variance\b", re.I), "variance"),
+        (re.compile(r"\b(?:mean|average)\b", re.I), "mean"),
+        (re.compile(r"\bmedian\b", re.I), "median"),
+        (re.compile(r"\bmode\b", re.I), "mode"),
+    )
+    _ESTIMATORS = {
+        ("variance", False): ("population variance", StatisticsOperations.population_variance),
+        ("variance", True): ("sample variance", StatisticsOperations.sample_variance),
+        ("standard deviation", False): (
+            "population standard deviation",
+            StatisticsOperations.population_standard_deviation,
+        ),
+        ("standard deviation", True): (
+            "sample standard deviation",
+            StatisticsOperations.sample_standard_deviation,
+        ),
+        ("mean", False): ("mean", StatisticsOperations.mean),
+        ("median", False): ("median", StatisticsOperations.median),
+        ("mode", False): ("mode", StatisticsOperations.mode),
+    }
+
+    def solve(
+        self,
+        user_query: str,
+        prior_turn: dict[str, object] | None = None,
+    ) -> CalculationResult | None:
+        query = " ".join((user_query or "").strip().split())
+        if not query or _DOCUMENT_CONTEXT_RE.search(query):
+            return None
+
+        previous_value, previous_currency = _prior_context(prior_turn)
+        currency = _currency_symbol(query) or previous_currency
+
+        for parser in (
+            self._try_probability,
+            lambda text: self._try_statistics(text, currency),
+            lambda text: self._try_percentage(text, previous_value, currency),
+            lambda text: self._try_word_arithmetic(text, currency),
+            lambda text: self._try_symbolic_arithmetic(text, currency),
+        ):
+            try:
+                result = parser(query)
+            except MathOperationError as exc:
+                return _error_result("math", "invalid", query, str(exc))
+            if result is not None:
+                return result
+        return None
+
+    def _try_probability(self, query: str) -> CalculationResult | None:
+        if not re.search(r"\b(?:probability|chance)\b", query, re.I):
+            return None
+
+        binomial = re.search(
+            rf"\bexactly\s+(?P<successes>\d+)\s+success(?:es)?\s+(?:in|out\s+of)\s+"
+            rf"(?P<trials>\d+)\s+trials?.*?success\s+probability(?:\s+of|\s+is)?\s+"
+            rf"(?P<probability>{_NUMBER})\s*(?P<percent>%)?",
+            query,
+            re.I,
+        )
+        if binomial:
+            probability = to_decimal(binomial.group("probability").replace(",", ""))
+            if binomial.group("percent"):
+                probability = ArithmeticOperations.divide(probability, 100)
+            successes = int(binomial.group("successes"))
+            trials = int(binomial.group("trials"))
+            value = ProbabilityOperations.exact_binomial(successes, trials, probability)
+            expression = f"The probability of exactly {successes} successes in {trials} trials"
+            return _probability_result("exact binomial", expression, value)
+
+        favorable = re.search(
+            rf"(?P<favorable>{_NUMBER})\s+(?:favorable\s+outcomes?\s+)?out\s+of\s+"
+            rf"(?P<total>{_NUMBER})(?:\s+total)?(?:\s+outcomes?)?",
+            query,
+            re.I,
+        )
+        if favorable:
+            favorable_count = favorable.group("favorable").replace(",", "")
+            total_count = favorable.group("total").replace(",", "")
+            value = ProbabilityOperations.favorable_over_total(favorable_count, total_count)
+            expression = f"The probability of {favorable_count} favorable outcomes out of {total_count} total outcomes"
+            return _probability_result("favorable over total", expression, value)
+
+        tokens = _tokenize(query)
+        sample_space = _uniform_sample_space(tokens)
+        if sample_space is not None:
+            if sample_space.size < 1:
+                raise MathOperationError("A uniform sample space must contain at least one outcome.")
+
+            if sample_space.kind == "die":
+                outcome = _explicit_die_outcome(tokens)
+                if outcome is not None:
+                    expression = (
+                        f"The probability of rolling {outcome} on a fair {sample_space.size}-sided die"
+                    )
+                    if outcome < 1 or outcome > sample_space.size:
+                        return _probability_result("uniform finite outcome", expression, Decimal(0))
+                    return _finite_probability_result(
+                        "uniform finite outcome", expression, 1, sample_space.size
+                    )
+
+            if _has_conditioned_event(tokens):
+                if sample_space.kind == "die":
+                    predicates = _event_predicates(query, tokens)
+                    if predicates:
+                        faces = range(1, sample_space.size + 1)
+                        favorable = sum(
+                            1 for face in faces if all(test(face) for _, test in predicates)
+                        )
+                        description = " and ".join(label for label, _ in predicates)
+                        return _finite_probability_result(
+                            "uniform finite event",
+                            f"The probability of rolling {description} on a {sample_space.size}-sided die",
+                            favorable,
+                            sample_space.size,
+                        )
+                raise MathOperationError(
+                    "State the number of favorable outcomes for a conditioned event."
+                )
+
+            if sample_space.kind == "coin" and any(
+                _cardinal_before(tokens, index) not in (None, 1)
+                for index, token in enumerate(tokens)
+                if token in {"head", "heads", "tail", "tails"}
+            ):
+                raise MathOperationError(
+                    "For repeated coin tosses, specify an exact binomial event and the number of trials."
+                )
+
+            # No stated outcome or condition: the question is about one elementary outcome.
+            expression = (
+                f"The probability of rolling any specific number on a {sample_space.size}-sided die"
+                if sample_space.kind == "die"
+                else "The probability of one specified side of a fair coin"
+            )
+            return _finite_probability_result(
+                "uniform finite outcome", expression, 1, sample_space.size
+            )
+
+        if _NUMBER_RE.search(query):
+            raise MathOperationError(
+                "Use favorable outcomes out of total outcomes, or specify an exact binomial event."
+            )
+        return None
+
+    def _try_statistics(self, query: str, currency: str | None = None) -> CalculationResult | None:
+        for pattern, statistic in self._STATISTICS:
+            match = pattern.search(query)
+            if not match:
+                continue
+            values = _dataset_after(query[match.end():])
+            if values is None:
+                return None
+            sample = bool(re.search(r"\bsample\b", query, re.I))
+            operation, function = self._ESTIMATORS.get(
+                (statistic, sample), self._ESTIMATORS[(statistic, False)]
+            )
+            value = function(values)
+            listed = ", ".join(_money(number, currency) for number in values)
+            return _value_result(
+                "statistics", operation, f"The {operation} of {listed}", value, currency=currency
+            )
+        return None
+
+    def _try_percent_change(
+        self,
+        query: str,
+        terms: list[_NumericTerm],
+        currency: str | None = None,
+    ) -> CalculationResult | None:
+        direction = _PERCENT_CHANGE_RE.search(query)
+        if direction is None:
+            return None
+        separator = re.search(r"\bto\b", query, re.I)
+        if separator is None:
+            return None
+        original, updated = terms
+        if original.end > separator.start() or updated.start < separator.end():
+            return None
+
+        signed = ArithmeticOperations.percentage_change(original.value, updated.value)
+        word = direction.group(1).lower()
+        decreasing = word.startswith(_DECREASE_WORDS)
+        label = "decrease" if decreasing else "increase"
+        value = -signed if decreasing else signed
+        return _percentage_rate_result(
+            f"The percentage {label} from {_money(original.value, currency)} "
+            f"to {_money(updated.value, currency)}",
+            value,
+            operation="percentage change",
+        )
+
+    def _try_percent_application(
+        self,
+        query: str,
+        marker: re.Match[str],
+        terms: list[_NumericTerm],
+        previous_value: Decimal | None,
+        currency: str | None = None,
+    ) -> CalculationResult | None:
+        increasing = bool(_APPLY_INCREASE_RE.search(query))
+        decreasing = bool(_APPLY_DECREASE_RE.search(query))
+        if increasing == decreasing:
+            return None
+
+        rate = next(
+            (
+                term
+                for term in terms
+                if term.end <= marker.start() and not query[term.end:marker.start()].strip()
+            ),
+            None,
+        )
+        if rate is None:
+            return None
+        base = next((term.value for term in terms if term is not rate), previous_value)
+        if base is None:
+            return None
+
+        value = ArithmeticOperations.apply_percentage(base, rate.value, increase=increasing)
+        verb = "increased" if increasing else "reduced"
+        return _value_result(
+            "arithmetic",
+            "percentage application",
+            f"{_money(base, currency)} {verb} by {rate.value} percent",
+            value,
+            note="" if increasing or not _NET_RESULT_RE.search(query) else _NET_DEDUCTION_NOTE,
+            currency=currency,
+        )
+
+    def _try_percentage(
+        self,
+        query: str,
+        previous_value: Decimal | None = None,
+        currency: str | None = None,
+    ) -> CalculationResult | None:
+        marker = _PERCENT_MARKER_RE.search(query)
+        if marker is None:
+            return None
+
+        terms = _numeric_terms(query)
+        if len(terms) == 2:
+            change = self._try_percent_change(query, terms, currency)
+            if change is not None:
+                return change
+
+        applied = self._try_percent_application(query, marker, terms, previous_value, currency)
+        if applied is not None:
+            return applied
+
+        if len(terms) != 2:
+            return None
+
+        adjacent_rate = next(
+            (
+                term
+                for term in terms
+                if term.end <= marker.start()
+                and not query[term.end:marker.start()].strip()
+            ),
+            None,
+        )
+        asks_for_rate = adjacent_rate is None or bool(
+            re.search(r"\b(?:what|which)\s*$", query[:marker.start()], re.I)
+        )
+
+        of_matches = list(re.finditer(r"\bof\b", query, re.I))
+        whole = None
+        for of_match in reversed(of_matches):
+            whole = next((term for term in terms if term.start >= of_match.end()), None)
+            if whole is not None:
+                break
+        if whole is None:
+            return None
+
+        if asks_for_rate:
+            part = next((term for term in terms if term is not whole), None)
+            if part is None:
+                return None
+            result = ArithmeticOperations.percentage_rate(part.value, whole.value)
+            return _percentage_rate_result(
+                f"{_money(part.value, currency)} as a percentage of {_money(whole.value, currency)}",
+                result,
+            )
+
+        value = next((term for term in terms if term is not adjacent_rate), None)
+        if value is None:
+            return None
+        result = ArithmeticOperations.percentage_of(adjacent_rate.value, value.value)
+        return _value_result(
+            "arithmetic",
+            "percentage of total",
+            f"{adjacent_rate.value} percent of {_money(value.value, currency)}",
+            result,
+            currency=currency,
+        )
+
+    def _try_word_arithmetic(self, query: str, currency: str | None = None) -> CalculationResult | None:
+        core = self._strip_prefixes(query)
+        patterns: tuple[tuple[re.Pattern[str], str], ...] = (
+            (re.compile(rf"^subtract\s+(?P<a>{_NUMBER})\s+from\s+(?P<b>{_NUMBER})$", re.I), "subtract_from"),
+            (re.compile(rf"^(?:difference\s+between|subtract)\s+(?P<a>{_NUMBER})\s+(?:and|minus)\s+(?P<b>{_NUMBER})$", re.I), "subtract"),
+            (re.compile(rf"^(?:divide)\s+(?P<a>{_NUMBER})\s+by\s+(?P<b>{_NUMBER})$", re.I), "divide"),
+            (re.compile(rf"^(?:quotient\s+of)\s+(?P<a>{_NUMBER})\s+(?:and|by)\s+(?P<b>{_NUMBER})$", re.I), "divide"),
+        )
+        for pattern, operation in patterns:
+            match = pattern.fullmatch(core)
+            if not match:
+                continue
+            left = to_decimal(match.group("a").replace(",", ""))
+            right = to_decimal(match.group("b").replace(",", ""))
+            if operation == "subtract_from":
+                value = ArithmeticOperations.subtract(right, left)
+                return _value_result(
+                    "arithmetic",
+                    "subtraction",
+                    f"{_money(right, currency)} minus {_money(left, currency)}",
+                    value,
+                    currency=currency,
+                )
+            if operation == "subtract":
+                value = ArithmeticOperations.subtract(left, right)
+                return _value_result(
+                    "arithmetic",
+                    "subtraction",
+                    f"{_money(left, currency)} minus {_money(right, currency)}",
+                    value,
+                    currency=currency,
+                )
+            value = ArithmeticOperations.divide(left, right)
+            return _value_result(
+                "arithmetic",
+                "division",
+                f"{_money(left, currency)} divided by {right}",
+                value,
+                currency=currency,
+            )
+
+        list_match = re.fullmatch(r"(?P<operation>add|sum(?:\s+of)?|multiply|product(?:\s+of)?)\s+(?P<values>.+)", core, re.I)
+        if not list_match:
+            return None
+        values = _numbers(list_match.group("values"))
+        if len(values) < 2:
+            raise MathOperationError("At least two numbers are required.")
+        operation = list_match.group("operation").lower()
+        listed = ", ".join(_money(number, currency) for number in values)
+        if operation.startswith(("add", "sum")):
+            return _value_result(
+                "arithmetic",
+                "addition",
+                f"The sum of {listed}",
+                ArithmeticOperations.add(values),
+                currency=currency,
+            )
+        return _value_result(
+            "arithmetic",
+            "multiplication",
+            f"The product of {listed}",
+            ArithmeticOperations.multiply(values),
+            currency=currency,
+        )
+
+    def _try_symbolic_arithmetic(self, query: str, currency: str | None = None) -> CalculationResult | None:
+        expression = self._strip_prefixes(query)
+        expression = re.sub(r"\s+(?:multiplied\s+by|times)\s+", " * ", expression, flags=re.I)
+        expression = re.sub(r"\s+divided\s+by\s+", " / ", expression, flags=re.I)
+        expression = re.sub(r"\s+plus\s+", " + ", expression, flags=re.I)
+        expression = re.sub(r"\s+minus\s+", " - ", expression, flags=re.I)
+        expression = expression.replace("×", "*").replace("÷", "/").replace("−", "-")
+        expression = expression.strip().rstrip("?.!").strip()
+        expression = re.sub(r"(?<=\d),(?=\d{3}(?:\D|$))", "", expression)
+        if _DATE_LIKE_RE.fullmatch(expression):
+            return None
+        if not re.fullmatch(r"[\d.\s()+\-*/]+", expression):
+            return None
+        if not re.search(r"[+\-*/]", expression) or not re.search(r"\d", expression):
+            return None
+        value = _ExpressionEvaluator.evaluate(expression)
+        spoken_expression = expression.replace("*", " times ").replace("/", " divided by ").replace("+", " plus ")
+        spoken_expression = re.sub(r"(?<=\d)\s*-\s*(?=\d)", " minus ", spoken_expression)
+        spoken_expression = " ".join(spoken_expression.split())
+        return _value_result("arithmetic", "expression", spoken_expression, value, currency=currency)
+
+    @staticmethod
+    def _strip_prefixes(query: str) -> str:
+        core = _CURRENCY_RE.sub(" ", query)
+        core = _REQUEST_PREFIX_RE.sub("", core.strip()).strip()
+        core = _ACTION_PREFIX_RE.sub("", core).strip()
+        return core.rstrip("?.!").strip()
+
+
+_ROUTER = MathQueryRouter()
+
+
+def solve_math_query(
+    user_query: str,
+    prior_turn: dict[str, object] | None = None,
+) -> CalculationResult | None:
+    """Return a deterministic answer for supported math, otherwise ``None``."""
+    return _ROUTER.solve(user_query, prior_turn)
+
+
+def previous_calculation_value(turn: dict[str, object] | None) -> Decimal | None:
+    """Recover the verified numeric result a previous turn produced, if any."""
+    metadata = (turn or {}).get("calculation")
+    if not isinstance(metadata, dict):
+        return None
+    raw = metadata.get("value")
+    if not raw:
+        return None
+    try:
+        return to_decimal(str(raw))
+    except MathOperationError:
+        return None
+
+
+def _prior_context(turn: dict[str, object] | None) -> tuple[Decimal | None, str | None]:
+    metadata = (turn or {}).get("calculation")
+    if not isinstance(metadata, dict):
+        return None, None
+    currency = metadata.get("currency")
+    return previous_calculation_value(turn), currency if isinstance(currency, str) else None

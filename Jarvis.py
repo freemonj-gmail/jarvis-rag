@@ -45,16 +45,24 @@ def main(argv: list[str] | None = None) -> int:
     print("\n\nAsk questions about your data! Type 'exit' to quit.")
     print("For long, multi-paragraph input, type '<<<', paste your text, "
           "then type '>>>' (or press Ctrl-D) to submit.")
+    print("Press Ctrl-C to cancel the current request and return to the prompt.")
 
     last_turn: dict[str, object] = {}
     while True:
-        user_query = read_user_query("\n\nYou: ")
+        try:
+            user_query = read_user_query("\n\nYou: ")
+        except KeyboardInterrupt:
+            print("\n[Jarvis] Input cancelled. Ready for another question.")
+            continue
         if user_query.strip().lower() in ["exit", "quit"]:
             print("Goodbye!")
             runtime.tts.say_goodbye()
             runtime.tts.cleanup()
             break
-        last_turn = handle_query(user_query, runtime, last_turn)
+        try:
+            last_turn = handle_query(user_query, runtime, last_turn)
+        except KeyboardInterrupt:
+            print("\n[Jarvis] Current request cancelled. Ready for another question.")
     return 0
 
 

@@ -23,6 +23,7 @@ from llama_index.core.schema import Document
 from llama_index.llms.ollama import Ollama
 
 from jarvisrag.config import JARVIS_DEBUG, debug_print
+from jarvisrag.answer.math import solve_math_query
 from jarvisrag.text.textproc import is_low_information_text, normalize_text
 from jarvisrag.iotools import Spinner
 from jarvisrag.speech import (
@@ -1591,6 +1592,23 @@ def handle_query(
         negative_evidence_feedback = _is_negative_evidence_feedback(user_query)
         if negative_evidence_feedback:
             debug_print("[debug] User feedback rejected previous evidence; not merging prior evidence lines.")
+
+        calculation = solve_math_query(user_query, last_turn)
+        if calculation is not None:
+            response_text = calculation.response_text
+            debug_print(
+                f"[debug] Used deterministic math path: "
+                f"{calculation.category}/{calculation.operation}."
+            )
+            print(f"Jarvis: {response_text}\n")
+            tts.speak(_spoken_response_text(response_text))
+            return {
+                "user_query": user_query,
+                "effective_query": effective_user_query,
+                "response_text": response_text,
+                "evidence_lines": [],
+                "calculation": calculation.metadata(),
+            }
 
         if _query_requests_corpus_details(user_query):
             response_text = _build_corpus_details_preview(runtime.all_docs)

@@ -241,16 +241,20 @@ class Spinner:
             self._emit_plain()
         return self
 
-    def __exit__(self, exc_type, exc, tb) -> bool:
+    def __exit__(self, exc_type, _exc, _tb) -> bool:
         self._stop.set()
         if self._thread is not None:
             self._thread.join(timeout=0.5)
         self._close_phase()
-        # Replace the transient animated line with a persistent timing summary so
-        # the duration stays on screen after the answer is displayed.
+        # Replace the transient animated line with a persistent result so the
+        # duration stays on screen after completion or cancellation.
         if self._tty:
             self._write("\r\033[K")
-        self._write(self._summary_line() + "\n")
+        if exc_type is not None and issubclass(exc_type, KeyboardInterrupt):
+            elapsed = time.monotonic() - self._start
+            self._write(f"Cancelled after {self._format_duration(elapsed)}\n")
+        else:
+            self._write(self._summary_line() + "\n")
         return False
 
 

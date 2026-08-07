@@ -1,8 +1,14 @@
 # Minimal test helper commands
 
-.PHONY: test smoke-test smoke-test-e2e mcp-login
+.PHONY: test interrupt-test math-test smoke-test smoke-test-e2e mcp-login
 
-test: smoke-test
+test: interrupt-test math-test smoke-test
+
+interrupt-test:
+	uv run python tests/test_interrupt.py
+
+math-test:
+	uv run python tests/test_math.py
 
 smoke-test:
 	uv run python3 tests/smoke_test.py
