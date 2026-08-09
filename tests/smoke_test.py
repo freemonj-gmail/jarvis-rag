@@ -174,6 +174,17 @@ def run_tests():
     assert len(carried) > 1 and set(carried[0].split()) & set(carried[1].split())
     print("- chunk budget invariant OK")
 
+    from jarvisrag.retrieval import _line_tokens, _near_duplicate_of
+
+    body_a = _line_tokens("- alpha.pdf, page 2: shared sentence about vacation accrual policy")
+    body_b = _line_tokens("- beta.pdf: shared sentence about vacation accrual policy")
+    body_c = _line_tokens("- gamma.pdf: unrelated wording covering expense approval limits")
+    assert "page" not in body_a and "alpha" not in body_a, "only the evidence body is compared"
+    assert _near_duplicate_of(body_b, [body_a], 0.9), "same passage from another file is redundant"
+    assert not _near_duplicate_of(body_c, [body_a], 0.9), "distinct evidence must be kept"
+    assert not _near_duplicate_of(body_b, [], 0.9)
+    print("- near-duplicate evidence detection OK")
+
     grouped_docs = group_documents_by_source_windows([
         LlamaDocument(text="Page one amount 100", metadata={"file_path": "sample.pdf", "page_number": 1}),
         LlamaDocument(text="Page two balance 200", metadata={"file_path": "sample.pdf", "page_number": 2}),

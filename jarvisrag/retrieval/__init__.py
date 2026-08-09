@@ -8,12 +8,14 @@ scoring/snippeting. Sits between the pure query-analysis layer
 """
 
 import os
+import re
 from typing import Any, Optional, cast
 
 from jarvisrag.config import debug_print
 from jarvisrag.text.textproc import is_low_information_text, normalize_text
 from jarvisrag.text.query import (
     _detail_candidates,
+    _evidence_body_from_evidence_line,
     _extract_source_hints,
     _payment_context_score,
     _prioritize_source_hinted_evidence,
@@ -43,6 +45,23 @@ def _node_identity(node: object) -> object:
         or getattr(getattr(node, "node", None), "node_id", None)
         or id(node)
     )
+
+
+_WORD_RE = re.compile(r"[a-z0-9]+", re.IGNORECASE)
+
+
+def _line_tokens(evidence_line: str) -> set[str]:
+    body = _evidence_body_from_evidence_line(evidence_line)
+    return {match.group(0).casefold() for match in _WORD_RE.finditer(body)}
+
+
+def _near_duplicate_of(tokens: set[str], signatures: list[set[str]], threshold: float) -> bool:
+    """True when these tokens repeat evidence already selected (Jaccard >= threshold)."""
+    for prior in signatures:
+        union = tokens | prior
+        if union and len(tokens & prior) / len(union) >= threshold:
+            return True
+    return False
 
 
 def _extraction_quality(metadata: dict) -> float:
@@ -201,6 +220,24 @@ def _source_nodes_to_query_evidence_lines(
     ranked.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
     selected = list(forced)  # source-hinted evidence first
 
+    # Near-duplicate suppression. This corpus holds many near-identical document
+    # versions, so the same passage can occupy several evidence slots and crowd
+    # out distinct material. Explicitly requested (source-hinted) lines are kept
+    # and only serve as comparison points.
+    suppress_duplicates = os.environ.get("JARVIS_SUPPRESS_DUPLICATE_EVIDENCE", "1") != "0"
+    duplicate_threshold = float(os.environ.get("JARVIS_DUPLICATE_EVIDENCE_THRESHOLD", "0.9"))
+    signatures = [_line_tokens(line) for line in selected] if suppress_duplicates else []
+
+    def accept(line: str) -> bool:
+        """False when the line repeats selected evidence; records it when accepted."""
+        if not suppress_duplicates:
+            return True
+        tokens = _line_tokens(line)
+        if _near_duplicate_of(tokens, signatures, duplicate_threshold):
+            return False
+        signatures.append(tokens)
+        return True
+
     # Home-corpus floor: when the launch folder is a MINORITY of the indexed
     # collection (other directories' vectors dominate), reserve a bounded share
     # of slots for the provided folder's own chunks so it is always represented.
@@ -212,6 +249,8 @@ def _source_nodes_to_query_evidence_lines(
         reserve = min(len(home_candidates), max(4, max_items // 3))
         for _, _, _, identity, line in home_candidates[:reserve]:
             if identity in selected_ids or line in selected:
+                continue
+            if not accept(line):
                 continue
             selected.append(line)
             selected_ids.add(identity)
@@ -225,6 +264,8 @@ def _source_nodes_to_query_evidence_lines(
         for _, _, _, _, identity, line in ranked:
             if identity in selected_ids or line in selected:
                 continue
+            if not accept(line):
+                continue
             selected.append(line)
             selected_ids.add(identity)
             if len(selected) >= max_items:
@@ -237,6 +278,8 @@ def _source_nodes_to_query_evidence_lines(
         if identity in selected_ids or line in selected:
             continue
         if coverage - covered_topics:
+            if not accept(line):
+                continue
             selected.append(line)
             selected_ids.add(identity)
             covered_topics.update(coverage)
@@ -245,6 +288,8 @@ def _source_nodes_to_query_evidence_lines(
 
     for _, _, _, _, identity, line in ranked:
         if identity in selected_ids or line in selected:
+            continue
+        if not accept(line):
             continue
         selected.append(line)
         selected_ids.add(identity)

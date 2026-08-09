@@ -142,6 +142,8 @@ uv run python tests/milvus_live_test.py
 | `USE_MILVUS` | `1` | Toggle the Milvus backend |
 | `JARVIS_HYBRID` | `1` | Hybrid BM25 + dense retrieval (Reciprocal Rank Fusion) is the native runtime. Set to `0` to opt out and use dense-only vector retrieval. Falls back to dense-only automatically if BM25 is unavailable or the docstore is empty |
 | `JARVIS_BM25_TOP_K` | `JARVIS_RETRIEVAL_TOP_K` | Sparse (BM25) candidates retrieved before fusion |
+| `JARVIS_SUPPRESS_DUPLICATE_EVIDENCE` | `1` | Drop retrieved evidence that repeats a passage already selected, so near-identical document versions cannot occupy several evidence slots. Set to `0` to keep every ranked line |
+| `JARVIS_DUPLICATE_EVIDENCE_THRESHOLD` | `0.9` | Word-overlap ratio at which two evidence passages count as the same; lower values suppress more aggressively |
 | `JARVIS_FUSION_TOP_K` | `JARVIS_RETRIEVAL_TOP_K` | Results kept after Reciprocal Rank Fusion |
 | `JARVIS_ROUTER` | `0` | Set to `1` to enable the two-tier LLM router (escalate out-of-corpus questions to a larger model) |
 | `JARVIS_ESCALATION_MODEL` | `llama3:70b` | Ollama tag for the escalation model used when the router is enabled |
