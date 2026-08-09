@@ -117,6 +117,10 @@ uv run python tests/smoke_test_jarvis.py "What is in my documents?"
 # or
 make smoke-test-e2e ARGS='"What is in my documents?"'
 
+# Retrieval-only quality metrics (no answer synthesis or MCP calls).
+# Keep case files and reports under jarvis_storage/evaluation/ so they remain private.
+make retrieval-eval ARGS='"/path/to/corpus" "jarvis_storage/evaluation/cases.json" --persist-dir "jarvis_storage/evaluation/baseline" --output "jarvis_storage/evaluation/baseline.json"'
+
 # Live Milvus validation (requires a running Milvus server)
 uv run python tests/milvus_live_test.py
 ```
@@ -127,6 +131,7 @@ uv run python tests/milvus_live_test.py
 | --- | --- | --- |
 | `JARVIS_VECTOR_BACKEND` | `milvus` | `milvus`, `local`, or `memory` |
 | `JARVIS_REBUILD_INDEX` | `0` | Force a full re-embed of the corpus |
+| `JARVIS_PERSIST_DIR` | packaged runtime storage | Override local index metadata and extraction-cache location; use an ignored directory to isolate evaluations |
 | `JARVIS_CONTEXT_MODE` | `chunk` | `chunk` or `source_window` |
 | `JARVIS_DOMAIN` | `general` | `general` or `tax` detail profile |
 | `JARVIS_DISABLE_TTS` | unset | Set to `1` to disable text-to-speech |

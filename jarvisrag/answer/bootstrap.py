@@ -35,7 +35,10 @@ from jarvisrag.mcp.connector import load_mcp_registry
 from jarvisrag.answer.answer import QueryRuntime, _purge_chat_memory_vectors
 
 
-PERSIST_DIR = os.path.join(os.path.dirname(__file__), "jarvis_storage")
+PERSIST_DIR = os.path.abspath(os.path.expanduser(os.environ.get(
+    "JARVIS_PERSIST_DIR",
+    os.path.join(os.path.dirname(__file__), "jarvis_storage"),
+)))
 EXTRACTION_CACHE_DIR = os.path.join(PERSIST_DIR, "extraction_cache")
 
 DOCUMENT_EXTENSIONS = [

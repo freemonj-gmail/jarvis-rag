@@ -50,3 +50,9 @@ personal_data/
 # Logs / scratch
 run_logs.txt
 *.log
+
+# Retrieval ground truth and metric reports may identify private documents.
+# Primary artifacts live under the already-ignored jarvis_storage/; these are a
+# safety net for reports written elsewhere.
+*.retrieval-eval.json
+*.retrieval-eval-results.json

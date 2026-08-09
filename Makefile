@@ -1,14 +1,17 @@
 # Minimal test helper commands
 
-.PHONY: test interrupt-test math-test smoke-test smoke-test-e2e mcp-login
+.PHONY: test interrupt-test math-test retrieval-eval-test smoke-test smoke-test-e2e retrieval-eval mcp-login
 
-test: interrupt-test math-test smoke-test
+test: interrupt-test math-test retrieval-eval-test smoke-test
 
 interrupt-test:
 	uv run python tests/test_interrupt.py
 
 math-test:
 	uv run python tests/test_math.py
+
+retrieval-eval-test:
+	uv run python tests/test_retrieval_evaluation.py
 
 smoke-test:
 	uv run python3 tests/smoke_test.py
@@ -24,3 +27,8 @@ mcp-login:
 # via ARGS, e.g. make smoke-test-e2e ARGS='"/path/to/corpus" "What jobs has X held?"'
 smoke-test-e2e:
 	uv run python3 tests/smoke_test_jarvis.py $(ARGS)
+
+# Retrieval-only metrics. Keep private cases/reports under jarvis_storage/evaluation/.
+# Example: make retrieval-eval ARGS='"/path/to/corpus" "jarvis_storage/evaluation/cases.json" --persist-dir "jarvis_storage/evaluation/baseline" --output "jarvis_storage/evaluation/baseline.json"'
+retrieval-eval:
+	uv run python scripts/evaluate_retrieval.py $(ARGS)
