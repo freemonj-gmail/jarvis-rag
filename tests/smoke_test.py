@@ -156,6 +156,24 @@ def run_tests():
     assert all(doc.metadata.get("parent_file") == "w2.pdf" for doc in split_once)
     print("- stable line-aware chunking OK")
 
+    # Carried overlap must never push a chunk past its declared word budget.
+    budget_cases = [
+        ("\n".join([" ".join(f"a{i}" for i in range(900)),
+                    " ".join(f"b{i}" for i in range(900))]), 1000, 200),
+        ("\n".join(" ".join(f"c{n}_{i}" for i in range(60)) for n in range(20)), 100, 40),
+        (" ".join(f"d{i}" for i in range(5000)), 400, 120),
+        ("\n".join(" ".join(f"e{n}_{i}" for i in range(99)) for n in range(30)), 100, 99),
+    ]
+    for budget_text, size, overlap in budget_cases:
+        produced = chunk_text(budget_text, chunk_size=size, chunk_overlap=overlap)
+        longest = max(len(chunk.split()) for chunk in produced)
+        assert longest <= size, f"chunk of {longest} words exceeds budget {size}"
+        assert set(budget_text.split()) <= set(" ".join(produced).split()), "chunking dropped content"
+
+    carried = chunk_text(" ".join(f"f{i}" for i in range(1000)), chunk_size=400, chunk_overlap=100)
+    assert len(carried) > 1 and set(carried[0].split()) & set(carried[1].split())
+    print("- chunk budget invariant OK")
+
     grouped_docs = group_documents_by_source_windows([
         LlamaDocument(text="Page one amount 100", metadata={"file_path": "sample.pdf", "page_number": 1}),
         LlamaDocument(text="Page two balance 200", metadata={"file_path": "sample.pdf", "page_number": 2}),

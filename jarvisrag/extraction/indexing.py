@@ -866,18 +866,16 @@ def chunk_text(text: str, chunk_size: int = 1200, chunk_overlap: int = 200):
         current_segments: List[str] = []
         current_word_count = 0
 
-        def emit_current() -> None:
+        def emit_current(next_segment_size: int = 0) -> None:
             nonlocal current_segments, current_word_count
             if not current_segments:
                 return
             chunks.append("\n".join(current_segments).strip())
-            if chunk_overlap:
-                overlap_words = " ".join(current_segments).split()[-chunk_overlap:]
-                current_segments = [" ".join(overlap_words)] if overlap_words else []
-                current_word_count = len(overlap_words)
-            else:
-                current_segments = []
-                current_word_count = 0
+            # Carry only as much overlap as still leaves room for the next segment.
+            allowance = min(chunk_overlap, max(chunk_size - next_segment_size, 0))
+            overlap_words = " ".join(current_segments).split()[-allowance:] if allowance else []
+            current_segments = [" ".join(overlap_words)] if overlap_words else []
+            current_word_count = len(overlap_words)
 
         for segment in segments:
             segment_words = segment.split()
@@ -895,7 +893,7 @@ def chunk_text(text: str, chunk_size: int = 1200, chunk_overlap: int = 200):
                 continue
 
             if current_segments and current_word_count + len(segment_words) > chunk_size:
-                emit_current()
+                emit_current(len(segment_words))
             current_segments.append(segment)
             current_word_count += len(segment_words)
 
