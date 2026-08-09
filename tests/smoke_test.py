@@ -185,6 +185,16 @@ def run_tests():
     assert not _near_duplicate_of(body_b, [], 0.9)
     print("- near-duplicate evidence detection OK")
 
+    from jarvisrag.answer.bootstrap import DEFAULT_RETRIEVAL_TOP_K
+
+    tuned_top_k = int(DEFAULT_RETRIEVAL_TOP_K)
+    assert tuned_top_k > 0, "retrieval breadth must be positive"
+    readme = open(os.path.join(os.path.dirname(__file__), "..", "README.md"), encoding="utf-8").read()
+    assert f"| `JARVIS_RETRIEVAL_TOP_K` | `{tuned_top_k}` |" in readme, (
+        "README documents a different retrieval breadth than the code default"
+    )
+    print(f"- retrieval breadth default OK (top_k={tuned_top_k}, documented)")
+
     grouped_docs = group_documents_by_source_windows([
         LlamaDocument(text="Page one amount 100", metadata={"file_path": "sample.pdf", "page_number": 1}),
         LlamaDocument(text="Page two balance 200", metadata={"file_path": "sample.pdf", "page_number": 2}),

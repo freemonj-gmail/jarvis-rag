@@ -126,7 +126,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.persist_dir:
         os.environ["JARVIS_PERSIST_DIR"] = os.path.abspath(os.path.expanduser(args.persist_dir))
 
-    from jarvisrag.answer.bootstrap import build_runtime
+    from jarvisrag.answer.bootstrap import DEFAULT_RETRIEVAL_TOP_K, build_runtime
     from jarvisrag.retrieval import _retrieve_query_supported_evidence
 
     print("Building isolated retrieval runtime...", flush=True)
@@ -161,7 +161,7 @@ def main(argv: list[str] | None = None) -> int:
         "persistence_bytes": _directory_size(runtime.persist_dir),
         "vector_backend_requested": os.environ.get("JARVIS_VECTOR_BACKEND", "milvus"),
         "milvus_collection": os.environ.get("MILVUS_COLLECTION", "jarvis_context"),
-        "retrieval_top_k": int(os.environ.get("JARVIS_RETRIEVAL_TOP_K", "64")),
+        "retrieval_top_k": int(os.environ.get("JARVIS_RETRIEVAL_TOP_K", DEFAULT_RETRIEVAL_TOP_K)),
         "retrieval_attempts": int(os.environ.get("JARVIS_RETRIEVAL_ATTEMPTS", "20")),
         "max_evidence_lines": int(os.environ.get("JARVIS_MAX_EVIDENCE_LINES", "30")),
     }

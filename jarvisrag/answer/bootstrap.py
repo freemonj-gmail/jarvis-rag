@@ -41,6 +41,10 @@ PERSIST_DIR = os.path.abspath(os.path.expanduser(os.environ.get(
 )))
 EXTRACTION_CACHE_DIR = os.path.join(PERSIST_DIR, "extraction_cache")
 
+# Measured on the retrieval evaluation set: widening past this added candidate
+# noise that cost ranking quality and latency without improving recall.
+DEFAULT_RETRIEVAL_TOP_K = "32"
+
 DOCUMENT_EXTENSIONS = [
     ".pdf", ".docx", ".doc", ".xlsx", ".xls", ".ppt", ".pptx", ".txt", ".csv", ".rtf",
     ".html", ".htm", ".mhtml", ".mht",
@@ -365,11 +369,12 @@ def build_runtime(input_dir: str) -> QueryRuntime:
         doc_index, storage_context, response_mode, active_vector_backend = _build_index(all_docs, embed_model)
 
         doc_chat_engine = doc_index.as_chat_engine(chat_mode="condense_plus_context", llm=llm)
+        retrieval_top_k = os.environ.get("JARVIS_RETRIEVAL_TOP_K", DEFAULT_RETRIEVAL_TOP_K)
         doc_retriever = build_hybrid_retriever(
             doc_index,
-            dense_top_k=int(os.environ.get("JARVIS_RETRIEVAL_TOP_K", "64")),
-            bm25_top_k=int(os.environ.get("JARVIS_BM25_TOP_K", os.environ.get("JARVIS_RETRIEVAL_TOP_K", "64"))),
-            fusion_top_k=int(os.environ.get("JARVIS_FUSION_TOP_K", os.environ.get("JARVIS_RETRIEVAL_TOP_K", "64"))),
+            dense_top_k=int(retrieval_top_k),
+            bm25_top_k=int(os.environ.get("JARVIS_BM25_TOP_K", retrieval_top_k)),
+            fusion_top_k=int(os.environ.get("JARVIS_FUSION_TOP_K", retrieval_top_k)),
             llm=llm,
         )
         doc_query_engine = doc_index.as_query_engine(
