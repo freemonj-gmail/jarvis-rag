@@ -121,6 +121,12 @@ make smoke-test-e2e ARGS='"What is in my documents?"'
 # Keep case files and reports under jarvis_storage/evaluation/ so they remain private.
 make retrieval-eval ARGS='"/path/to/corpus" "jarvis_storage/evaluation/cases.json" --persist-dir "jarvis_storage/evaluation/baseline" --output "jarvis_storage/evaluation/baseline.json"'
 
+# Answer-quality metrics through the real query pipeline: checks that required facts
+# appear, forbidden claims do not, expected sources are cited, and answers are not
+# refusals. Runs the model, so it is slow and deliberately opt-in. MCP is force-disabled
+# so no query text leaves the machine. Add --repeat 3 to expose unstable cases.
+make answer-eval ARGS='"/path/to/corpus" "jarvis_storage/evaluation/answer_cases.json" --case-details'
+
 # Live Milvus validation (requires a running Milvus server)
 uv run python tests/milvus_live_test.py
 ```
