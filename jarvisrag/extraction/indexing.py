@@ -828,6 +828,22 @@ def build_or_load_persistent_index(
                 storage_context=storage_context,
                 embed_model=embed_model,
             )
+            # A matching manifest only proves the chunk set is unchanged, not
+            # that every chunk reached the store, so confirm against the store
+            # before taking the fast path.
+            indexed_ids = _indexed_document_ids(vector_store)
+            if manifest_ok and indexed_ids is not None:
+                absent = [
+                    entry["id"]
+                    for entry in current_manifest.get("documents", [])
+                    if entry.get("id") and entry["id"] not in indexed_ids
+                ]
+                if absent:
+                    print(
+                        f"[index] manifest matches but {len(absent)} chunk(s) are "
+                        "missing from the vector store; syncing them."
+                    )
+                    manifest_ok = False
             if manifest_ok:
                 print("Loaded existing persistent index.")
             else:
@@ -837,7 +853,7 @@ def build_or_load_persistent_index(
                     current_manifest,
                     persisted_manifest,
                     scope_file_paths=scope_file_paths,
-                    indexed_ids=_indexed_document_ids(vector_store),
+                    indexed_ids=indexed_ids,
                 )
                 # A skipped chunk never reached the store, so recording it would
                 # make the next run treat it as done and lose it permanently.
