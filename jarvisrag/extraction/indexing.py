@@ -215,6 +215,55 @@ def _document_with_stable_id(text: str, metadata: Dict[str, Any]) -> Document:
     return Document(text=text, metadata=metadata, id_=doc_id)
 
 
+# Metadata is concatenated into the text the embedder and the LLM see, so it
+# competes with the document's own content for the node parser's chunk budget.
+# A value large enough to fill that budget makes the parser reject the chunk
+# outright, so it never reaches the index. Readers vary in how much they attach
+# (raw HTML, per-element dumps), so cap by measured size rather than by key
+# name: the rule then holds for any reader and any corpus.
+#
+# The budget is in characters and the parser's is in tokens, so an equal number
+# leaves metadata using roughly a quarter of the chunk. Measured on a mixed
+# corpus, this trimmed only the pathological values; lowering it started
+# stripping paths and ids that cost recall without fixing anything.
+_METADATA_EMBED_BUDGET_CHARS = int(
+    os.environ.get("JARVIS_METADATA_EMBED_BUDGET_CHARS", "1024")
+)
+
+
+def _limit_embedded_metadata(doc: Document, budget: Optional[int] = None) -> None:
+    """Exclude oversized metadata values from the embedded/LLM text.
+
+    Excluded keys stay in ``doc.metadata`` so they remain stored and filterable;
+    only the string built for embedding and prompting shrinks. Largest values go
+    first, which leaves compact identifying keys (file name, page) intact.
+    """
+    budget = _METADATA_EMBED_BUDGET_CHARS if budget is None else budget
+    metadata = doc.metadata or {}
+    if not metadata or budget < 0:
+        return
+
+    # Mirrors the "key: value" line the node parser measures per metadata entry.
+    sizes = {key: len(f"{key}: {value}") for key, value in metadata.items()}
+    excluded = set(doc.excluded_embed_metadata_keys or [])
+    excluded |= set(doc.excluded_llm_metadata_keys or [])
+    remaining = sum(size for key, size in sizes.items() if key not in excluded)
+    if remaining <= budget:
+        return
+
+    for key, size in sorted(sizes.items(), key=lambda item: (-item[1], item[0])):
+        if remaining <= budget:
+            break
+        if key in excluded:
+            continue
+        excluded.add(key)
+        remaining -= size
+
+    # The parser measures the longer of the embed and LLM strings, so trim both.
+    doc.excluded_embed_metadata_keys = sorted(excluded)
+    doc.excluded_llm_metadata_keys = sorted(excluded)
+
+
 def _prepare_index_document(doc: Document, chunk_index: int = 0) -> Document:
     text = normalize_text(doc.text or "")
     metadata = dict(doc.metadata or {})
@@ -225,6 +274,7 @@ def _prepare_index_document(doc: Document, chunk_index: int = 0) -> Document:
     metadata = dict(metadata_doc.metadata or {})
     prepared = _document_with_stable_id(text, metadata)
     ensure_document_metadata(prepared)
+    _limit_embedded_metadata(prepared)
     return prepared
 
 
@@ -299,6 +349,28 @@ def _vector_store_embedding_count(vector_store: BasePydanticVectorStore) -> Opti
 
 def _index_manifest_path(persist_dir: str) -> str:
     return os.path.join(persist_dir, INDEX_MANIFEST_FILE)
+
+
+def _indexed_document_ids(vector_store: BasePydanticVectorStore) -> Optional[set[str]]:
+    """Ask the vector store which chunks it already holds, or None if it can't say."""
+    lookup = getattr(vector_store, "indexed_ref_doc_ids", None)
+    if not callable(lookup):
+        return None
+    try:
+        return lookup()
+    except Exception as exc:
+        logger.warning(f"Could not read indexed documents from the vector store: {exc}")
+        return None
+
+
+def _manifest_without_ids(manifest: Dict[str, Any], excluded_ids: set[str]) -> Dict[str, Any]:
+    if not excluded_ids:
+        return manifest
+    trimmed = dict(manifest)
+    trimmed["documents"] = [
+        entry for entry in manifest.get("documents", []) if entry.get("id") not in excluded_ids
+    ]
+    return trimmed
 
 
 def _embed_model_signature(embed_model: Optional[Any]) -> str:
@@ -466,12 +538,19 @@ def _diff_manifest_documents(
     current: Dict[str, Any],
     persisted: Optional[Dict[str, Any]],
     scope_file_paths: Optional[set[str]] = None,
+    indexed_ids: Optional[set[str]] = None,
 ) -> tuple[list[str], list[str]]:
     """Return (ids_to_insert, ids_to_delete) by comparing chunk id+hash sets.
 
     When scope_file_paths is provided, persisted chunks whose file_path is NOT
     in that set are ignored — they came from a previous run against a different
     directory and must be preserved.
+
+    When indexed_ids is provided, the vector store itself decides what needs
+    inserting. Chunk ids hash the chunk text, so an id already in the store can
+    only have been produced by identical content. That makes the store a
+    stronger authority than the manifest, which is a file that can go missing,
+    move with the code, or record a chunk the store actually rejected.
     """
     current_entries = {
         entry["id"]: entry for entry in current.get("documents", []) if entry.get("id")
@@ -495,12 +574,15 @@ def _diff_manifest_documents(
         if doc_id not in current_entries
         or current_entries[doc_id].get("hash") != entry.get("hash")
     ]
-    to_insert = [
-        doc_id
-        for doc_id, entry in current_entries.items()
-        if doc_id not in persisted_entries
-        or persisted_entries[doc_id].get("hash") != entry.get("hash")
-    ]
+    if indexed_ids is not None:
+        to_insert = [doc_id for doc_id in current_entries if doc_id not in indexed_ids]
+    else:
+        to_insert = [
+            doc_id
+            for doc_id, entry in current_entries.items()
+            if doc_id not in persisted_entries
+            or persisted_entries[doc_id].get("hash") != entry.get("hash")
+        ]
     return to_insert, to_delete
 
 
@@ -510,17 +592,21 @@ def _apply_manifest_delta(
     current_manifest: Dict[str, Any],
     persisted_manifest: Optional[Dict[str, Any]],
     scope_file_paths: Optional[set[str]] = None,
-) -> tuple[int, int]:
+    indexed_ids: Optional[set[str]] = None,
+) -> tuple[int, int, set[str]]:
     """Insert new/changed chunks and delete removed chunks against an existing
     index. When scope_file_paths is supplied, deletions are restricted to that
     set so vectors indexed by previous runs against other directories survive.
 
     Emits progress every 25 inserts / 50 deletes so long delta-syncs are never
-    silent. Per-doc errors (e.g. metadata-too-long) are logged and skipped
-    rather than aborting the whole run.
+    silent. Returns the ids that could not be inserted so the caller can keep
+    them out of the manifest and retry them on the next run.
     """
     to_insert_ids, to_delete_ids = _diff_manifest_documents(
-        current_manifest, persisted_manifest, scope_file_paths=scope_file_paths
+        current_manifest,
+        persisted_manifest,
+        scope_file_paths=scope_file_paths,
+        indexed_ids=indexed_ids,
     )
 
     deleted_count = 0
@@ -548,6 +634,7 @@ def _apply_manifest_delta(
 
     inserted_count = 0
     skipped_count = 0
+    skipped_ids: set[str] = set()
     if to_insert_ids:
         insert_set = set(to_insert_ids)
         new_docs = [doc for doc in current_documents if doc.id_ in insert_set]
@@ -577,6 +664,7 @@ def _apply_manifest_delta(
                         inserted_count += 1
                     except Exception as exc:
                         skipped_count += 1
+                        skipped_ids.add(doc.id_)
                         meta = doc.metadata or {}
                         logger.warning(
                             f"Skipped chunk {doc.id_} from "
@@ -588,7 +676,7 @@ def _apply_manifest_delta(
                 f"(skipped={skipped_count})"
             )
 
-    return inserted_count, deleted_count
+    return inserted_count, deleted_count, skipped_ids
 
 
 def _reset_persistent_storage(persist_dir: str, vector_store: BasePydanticVectorStore) -> StorageContext:
@@ -743,13 +831,17 @@ def build_or_load_persistent_index(
             if manifest_ok:
                 print("Loaded existing persistent index.")
             else:
-                inserted, deleted = _apply_manifest_delta(
+                inserted, deleted, skipped_ids = _apply_manifest_delta(
                     index,
                     index_documents,
                     current_manifest,
                     persisted_manifest,
                     scope_file_paths=scope_file_paths,
+                    indexed_ids=_indexed_document_ids(vector_store),
                 )
+                # A skipped chunk never reached the store, so recording it would
+                # make the next run treat it as done and lose it permanently.
+                persistable_manifest = _manifest_without_ids(current_manifest, skipped_ids)
                 if inserted or deleted:
                     print(
                         f"Delta-synced persistent index: {inserted} chunk(s) added, "
@@ -760,13 +852,13 @@ def build_or_load_persistent_index(
                     storage_context.persist(persist_dir)
                     _write_index_manifest(
                         persist_dir,
-                        _manifest_for_persist(current_manifest, persisted_manifest, scope_file_paths),
+                        _manifest_for_persist(persistable_manifest, persisted_manifest, scope_file_paths),
                     )
                 else:
                     print("Loaded existing persistent index.")
                     _write_index_manifest(
                         persist_dir,
-                        _manifest_for_persist(current_manifest, persisted_manifest, scope_file_paths),
+                        _manifest_for_persist(persistable_manifest, persisted_manifest, scope_file_paths),
                     )
             if sync_existing:
                 print("Syncing existing index with current documents...")

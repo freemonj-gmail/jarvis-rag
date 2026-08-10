@@ -174,6 +174,107 @@ def run_tests():
     assert len(carried) > 1 and set(carried[0].split()) & set(carried[1].split())
     print("- chunk budget invariant OK")
 
+    from jarvisrag.extraction.indexing import (
+        _METADATA_EMBED_BUDGET_CHARS,
+        _limit_embedded_metadata,
+        _prepare_index_document,
+    )
+    from llama_index.core.schema import MetadataMode
+
+    # A reader that attaches a huge value must not be able to starve the node
+    # parser's budget, which silently drops the chunk from the index. The rule
+    # is driven by size, so the key name here is deliberately arbitrary.
+    bloated = _prepare_index_document(LlamaDocument(
+        text="Total wages 125000 reported for the year",
+        metadata={
+            "file_path": "/corpus/form.doc",
+            "file_name": "form.doc",
+            "page_number": 3,
+            "some_reader_specific_blob": "<table>" + ("<td>cell</td>" * 4000) + "</table>",
+        },
+    ))
+    excluded = set(bloated.excluded_embed_metadata_keys or [])
+    assert "some_reader_specific_blob" in excluded, "oversized value must leave the embedded text"
+    # The parser measures the longer of the two, so both must be trimmed.
+    assert excluded == set(bloated.excluded_llm_metadata_keys or [])
+    for mode in (MetadataMode.EMBED, MetadataMode.LLM):
+        length = len(bloated.get_metadata_str(mode=mode))
+        assert length <= _METADATA_EMBED_BUDGET_CHARS, f"{mode} metadata still {length} chars"
+    # Dropped from the embedded text only; still stored for filtering and lookup.
+    assert bloated.metadata.get("some_reader_specific_blob")
+    # Largest-first eviction has to leave the small identifying keys alone.
+    assert not {"file_name", "page_number"} & excluded, "identifying metadata must survive"
+
+    # Ordinary documents must be untouched, or every corpus re-embeds for nothing.
+    ordinary = _prepare_index_document(LlamaDocument(
+        text="Wages 125000",
+        metadata={"file_path": "/corpus/w2.pdf", "file_name": "w2.pdf", "page_number": 1},
+    ))
+    assert not ordinary.excluded_embed_metadata_keys
+    assert not ordinary.excluded_llm_metadata_keys
+
+    # Exclusions must not change the document hash: the manifest diffs on hash,
+    # so a change here would re-embed the whole corpus on the next sync.
+    hashed = _prepare_index_document(LlamaDocument(
+        text="Total wages 125000 reported for the year",
+        metadata={
+            "file_path": "/corpus/form.doc",
+            "file_name": "form.doc",
+            "page_number": 3,
+            "some_reader_specific_blob": "<table>" + ("<td>cell</td>" * 4000) + "</table>",
+        },
+    ))
+    hash_with_exclusions = hashed.hash
+    hashed.excluded_embed_metadata_keys = []
+    hashed.excluded_llm_metadata_keys = []
+    assert hashed.hash == hash_with_exclusions, "metadata exclusions must not disturb chunk hashes"
+
+    # Repeated preparation must be idempotent rather than compounding exclusions.
+    _limit_embedded_metadata(bloated)
+    assert set(bloated.excluded_embed_metadata_keys or []) == excluded
+    print(f"- oversized metadata capped OK (budget={_METADATA_EMBED_BUDGET_CHARS} chars)")
+
+    from jarvisrag.extraction.indexing import (
+        _diff_manifest_documents,
+        _manifest_without_ids,
+    )
+
+    # Chunk ids hash the chunk text, so what the store holds is stronger evidence
+    # than the manifest, which can move with the code or outlive a failed insert.
+    manifest = {"documents": [
+        {"id": "a", "hash": "h1", "file_path": "/corpus/one.pdf"},
+        {"id": "b", "hash": "h2", "file_path": "/corpus/two.pdf"},
+    ]}
+
+    # Manifest lost (moved persist dir): the store still prevents re-embedding.
+    to_insert, _ = _diff_manifest_documents(manifest, None, indexed_ids={"a", "b"})
+    assert to_insert == [], "chunks already in the store must never be re-embedded"
+
+    # Manifest claims a chunk is indexed but the store rejected it: retry it.
+    to_insert, _ = _diff_manifest_documents(manifest, manifest, indexed_ids={"a"})
+    assert to_insert == ["b"], "a chunk missing from the store must be retried"
+
+    # Store unreachable: fall back to the manifest rather than re-embedding all.
+    to_insert, _ = _diff_manifest_documents(manifest, manifest, indexed_ids=None)
+    assert to_insert == [], "an unreadable store must not trigger a full re-embed"
+
+    # Deletions stay manifest-driven and scope-limited.
+    stale = {"documents": [{"id": "c", "hash": "h3", "file_path": "/corpus/gone.pdf"}]}
+    _, to_delete = _diff_manifest_documents(
+        manifest, stale, scope_file_paths={"/corpus/gone.pdf"}, indexed_ids={"a", "b"}
+    )
+    assert to_delete == ["c"]
+    _, to_delete = _diff_manifest_documents(
+        manifest, stale, scope_file_paths={"/corpus/one.pdf"}, indexed_ids={"a", "b"}
+    )
+    assert to_delete == [], "documents from other run directories must be preserved"
+
+    trimmed = _manifest_without_ids(manifest, {"b"})
+    assert [entry["id"] for entry in trimmed["documents"]] == ["a"]
+    assert _manifest_without_ids(manifest, set()) is manifest
+    assert len(manifest["documents"]) == 2, "trimming must not mutate the caller's manifest"
+    print("- vector store is authoritative for what is indexed OK")
+
     from jarvisrag.retrieval import _line_tokens, _near_duplicate_of
 
     body_a = _line_tokens("- alpha.pdf, page 2: shared sentence about vacation accrual policy")

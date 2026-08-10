@@ -11,7 +11,7 @@ types, and :mod:`jarvis_config` for the shared logger.
 import json
 import time
 from datetime import datetime
-from typing import Any, List, Optional, Sequence
+from typing import Any, List, Optional, Sequence, Set
 
 import numpy as np
 from pymilvus import CollectionSchema, DataType, FieldSchema, MilvusClient
@@ -317,6 +317,43 @@ class MilvusVectorStore(BasePydanticVectorStore):
             pass
         # Fallback to 0 if unknown
         return 0
+
+    def indexed_ref_doc_ids(self) -> Optional[Set[str]]:
+        """Every ``ref_doc_id`` currently stored, or None if it can't be read.
+
+        Callers use this to ask the collection itself what is already indexed
+        instead of trusting bookkeeping kept beside the code. Returning None
+        (rather than an empty set) keeps "unknown" distinct from "nothing
+        indexed", so a transient failure can never be read as an empty index.
+        """
+        try:
+            self._connect()
+        except Exception as exc:
+            logger.warning(f"Could not connect to Milvus to list indexed documents: {exc}")
+            return None
+        if self._client is None or not self._client.has_collection(self.collection_name):
+            return None
+
+        ref_doc_ids: Set[str] = set()
+        try:
+            iterator = self._client.query_iterator(
+                collection_name=self.collection_name,
+                filter='node_id != ""',
+                output_fields=["ref_doc_id"],
+                batch_size=1000,
+            )
+            while True:
+                batch = iterator.next()
+                if not batch:
+                    break
+                ref_doc_ids.update(
+                    row["ref_doc_id"] for row in batch if row.get("ref_doc_id")
+                )
+            iterator.close()
+        except Exception as exc:
+            logger.warning(f"Could not enumerate indexed documents from Milvus: {exc}")
+            return None
+        return ref_doc_ids
 
     def _make_room_for_new_vectors(self, num_new_vectors: int) -> None:
         """Delete oldest vectors if adding new_vectors would exceed max_vectors."""
