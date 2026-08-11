@@ -23,7 +23,7 @@ from llama_index.core.schema import Document
 from llama_index.llms.ollama import Ollama
 
 from jarvisrag.config import JARVIS_DEBUG, debug_print
-from jarvisrag.answer.math import solve_math_query
+from jarvisrag.answer.math import solve_math_query, suggest_math_correction
 from jarvisrag.text.textproc import is_low_information_text, normalize_text
 from jarvisrag.iotools import Spinner
 from jarvisrag.speech import (
@@ -1608,6 +1608,25 @@ def handle_query(
                 "response_text": response_text,
                 "evidence_lines": [],
                 "calculation": calculation.metadata(),
+            }
+
+        misspelling = suggest_math_correction(user_query, last_turn)
+        if misspelling is not None:
+            word, suggestion, corrected = misspelling
+            response_text = (
+                f'Did you mean "{suggestion}" instead of "{word}"? '
+                f"Read that way: {corrected.response_text} "
+                "If not, ask again and I will search your documents instead."
+            )
+            debug_print(f"[debug] Suggested math operator correction: {word} -> {suggestion}.")
+            print(f"Jarvis: {response_text}\n")
+            tts.speak(_spoken_response_text(response_text))
+            return {
+                "user_query": user_query,
+                "effective_query": effective_user_query,
+                "response_text": response_text,
+                "evidence_lines": [],
+                "calculation": corrected.metadata(),
             }
 
         if _query_requests_corpus_details(user_query):

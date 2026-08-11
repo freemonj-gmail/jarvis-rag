@@ -8,6 +8,14 @@ from dataclasses import dataclass
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Callable
 
+from .lexicon import (
+    CHAIN_SPLIT_RE,
+    LEADING_OPERATOR_RE,
+    PERCENT_MARKER_RE as _PERCENT_MARKER_RE,
+    REFERENCE_RE,
+    suggest_operator_corrections,
+    to_operator_symbols,
+)
 from .operations import (
     ArithmeticOperations,
     MathOperationError,
@@ -19,7 +27,6 @@ from .operations import (
 
 _NUMBER = r"[-+]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?"
 _NUMBER_RE = re.compile(_NUMBER)
-_PERCENT_MARKER_RE = re.compile(r"%|\bpercent(?:age)?\b|\bper\s+cent\b", re.I)
 _DATE_LIKE_RE = re.compile(r"^\d{4}-\d{1,2}-\d{1,2}$")
 _TOKEN_RE = re.compile(r"-?\d+|[a-z]+")
 _CARDINALS = {
@@ -91,7 +98,8 @@ _APPLY_INCREASE_RE = re.compile(
 _APPLY_DECREASE_RE = re.compile(
     r"\b(?:decrease[sd]?|reduc(?:e|es|ed|ing|tion)|discount(?:ed)?|off|minus|"
     r"deduct(?:s|ed|ing|ion|ions)?|after|net|drop(?:s|ped)?|decline[sd]?|falls?|"
-    r"fell|cut|withheld|withholding|subtract(?:s|ed|ing)?)\b",
+    r"fell|cut|withheld|withholding|subtract(?:s|ed|ing)?|"
+    r"tak(?:e|es|en|ing)\s+(?:away|off))\b",
     re.I,
 )
 # Net/after-deduction framing, where a single rate is not the whole story.
@@ -122,6 +130,7 @@ _ACTION_PREFIX_RE = re.compile(
     r"^(?:what\s+is|what's|calculate|compute|solve|find)\s+",
     re.IGNORECASE,
 )
+_ARTICLE_PREFIX_RE = re.compile(r"^(?:the|a|an)\s+", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -229,6 +238,26 @@ def _format_amount(value: Decimal, symbol: str) -> str:
 
 def _money(value: Decimal, currency: str | None) -> str:
     return _format_amount(value, currency) if currency else _format_decimal(value)[0]
+
+
+_CURRENCY_BEFORE_RE = re.compile(r"[$\u20ac\u00a3\u00a5]\s*$")
+_CURRENCY_AFTER_RE = re.compile(r"^\s*(?:dollars?|usd)\b", re.I)
+
+
+def _monetary_values(query: str) -> set[Decimal]:
+    """Numbers carrying a currency marker of their own, on either side."""
+    values: set[Decimal] = set()
+    for term in _numeric_terms(query):
+        if _CURRENCY_BEFORE_RE.search(query[: term.start]) or _CURRENCY_AFTER_RE.match(
+            query[term.end :]
+        ):
+            values.add(term.value)
+    return values
+
+
+def _operand(value: Decimal, currency: str | None, monetary: set[Decimal]) -> str:
+    """Money only if this number was given as money; a bare number stays scalar."""
+    return _money(value, currency if value in monetary else None)
 
 
 def _probability_result(operation: str, expression: str, value: Decimal) -> CalculationResult:
@@ -495,6 +524,66 @@ class MathQueryRouter:
         previous_value, previous_currency = _prior_context(prior_turn)
         currency = _currency_symbol(query) or previous_currency
 
+        chained = self._try_chain(query, previous_value, currency)
+        if chained is not None:
+            return chained
+        return self._solve_step(query, previous_value, currency)
+
+    def _try_chain(
+        self,
+        query: str,
+        previous_value: Decimal | None,
+        currency: str | None,
+    ) -> CalculationResult | None:
+        """Evaluate "divide that by 4 and take away 27%" one step at a time."""
+        segments = [segment.strip() for segment in CHAIN_SPLIT_RE.split(query) if segment.strip()]
+        if len(segments) < 2:
+            return None
+
+        running = previous_value
+        expressions: list[str] = []
+        for index, segment in enumerate(segments):
+            # A later step that stands on its own is a separate question, not a continuation.
+            if index and self._solve_step(segment, None, currency) is not None:
+                return None
+            result = self._solve_step(segment, running, currency)
+            if result is None or result.value is None:
+                return None
+            expressions.append(result.expression)
+            running = result.value
+        if running is None:
+            return None
+        return _value_result(
+            "arithmetic",
+            "chained calculation",
+            ", then ".join(expressions),
+            running,
+            currency=currency,
+        )
+
+    def _solve_step(
+        self,
+        query: str,
+        previous_value: Decimal | None,
+        currency: str | None,
+    ) -> CalculationResult | None:
+        candidates = [query]
+        if previous_value is not None:
+            resolved = _resolve_reference(query, previous_value, currency)
+            if resolved != query:
+                candidates.insert(0, resolved)
+        for candidate in candidates:
+            result = self._run_parsers(candidate, previous_value, currency)
+            if result is not None:
+                return result
+        return None
+
+    def _run_parsers(
+        self,
+        query: str,
+        previous_value: Decimal | None,
+        currency: str | None,
+    ) -> CalculationResult | None:
         for parser in (
             self._try_probability,
             lambda text: self._try_statistics(text, currency),
@@ -619,7 +708,9 @@ class MathQueryRouter:
                 (statistic, sample), self._ESTIMATORS[(statistic, False)]
             )
             value = function(values)
-            listed = ", ".join(_money(number, currency) for number in values)
+            listed = ", ".join(
+                _operand(number, currency, _monetary_values(query)) for number in values
+            )
             return _value_result(
                 "statistics", operation, f"The {operation} of {listed}", value, currency=currency
             )
@@ -760,9 +851,10 @@ class MathQueryRouter:
 
     def _try_word_arithmetic(self, query: str, currency: str | None = None) -> CalculationResult | None:
         core = self._strip_prefixes(query)
+        monetary = _monetary_values(query)
         patterns: tuple[tuple[re.Pattern[str], str], ...] = (
             (re.compile(rf"^subtract\s+(?P<a>{_NUMBER})\s+from\s+(?P<b>{_NUMBER})$", re.I), "subtract_from"),
-            (re.compile(rf"^(?:difference\s+between|subtract)\s+(?P<a>{_NUMBER})\s+(?:and|minus)\s+(?P<b>{_NUMBER})$", re.I), "subtract"),
+            (re.compile(rf"^(?:difference\s+(?:between|of)|subtract)\s+(?P<a>{_NUMBER})\s+(?:and|minus)\s+(?P<b>{_NUMBER})$", re.I), "subtract"),
             (re.compile(rf"^(?:divide)\s+(?P<a>{_NUMBER})\s+by\s+(?P<b>{_NUMBER})$", re.I), "divide"),
             (re.compile(rf"^(?:quotient\s+of)\s+(?P<a>{_NUMBER})\s+(?:and|by)\s+(?P<b>{_NUMBER})$", re.I), "divide"),
         )
@@ -777,7 +869,8 @@ class MathQueryRouter:
                 return _value_result(
                     "arithmetic",
                     "subtraction",
-                    f"{_money(right, currency)} minus {_money(left, currency)}",
+                    f"{_operand(right, currency, monetary)} minus "
+                    f"{_operand(left, currency, monetary)}",
                     value,
                     currency=currency,
                 )
@@ -786,7 +879,8 @@ class MathQueryRouter:
                 return _value_result(
                     "arithmetic",
                     "subtraction",
-                    f"{_money(left, currency)} minus {_money(right, currency)}",
+                    f"{_operand(left, currency, monetary)} minus "
+                    f"{_operand(right, currency, monetary)}",
                     value,
                     currency=currency,
                 )
@@ -794,7 +888,8 @@ class MathQueryRouter:
             return _value_result(
                 "arithmetic",
                 "division",
-                f"{_money(left, currency)} divided by {right}",
+                f"{_operand(left, currency, monetary)} divided by "
+                f"{_operand(right, currency, monetary)}",
                 value,
                 currency=currency,
             )
@@ -806,7 +901,7 @@ class MathQueryRouter:
         if len(values) < 2:
             raise MathOperationError("At least two numbers are required.")
         operation = list_match.group("operation").lower()
-        listed = ", ".join(_money(number, currency) for number in values)
+        listed = ", ".join(_operand(number, currency, monetary) for number in values)
         if operation.startswith(("add", "sum")):
             return _value_result(
                 "arithmetic",
@@ -824,15 +919,13 @@ class MathQueryRouter:
         )
 
     def _try_symbolic_arithmetic(self, query: str, currency: str | None = None) -> CalculationResult | None:
-        expression = self._strip_prefixes(query)
-        expression = re.sub(r"\s+(?:multiplied\s+by|times)\s+", " * ", expression, flags=re.I)
-        expression = re.sub(r"\s+divided\s+by\s+", " / ", expression, flags=re.I)
-        expression = re.sub(r"\s+plus\s+", " + ", expression, flags=re.I)
-        expression = re.sub(r"\s+minus\s+", " - ", expression, flags=re.I)
-        expression = expression.replace("×", "*").replace("÷", "/").replace("−", "-")
+        expression = to_operator_symbols(self._strip_prefixes(query))
         expression = expression.strip().rstrip("?.!").strip()
         expression = re.sub(r"(?<=\d),(?=\d{3}(?:\D|$))", "", expression)
         if _DATE_LIKE_RE.fullmatch(expression):
+            return None
+        # A dangling leading operator means the left operand was never supplied.
+        if LEADING_OPERATOR_RE.match(expression):
             return None
         if not re.fullmatch(r"[\d.\s()+\-*/]+", expression):
             return None
@@ -849,7 +942,30 @@ class MathQueryRouter:
         core = _CURRENCY_RE.sub(" ", query)
         core = _REQUEST_PREFIX_RE.sub("", core.strip()).strip()
         core = _ACTION_PREFIX_RE.sub("", core).strip()
+        core = _ARTICLE_PREFIX_RE.sub("", core).strip()
         return core.rstrip("?.!").strip()
+
+
+def _resolve_reference(
+    query: str,
+    previous_value: Decimal,
+    currency: str | None = None,
+) -> str:
+    """Rewrite a follow-up so it names the number the previous turn produced."""
+    # The symbol keeps the carried value marked as money without rounding it to cents.
+    rendered = f"{currency or ''}{_format_decimal(previous_value)[0]}"
+    named = REFERENCE_RE.sub(rendered, query, count=1)
+    if named != query:
+        return named
+
+    core = MathQueryRouter._strip_prefixes(query)
+    if _PERCENT_MARKER_RE.search(core):
+        # The percentage lane already falls back to the previous value for its base.
+        return query
+    operators = to_operator_symbols(core)
+    if LEADING_OPERATOR_RE.match(operators):
+        return f"{rendered} {operators}"
+    return query
 
 
 _ROUTER = MathQueryRouter()
@@ -875,6 +991,21 @@ def previous_calculation_value(turn: dict[str, object] | None) -> Decimal | None
         return to_decimal(str(raw))
     except MathOperationError:
         return None
+
+
+def suggest_math_correction(
+    user_query: str,
+    prior_turn: dict[str, object] | None = None,
+) -> tuple[str, str, CalculationResult] | None:
+    """Return the misspelled operator, its spelling, and the result it unlocks."""
+    if not any(character.isdigit() for character in user_query or ""):
+        return None
+    # Only the respelling that makes the query calculable counts as a suggestion.
+    for corrected, word, suggestion in suggest_operator_corrections(user_query):
+        calculation = _ROUTER.solve(corrected, prior_turn)
+        if calculation is not None and calculation.value is not None:
+            return word, suggestion, calculation
+    return None
 
 
 def _prior_context(turn: dict[str, object] | None) -> tuple[Decimal | None, str | None]:
