@@ -16,9 +16,19 @@ exactly as written rather than paraphrased or hallucinated.
 
 The solution **remains cross-platform**. Apple Vision is *preferred* on macOS, not
 required: off macOS it self-disables and the pipeline automatically falls back to
-the existing Surya / pytesseract / easyocr OCR path. A vision-language model (VLM)
+the pytesseract / easyocr OCR path. A vision-language model (VLM)
 remains available for **optional image captioning** only (`JARVIS_VLM_CAPTION=1`);
 it is no longer on the verbatim-text path.
+
+> **Note on the Surya stage.** The confidence-routed pipeline also contains an
+> integrated Surya layout + recognition stage (`JARVIS_ENABLE_SURYA`), but it is
+> **dormant by default and not part of the active OCR path**. Current `surya-ocr`
+> releases pin `pillow<11`, which conflicts with this project's `pillow>=12.2.0`,
+> so Surya is intentionally **not declared as a dependency** and does not resolve
+> in the standard environment. The integration is retained on purpose — like
+> unused SDK surface kept for forward compatibility — so the stage can be enabled
+> in an isolated environment once a `pillow>=12`-compatible `surya-ocr` ships. It
+> has no effect on normal operation.
 
 To disable Apple Vision OCR on macOS (e.g. to force the cross-platform OCR path),
 set `JARVIS_ENABLE_APPLE_OCR=0`.
@@ -142,7 +152,7 @@ uv run python tests/milvus_live_test.py
 | `JARVIS_DOMAIN` | `general` | `general` or `tax` detail profile |
 | `JARVIS_DISABLE_TTS` | unset | Set to `1` to disable text-to-speech |
 | `JARVIS_ENABLE_PAGE_PIPELINE` | `1` | Confidence-routed page extraction pipeline (native text + OCR). On by default; set to `0` to opt out |
-| `JARVIS_ENABLE_APPLE_OCR` | `1` | On macOS, use on-device Apple Vision OCR as the default document-OCR engine (verbatim, fast, local). Self-disables off macOS (falls back to Surya / pytesseract / easyocr). Set to `0` to force the cross-platform OCR path |
+| `JARVIS_ENABLE_APPLE_OCR` | `1` | On macOS, use on-device Apple Vision OCR as the default document-OCR engine (verbatim, fast, local). Self-disables off macOS (falls back to pytesseract / easyocr). Set to `0` to force the cross-platform OCR path |
 | `JARVIS_APPLE_OCR_LANGS` | `en-US` | Comma-separated language-preference list passed to Apple Vision OCR |
 | `JARVIS_APPLE_OCR_LEVEL` | `accurate` | Apple Vision recognition level: `accurate` or `fast` |
 | `USE_MILVUS` | `1` | Toggle the Milvus backend |
