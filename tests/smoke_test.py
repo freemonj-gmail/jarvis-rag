@@ -28,6 +28,7 @@ from jarvis_helpers import (
     _looks_like_follow_up,
     _spoken_response_text,
     jpeg_extractor,
+    TTSManager,
 )
 
 # Frozen public API contract for jarvis_helpers. The package refactor relocates
@@ -381,6 +382,26 @@ def run_tests():
     # Neutral placeholder is used so the spoken sentence stays grammatical.
     assert "the document" in lowered_spoken
     print("- TTS citation suppression OK")
+
+    # Spoken dollar amounts must absorb a magnitude scale (word or letter suffix)
+    # and speak it in the right order, instead of dropping it or stranding it
+    # after "dollars". Regression for "$4 million" -> "4 dollars million" and
+    # "$96k" -> "96 dollars".
+    _speak = TTSManager.__new__(TTSManager)
+    assert TTSManager.clean_text(_speak, "saved $4 million in costs") == (
+        "saved 4 million dollars in costs"
+    )
+    assert TTSManager.clean_text(_speak, "saved $96k/year") == (
+        "saved 96 thousand dollars per year"
+    )
+    assert TTSManager.clean_text(_speak, "a $2.3 billion market") == (
+        "a 2 point 3 billion dollars market"
+    )
+    # Plain amounts with real cents keep the existing dollars-and-cents wording.
+    assert TTSManager.clean_text(_speak, "a $1,250.75 balance") == (
+        "a 1250 dollars and 75 cents balance"
+    )
+    print("- TTS money-scale wording OK")
 
     # create_milvus_vector_store default values
     store = create_milvus_vector_store()

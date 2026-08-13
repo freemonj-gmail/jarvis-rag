@@ -166,6 +166,24 @@ _PER_SLASH_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Magnitude scales that may trail a dollar amount, as either a spelled-out word
+# ("$4 million") or a single-letter suffix ("$96k", "$4m"). Maps every accepted
+# token to the spoken word so "$4 million" reads "4 million dollars" and "$96k"
+# reads "96 thousand dollars" instead of dropping the scale.
+_SCALE_WORDS = {
+    "k": "thousand", "m": "million", "b": "billion", "t": "trillion",
+    "thousand": "thousand", "million": "million",
+    "billion": "billion", "trillion": "trillion",
+}
+# Optional scale after a "$N" amount: a letter suffix touching the digits
+# (guarded so "million" is not read as a bare "m") or a spelled-out word after
+# whitespace. Kept out of the number capture so the existing cents path is
+# unaffected when no scale is present.
+_DOLLAR_SCALE_SUFFIX = (
+    r"(?:\s*(?P<abbr>[kKmMbBtT])(?![A-Za-z])"
+    r"|\s+(?P<word>[Tt]housand|[Mm]illion|[Bb]illion|[Tt]rillion))?"
+)
+
 # Sub-second time-unit abbreviations -> spoken words. Only expanded when the
 # unit is attached to a number (e.g. "200 ms" / "5us" / "10 ns"), so the plain
 # English word "us" ("tell us") and unrelated tokens are left untouched. The
@@ -603,7 +621,7 @@ class TTSManager:
         cleaned = re.sub(r"https?://\S+", " link omitted ", cleaned)
         # Recognize money-shaped numbers in financial sentences (no `$` needed).
         cleaned = self._add_dollar_sign_in_financial_context(cleaned)
-        cleaned = re.sub(r"\$\s*(\d[\d,]*)(?:\.(\d{1,2}))?", self._spoken_dollar_amount, cleaned)
+        cleaned = re.sub(r"\$\s*(\d[\d,]*)(?:\.(\d{1,2}))?" + _DOLLAR_SCALE_SUFFIX, self._spoken_dollar_amount, cleaned)
         cleaned = re.sub(r"\b(\d[\d,]*)\.(\d+)\s*%", lambda m: f"{m.group(1).replace(',', '')} point {m.group(2)} percent", cleaned)
         cleaned = re.sub(r"\b(\d[\d,]*)\s*%", lambda m: f"{m.group(1).replace(',', '')} percent", cleaned)
         cleaned = re.sub(r"(?<=\d),(?=\d)", "", cleaned)
@@ -623,12 +641,21 @@ class TTSManager:
 
     @staticmethod
     def _spoken_dollar_amount(match):
-        dollars = match.group(1).replace(",", "")
-        cents_raw = (match.group(2) or "").ljust(2, "0")[:2]
+        whole = match.group(1).replace(",", "")
+        frac = match.group(2) or ""
+        scale_word = _SCALE_WORDS.get(
+            (match.group("abbr") or match.group("word") or "").lower(), ""
+        )
+        if scale_word:
+            # A scaled amount: the decimal is a fractional multiplier, not cents
+            # ("$4.5 million" -> "4 point 5 million dollars").
+            number = f"{whole} point {frac}" if frac else whole
+            return f"{number} {scale_word} dollars"
+        cents_raw = frac.ljust(2, "0")[:2]
         cents = int(cents_raw) if cents_raw else 0
         if cents:
-            return f"{dollars} dollars and {cents} cents"
-        return f"{dollars} dollars"
+            return f"{whole} dollars and {cents} cents"
+        return f"{whole} dollars"
 
     def say_goodbye(self):
         if not getattr(self, 'initialized', False):
