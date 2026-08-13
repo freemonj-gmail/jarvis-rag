@@ -93,6 +93,48 @@ Jarvis keeps lightweight conversational state across turns in a single session:
   the model weaves into a sentence are spoken as "the document" / "the documents"
   so the audio stays natural; the printed output is unaffected.
 
+## Math & calculations
+
+Jarvis answers self-contained math **deterministically, before any retrieval or
+LLM call**. A dedicated calculator lane parses the question, computes the result
+with Python `Decimal`, and returns it directly. There is no model in this path,
+so the arithmetic is **exact and reproducible** (no hallucinated numbers) and
+costs no retrieval or generation time. Anything that is not self-contained math
+falls through to the normal RAG pipeline unchanged — not every RAG assistant
+does this, so it is worth knowing the lane exists.
+
+What it handles:
+
+- **Arithmetic** — add, subtract, multiply, divide, and multi-step expressions,
+  written with symbols (`+ - * / %`) or words (`plus`, `minus`, `times`,
+  `divided by`, `product of`, `difference between`, ...).
+- **Percentages** — four distinct operations, chosen by intent rather than
+  sentence shape: a percentage *of* a value, an unknown *rate* (`30 is what
+  percent of 80?`), a percentage *change* between two numbers (`80 to 100` = 25%
+  increase), and applying a rate *to* a base (`increase 120,000 by 5%`,
+  `20% off of 50`).
+- **Statistics** — mean, median, mode, and both **sample** and **population**
+  variance / standard deviation (the answer states which estimator ran).
+- **Probability** — finite equally-likely experiments (an N-sided die, a coin),
+  single outcomes (`1/N`), conditioned events (even/odd, greater/less than, at
+  least/at most), and exact binomial probabilities.
+
+Conversational and format-aware:
+
+- **Follow-ups reuse the previous answer.** After a result, `Divide that by 4 and
+  take away 27%` continues from the verified value — no need to restate the base.
+- **Operator words and symbols are equivalent**, including `%` vs `percent`, and a
+  misspelled operator gets a `Did you mean ...?` suggestion when the correction
+  actually computes.
+- **Currency-aware.** A value written as money (`$50,000`, `500 dollars`) is
+  answered as money and spoken as dollars and cents, with magnitude scales read
+  naturally (`$4 million` → "4 million dollars"); the currency carries across
+  follow-up turns. Plain numbers stay plain.
+
+The lane is deliberately **domain-agnostic and conservative**: any question that
+mentions a document, report, or file is left to retrieval, so the calculator can
+never hijack a corpus lookup.
+
 ## Requirements
 
 - Python >= 3.13
@@ -117,6 +159,10 @@ uv run python Jarvis.py /path/to/your/documents
 ## Tests
 
 ```bash
+# Fast, model-free suite: interrupt, math, retrieval-eval, and answer-eval unit
+# tests plus the helper smoke test (no model downloads, no Milvus/Ollama needed)
+make test
+
 # Fast helper smoke test (no heavy model downloads)
 make smoke-test
 # or
@@ -166,7 +212,7 @@ uv run python tests/milvus_live_test.py
 | `JARVIS_ESCALATION_MODEL` | `llama3:70b` | Ollama tag for the escalation model used when the router is enabled |
 | `JARVIS_ESCALATION_TIMEOUT` | `600` | Request timeout (seconds) for the escalation model |
 | `JARVIS_ESCALATION_TEMPERATURE` | `0.2` | Sampling temperature for the escalation model |
-| `JARVIS_ENABLE_MCP` | `0` | Set to `1` to enable the MCP connector layer (off by default). See [External data via MCP connectors](#external-data-via-mcp-connectors) |
+| `JARVIS_ENABLE_MCP` | `0` | Force-enable the MCP connector layer regardless of the registry. The packaged registry already sets `settings.enabled=true`, so the layer is **on by default**; each connector still only fires when a query matches it and has credentials. See [External data via MCP connectors](#external-data-via-mcp-connectors) |
 | `JARVIS_MCP_CONFIG` | _(packaged registry)_ | Path to a custom MCP connector registry; empty uses `jarvisrag/mcp/registry.json` (pure data; add a source = add an entry) |
 | `JARVIS_MCP_TIMEOUT` | `20` | Per-call timeout (seconds) for an MCP request |
 | `JARVIS_MCP_TOKEN_CACHE` | `jarvis_storage/.mcp_tokens.json` | Where OAuth tokens are cached (written `0600`, holds tokens only, gitignored) |
@@ -178,7 +224,11 @@ Jarvis can pull **fresh, authoritative facts** (e.g. current tax law) and
 **private account data** from external [Model Context Protocol](https://modelcontextprotocol.io/)
 servers and inject them as the **highest-precedence evidence** for a question, so
 live data overrides the model's stale general knowledge when relevant. The layer
-is **off by default** — set `JARVIS_ENABLE_MCP=1` to turn it on.
+is **on by default** (the packaged registry sets `settings.enabled=true`), but it
+stays inert until a connector actually matches *and* has credentials — e.g.
+taxmcp.io does nothing until you run `make mcp-login`. To turn the whole layer
+off, set `settings.enabled` to `false` in `jarvisrag/mcp/registry.json` (or point
+`JARVIS_MCP_CONFIG` at a registry that disables it).
 
 It is designed to be safe and unobtrusive:
 
@@ -242,10 +292,13 @@ jarvisrag/             # Umbrella package (organized by function)
   vectorstore/         # Milvus vector store
   retrieval/           # Hybrid retrieval + fusion
   answer/              # Answer synthesis + runtime bootstrap
+    math/              #   deterministic calculation lane (arithmetic, %, stats, probability)
   speech/              # TTS / speech
   mcp/                 # MCP connector layer (OAuth, transport, PII guard)
     connector.py       #   transport + OAuth + outbound PII guard
     registry.json      #   MCP connector registry (pure data)
-tests/                 # Smoke + Milvus tests
+  evaluation/          # Privacy-safe retrieval + answer-quality harnesses
+scripts/               # Local evaluation CLIs (evaluate_retrieval.py, evaluate_answers.py)
+tests/                 # Unit + smoke + Milvus tests
 jarvis_storage/        # Generated extraction cache + persistent index (gitignored)
 ```
