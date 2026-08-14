@@ -5,6 +5,7 @@ from .operations import (
     MathOperationError,
     ProbabilityOperations,
     StatisticsOperations,
+    FinancialOperations,
 )
 from .router import (
     CalculationResult,
@@ -17,6 +18,7 @@ from .router import (
 __all__ = [
     "ArithmeticOperations",
     "CalculationResult",
+    "FinancialOperations",
     "MathOperationError",
     "MathQueryRouter",
     "ProbabilityOperations",

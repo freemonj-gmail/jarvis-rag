@@ -18,6 +18,7 @@ from .lexicon import (
 )
 from .operations import (
     ArithmeticOperations,
+    FinancialOperations,
     MathOperationError,
     ProbabilityOperations,
     StatisticsOperations,
@@ -131,6 +132,32 @@ _ACTION_PREFIX_RE = re.compile(
     re.IGNORECASE,
 )
 _ARTICLE_PREFIX_RE = re.compile(r"^(?:the|a|an)\s+", re.IGNORECASE)
+
+# Financial lanes only run when their intent word is present, so an ordinary
+# percentage question is never mistaken for a loan or an investment.
+_COMPOUND_RE = re.compile(r"\bcompound(?:ed|ing|s)?\b|\bfuture\s+value\b", re.I)
+_AMORTIZE_RE = re.compile(
+    r"\bamorti[sz]\w*\b|\bmortgage\b|\bloan\b|\binstal?lments?\b|"
+    r"\b(?:monthly|weekly|biweekly|bi-weekly|quarterly|annual)\s+payments?\b|"
+    r"\bpayments?\s+(?:on|for)\b",
+    re.I,
+)
+_COMPOUND_TIMES_RE = re.compile(
+    r"\bcompounded\s+(\d+)\s+times\s+(?:a|per)\s+year\b", re.I
+)
+# Checked in order: a specific compounding cadence wins over a generic "annual".
+_COMPOUND_FREQUENCIES = (
+    (re.compile(r"\bsemi[-\s]?annual(?:ly)?\b|\bbi[-\s]?annual(?:ly)?\b|\btwice\s+(?:a|per)\s+year\b", re.I), 2, "semiannually"),
+    (re.compile(r"\bquarterly\b", re.I), 4, "quarterly"),
+    (re.compile(r"\bmonthly\b", re.I), 12, "monthly"),
+    (re.compile(r"\bbi[-\s]?weekly\b", re.I), 26, "biweekly"),
+    (re.compile(r"\bweekly\b", re.I), 52, "weekly"),
+    (re.compile(r"\bdaily\b", re.I), 365, "daily"),
+    (re.compile(r"\bannual(?:ly)?\b|\byearly\b|\bper\s+year\b|\ba\s+year\b|\bonce\s+(?:a|per)\s+year\b", re.I), 1, "annually"),
+)
+_FREQUENCY_LABELS = {1: "annually", 2: "semiannually", 4: "quarterly", 12: "monthly", 24: "semimonthly", 26: "biweekly", 52: "weekly", 365: "daily"}
+_PAYMENT_LABELS = {1: "annual", 2: "semiannual", 4: "quarterly", 12: "monthly", 24: "semimonthly", 26: "biweekly", 52: "weekly"}
+_RATE_UNIT = r"%|percent|per\s*cent"
 
 
 @dataclass(frozen=True)
@@ -258,6 +285,95 @@ def _monetary_values(query: str) -> set[Decimal]:
 def _operand(value: Decimal, currency: str | None, monetary: set[Decimal]) -> str:
     """Money only if this number was given as money; a bare number stays scalar."""
     return _money(value, currency if value in monetary else None)
+
+
+def _money_amount(value: Decimal, currency: str | None) -> str:
+    """Render a financial figure to cents, with the currency symbol when known."""
+    return _format_amount(value, currency or "")
+
+
+@dataclass(frozen=True)
+class _FinancialInputs:
+    principal: Decimal
+    rate: Decimal
+    years: Decimal
+    duration_label: str
+    periods: int
+    frequency_label: str
+
+
+def _plain_number(value: Decimal) -> str:
+    return _format_decimal(value)[0]
+
+
+def _frequency_label(periods: int) -> str:
+    return _FREQUENCY_LABELS.get(periods, f"{periods} times per year")
+
+
+def _payment_label(periods: int) -> str:
+    return _PAYMENT_LABELS.get(periods, f"{periods}-times-per-year")
+
+
+def _financial_inputs(query: str, default_periods: int, default_label: str) -> _FinancialInputs | None:
+    """Extract principal, rate, term, and compounding cadence, or ``None``.
+
+    Every number is matched to a role by the unit beside it, so a stray count
+    like "compounded 12 times per year" never masquerades as the principal. A
+    missing rate or duration means the query is not a self-contained calculation
+    and is left to retrieval.
+    """
+    terms = _numeric_terms(query)
+    consumed: set[int] = set()
+
+    def consume(match: re.Match[str] | None) -> _NumericTerm | None:
+        if match is None:
+            return None
+        start, end = match.span(1)
+        for index, term in enumerate(terms):
+            if index not in consumed and term.start >= start and term.end <= end:
+                consumed.add(index)
+                return term
+        return None
+
+    rate_term = consume(re.search(rf"({_NUMBER})\s*(?:{_RATE_UNIT})", query, re.I))
+    if rate_term is None:
+        return None
+
+    years_term = consume(re.search(rf"({_NUMBER})\s*(?:years?|yrs?)\b", query, re.I))
+    months_term = consume(re.search(rf"({_NUMBER})\s*(?:months?|mos?)\b", query, re.I))
+    if years_term is not None:
+        years = years_term.value
+        duration_label = f"{_plain_number(years)} {'year' if years == 1 else 'years'}"
+    elif months_term is not None:
+        months = months_term.value
+        years = ArithmeticOperations.divide(months, 12)
+        duration_label = f"{_plain_number(months)} {'month' if months == 1 else 'months'}"
+    else:
+        return None
+
+    times = _COMPOUND_TIMES_RE.search(query)
+    if times is not None and int(times.group(1)) > 0:
+        consume(times)
+        periods = int(times.group(1))
+        frequency_label = _frequency_label(periods)
+    else:
+        periods, frequency_label = default_periods, default_label
+        for pattern, candidate_periods, label in _COMPOUND_FREQUENCIES:
+            if pattern.search(query):
+                periods, frequency_label = candidate_periods, label
+                break
+
+    monetary = _monetary_values(query)
+    remaining = [term for index, term in enumerate(terms) if index not in consumed]
+    money_terms = [term.value for term in remaining if term.value in monetary]
+    if money_terms:
+        principal = max(money_terms)
+    elif len(remaining) == 1:
+        principal = remaining[0].value
+    else:
+        return None
+
+    return _FinancialInputs(principal, rate_term.value, years, duration_label, periods, frequency_label)
 
 
 def _probability_result(operation: str, expression: str, value: Decimal) -> CalculationResult:
@@ -587,6 +703,8 @@ class MathQueryRouter:
         for parser in (
             self._try_probability,
             lambda text: self._try_statistics(text, currency),
+            lambda text: self._try_amortization(text, currency),
+            lambda text: self._try_compound_interest(text, currency),
             lambda text: self._try_percentage(text, previous_value, currency),
             lambda text: self._try_word_arithmetic(text, currency),
             lambda text: self._try_symbolic_arithmetic(text, currency),
@@ -715,6 +833,59 @@ class MathQueryRouter:
                 "statistics", operation, f"The {operation} of {listed}", value, currency=currency
             )
         return None
+
+    def _try_compound_interest(self, query: str, currency: str | None = None) -> CalculationResult | None:
+        if not _COMPOUND_RE.search(query):
+            return None
+        inputs = _financial_inputs(query, default_periods=1, default_label="annually")
+        if inputs is None:
+            return None
+
+        amount = FinancialOperations.compound_amount(
+            inputs.principal, inputs.rate, inputs.years, inputs.periods
+        )
+        interest = amount - inputs.principal
+        principal_text = _money_amount(inputs.principal, currency)
+        amount_text = _money_amount(amount, currency)
+        interest_text = _money_amount(interest, currency)
+        rate_text = _plain_number(inputs.rate)
+        terms = (
+            f"{principal_text} at {rate_text} percent for {inputs.duration_label} "
+            f"compounded {inputs.frequency_label}"
+        )
+        # Answer the interest earned only when the question asks for it and not the balance.
+        wants_interest = bool(re.search(r"\binterest\b", query, re.I)) and not re.search(
+            r"\b(?:future\s+value|balance|worth|total\s+amount|grow[a-z]*)\b", query, re.I
+        )
+        if wants_interest:
+            expression = f"The compound interest on {terms}"
+            response_text = f"{expression} is {interest_text}, for a future value of {amount_text}."
+            return CalculationResult("finance", "compound interest", expression, interest, response_text, currency)
+        expression = f"The future value of {terms}"
+        response_text = f"{expression} is {amount_text}, including {interest_text} of compound interest."
+        return CalculationResult("finance", "future value", expression, amount, response_text, currency)
+
+    def _try_amortization(self, query: str, currency: str | None = None) -> CalculationResult | None:
+        if not _AMORTIZE_RE.search(query):
+            return None
+        inputs = _financial_inputs(query, default_periods=12, default_label="monthly")
+        if inputs is None:
+            return None
+
+        payment, _total_paid, total_interest, count = FinancialOperations.amortization_summary(
+            inputs.principal, inputs.rate, inputs.years, inputs.periods
+        )
+        expression = (
+            f"The {_payment_label(inputs.periods)} payment on a "
+            f"{_money_amount(inputs.principal, currency)} loan at {_plain_number(inputs.rate)} "
+            f"percent for {inputs.duration_label}"
+        )
+        response_text = (
+            f"{expression} is {_money_amount(payment, currency)}, with "
+            f"{_money_amount(total_interest, currency)} in total interest over "
+            f"{_plain_number(count)} payments."
+        )
+        return CalculationResult("finance", "loan payment", expression, payment, response_text, currency)
 
     def _try_percent_change(
         self,

@@ -303,6 +303,73 @@ def run_tests() -> None:
     ):
         assert suggest_math_correction(no_suggestion) is None, no_suggestion
 
+    # Compound interest and fixed-rate loan amortization.
+    finance_cases = {
+        "What is the compound interest on $10,000 at 5% for 3 years compounded monthly?":
+            "The compound interest on $10,000.00 at 5 percent for 3 years compounded monthly "
+            "is $1,614.72, for a future value of $11,614.72.",
+        "What is the future value of $5,000 invested at 4% for 10 years compounded quarterly?":
+            "The future value of $5,000.00 at 4 percent for 10 years compounded quarterly "
+            "is $7,444.32, including $2,444.32 of compound interest.",
+        "How much will $1,000 grow to at 6% compounded annually for 5 years?":
+            "The future value of $1,000.00 at 6 percent for 5 years compounded annually "
+            "is $1,338.23, including $338.23 of compound interest.",
+        # Duration given in months, and a principal with no currency marker stays symbol-free.
+        "What is the future value of $1,000 at 5% for 18 months compounded monthly?":
+            "The future value of $1,000.00 at 5 percent for 18 months compounded monthly "
+            "is $1,077.72, including $77.72 of compound interest.",
+        "Compound 2000 at 10% for 2 years compounded semiannually":
+            "The future value of 2,000.00 at 10 percent for 2 years compounded semiannually "
+            "is 2,431.01, including 431.01 of compound interest.",
+        "What is the monthly payment on a $200,000 loan at 6% for 30 years?":
+            "The monthly payment on a $200,000.00 loan at 6 percent for 30 years is $1,199.10, "
+            "with $231,676.38 in total interest over 360 payments.",
+        "Calculate the amortized monthly payment for a $30,000 car loan at 4.5% over 5 years.":
+            "The monthly payment on a $30,000.00 loan at 4.5 percent for 5 years is $559.29, "
+            "with $3,557.43 in total interest over 60 payments.",
+        # A zero-interest loan repays the principal in equal installments.
+        "What is the biweekly payment on a $10,000 loan at 0% for 2 years?":
+            "The biweekly payment on a $10,000.00 loan at 0 percent for 2 years is $192.31, "
+            "with $0.00 in total interest over 52 payments.",
+    }
+    for query, expected in finance_cases.items():
+        result = router.solve(query)
+        assert result is not None, f"finance case was not recognized: {query!r}"
+        assert result.category == "finance", query
+        assert result.response_text == expected, f"{query!r} -> {result.response_text!r}"
+
+    # Independently confirm the formulas with float math, rounded to cents.
+    expected_amount = round(10000.0 * (1 + (5.0 / 100) / 12) ** (12 * 3), 2)
+    compound = router.solve("What is the future value of $10,000 at 5% for 3 years compounded monthly?")
+    assert compound is not None
+    assert compound.value.quantize(Decimal("0.01")) == Decimal(str(expected_amount))
+    monthly_rate = (6.0 / 100) / 12
+    payments = 12 * 30
+    expected_payment = round(
+        200000.0 * (monthly_rate * (1 + monthly_rate) ** payments) / ((1 + monthly_rate) ** payments - 1), 2
+    )
+    payment = router.solve("What is the monthly payment on a $200,000 loan at 6% for 30 years?")
+    assert payment is not None
+    assert payment.value.quantize(Decimal("0.01")) == Decimal(str(expected_payment))
+
+    # A loan with no term is not a self-contained amortization, so a plain percentage still wins.
+    percent_of_loan = router.solve("What is 20% of a $200,000 loan?")
+    assert percent_of_loan is not None
+    assert percent_of_loan.response_text == "20 percent of $200,000.00 equals $40,000.00."
+
+    # A zero-length loan term is reported as an error rather than dividing by zero.
+    zero_term = router.solve("What is the monthly payment on a $1,000 loan at 5% for 0 years?")
+    assert zero_term is not None and zero_term.value is None
+    assert "greater than zero" in zero_term.response_text.lower()
+
+    # Finance wording without the numbers to compute it is left to retrieval.
+    for non_finance in (
+        "How does compound interest work?",
+        "What is my mortgage payment?",
+        "Explain the amortization schedule in the loan document.",
+    ):
+        assert router.solve(non_finance) is None, non_finance
+
     print(f"math router tests passed ({len(cases)} calculations)")
 
 

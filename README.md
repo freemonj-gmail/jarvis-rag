@@ -118,6 +118,11 @@ What it handles:
 - **Probability** — finite equally-likely experiments (an N-sided die, a coin),
   single outcomes (`1/N`), conditioned events (even/odd, greater/less than, at
   least/at most), and exact binomial probabilities.
+- **Finance** — compound interest / future value (`$10,000 at 5% for 3 years
+  compounded monthly`) with any compounding cadence (annually, semiannually,
+  quarterly, monthly, weekly, daily, or *N times per year*), and fixed-rate loan
+  amortization (`the monthly payment on a $200,000 loan at 6% for 30 years`),
+  which also reports the total interest over the life of the loan.
 
 Conversational and format-aware:
 

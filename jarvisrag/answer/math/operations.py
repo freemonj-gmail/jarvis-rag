@@ -161,3 +161,88 @@ class ProbabilityOperations:
         if probability < 0 or probability > 1:
             raise MathOperationError("Success probability must be between zero and one.")
         return Decimal(comb(trials, successes)) * probability**successes * (Decimal(1) - probability) ** (trials - successes)
+
+
+class FinancialOperations:
+    """Compound interest and fixed-rate loan amortization over decimal money."""
+
+    @staticmethod
+    def compound_amount(
+        principal: Number,
+        annual_rate_percent: Number,
+        years: Number,
+        periods_per_year: Number = 1,
+    ) -> Decimal:
+        """Future value of ``principal`` under periodic compounding."""
+        starting = to_decimal(principal)
+        rate = to_decimal(annual_rate_percent)
+        term_years = to_decimal(years)
+        periods = to_decimal(periods_per_year)
+        if starting < 0:
+            raise MathOperationError("The principal must not be negative.")
+        if term_years < 0:
+            raise MathOperationError("The number of years must not be negative.")
+        if periods <= 0:
+            raise MathOperationError("Compounding periods per year must be greater than zero.")
+        with localcontext() as context:
+            context.prec = 34
+            growth = Decimal(1) + (rate / 100) / periods
+            if growth <= 0:
+                raise MathOperationError("The interest rate makes the growth factor non-positive.")
+            return starting * (growth ** (periods * term_years))
+
+    @classmethod
+    def compound_interest(
+        cls,
+        principal: Number,
+        annual_rate_percent: Number,
+        years: Number,
+        periods_per_year: Number = 1,
+    ) -> Decimal:
+        """Interest earned only, i.e. future value minus the principal."""
+        starting = to_decimal(principal)
+        return cls.compound_amount(principal, annual_rate_percent, years, periods_per_year) - starting
+
+    @staticmethod
+    def amortized_payment(
+        principal: Number,
+        annual_rate_percent: Number,
+        years: Number,
+        periods_per_year: Number = 12,
+    ) -> Decimal:
+        """Level payment that retires a fixed-rate loan over its term."""
+        loan = to_decimal(principal)
+        rate = to_decimal(annual_rate_percent)
+        term_years = to_decimal(years)
+        periods = to_decimal(periods_per_year)
+        if loan < 0:
+            raise MathOperationError("The loan principal must not be negative.")
+        if term_years <= 0:
+            raise MathOperationError("The loan term must be greater than zero.")
+        if periods <= 0:
+            raise MathOperationError("Payments per year must be greater than zero.")
+        if rate < 0:
+            raise MathOperationError("The interest rate must not be negative.")
+        with localcontext() as context:
+            context.prec = 34
+            total_payments = periods * term_years
+            periodic_rate = (rate / 100) / periods
+            if periodic_rate == 0:
+                return loan / total_payments
+            growth = (Decimal(1) + periodic_rate) ** total_payments
+            return loan * (periodic_rate * growth) / (growth - Decimal(1))
+
+    @classmethod
+    def amortization_summary(
+        cls,
+        principal: Number,
+        annual_rate_percent: Number,
+        years: Number,
+        periods_per_year: Number = 12,
+    ) -> tuple[Decimal, Decimal, Decimal, Decimal]:
+        """Return (payment, total paid, total interest, number of payments)."""
+        loan = to_decimal(principal)
+        payment = cls.amortized_payment(principal, annual_rate_percent, years, periods_per_year)
+        number_of_payments = to_decimal(periods_per_year) * to_decimal(years)
+        total_paid = payment * number_of_payments
+        return payment, total_paid, total_paid - loan, number_of_payments
