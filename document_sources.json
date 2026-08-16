@@ -6,13 +6,17 @@
       "corpus_dir": "jarvis_storage/fedbenefits_corpus",
       "_note": "US federal retirement-benefit rules (OPM CSRS/FERS Handbook + SSA pubs). Volatile: updated on policy/administration changes. Complements the eCFR MCP connector (which serves live Title-5 CFR text) with plain-language computation guidance.",
       "label": "Federal retirement benefits (OPM/SSA)",
-      "match_any": ["fers", "csrs", "thrift savings", "tsp", "opm", "federal annuity", "federal employees retirement", "basic annuity", "social security", "survivor annuity", "retiree annuity supplement"],
+      "match_any": ["fers", "csrs", "thrift savings", "tsp", "opm", "federal annuity", "federal employees retirement", "basic annuity", "social security", "survivor annuity", "retiree annuity supplement", "earnings test", "full retirement age", "spousal benefit", "survivor benefit", "when to claim"],
       "documents": [
         { "name": "OPM_C050_Computation_General_Formula.pdf", "url": "https://www.opm.gov/retirement-center/publications-forms/csrsfers-handbook/c050.pdf" },
         { "name": "OPM_C051_Retiree_Annuity_Supplement.pdf", "url": "https://www.opm.gov/retirement-center/publications-forms/csrsfers-handbook/c051.pdf" },
         { "name": "OPM_C041_Voluntary_Retirement_Age_Service.pdf", "url": "https://www.opm.gov/retirement-center/publications-forms/csrsfers-handbook/c041.pdf" },
         { "name": "SSA_05-10035_Retirement.pdf", "url": "https://www.ssa.gov/pubs/EN-05-10035.pdf" },
-        { "name": "SSA_05-10070_Retirement_Benefit_How_Determined.pdf", "url": "https://www.ssa.gov/pubs/EN-05-10070.pdf" }
+        { "name": "SSA_05-10070_Retirement_Benefit_How_Determined.pdf", "url": "https://www.ssa.gov/pubs/EN-05-10070.pdf" },
+        { "name": "SSA_05-10069_How_Work_Affects_Your_Benefits.pdf", "url": "https://www.ssa.gov/pubs/EN-05-10069.pdf" },
+        { "name": "SSA_05-10147_When_To_Start_Receiving_Retirement_Benefits.pdf", "url": "https://www.ssa.gov/pubs/EN-05-10147.pdf" },
+        { "name": "SSA_05-10084_Survivors_Benefits.pdf", "url": "https://www.ssa.gov/pubs/EN-05-10084.pdf" },
+        { "name": "SSA_05-10024_Understanding_The_Benefits.pdf", "url": "https://www.ssa.gov/pubs/EN-05-10024.pdf" }
       ]
     }
   ]
