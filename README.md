@@ -192,34 +192,119 @@ make answer-eval ARGS='"/path/to/corpus" "jarvis_storage/evaluation/answer_cases
 uv run python tests/milvus_live_test.py
 ```
 
-## Key environment variables
+## Environment variables
+
+Grouped by purpose. Every default is sensible — you rarely need to set any of
+these. The **Performance tuning** knobs exist for adapting to your hardware,
+memory, latency, and corpus; the **Diagnostic** and **Debug** groups are for
+development, not day-to-day use.
+
+### Backend & storage
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `JARVIS_VECTOR_BACKEND` | `milvus` | `milvus`, `local`, or `memory` |
+| `JARVIS_VECTOR_BACKEND` | `milvus` | The single, extensible vector-store selector: `milvus`, `local`, or `memory` |
+| `JARVIS_REQUIRE_MILVUS` | `1` | When the backend is `milvus`, require it — error if unreachable rather than silently using a local store. Set `0` to allow local fallback |
+| `JARVIS_PERSIST_DIR` | packaged runtime storage | Location of local index metadata + extraction cache; point at an ignored directory to isolate evaluations |
 | `JARVIS_REBUILD_INDEX` | `0` | Force a full re-embed of the corpus |
-| `JARVIS_PERSIST_DIR` | packaged runtime storage | Override local index metadata and extraction-cache location; use an ignored directory to isolate evaluations |
-| `JARVIS_CONTEXT_MODE` | `chunk` | `chunk` or `source_window` |
+| `JARVIS_SYNC_EXISTING_INDEX` | `0` | Reconcile the persistent index against the current corpus on load |
+| `JARVIS_PURGE_CHAT_MEMORY` | `1` | Drop stored chat-memory vectors when opening an existing collection |
+| `JARVIS_DISABLE_EXTRACTION_CACHE` | `0` | Bypass the per-file extraction cache (always re-extract) |
+| `JARVIS_DOCUMENT_SOURCES` | `document_sources.json` | Path to the docsync / domain-corpus recipe |
+| `MILVUS_HOST` / `MILVUS_PORT` / `MILVUS_COLLECTION` | `127.0.0.1` / `19530` / `jarvis_context` | Milvus connection + collection (used when the backend is `milvus`) |
+| `HF_TOKEN` | _(unset)_ | Hugging Face token for authenticated embedding-model downloads |
+
+### Retrieval & answering
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
 | `JARVIS_DOMAIN` | `general` | `general` or `tax` detail profile |
-| `JARVIS_ENABLE_TTS` | `1` | Text-to-speech. Set to `0` to disable (e.g. tests) |
-| `JARVIS_ENABLE_APPLE_OCR` | `1` | On macOS, use on-device Apple Vision OCR as the default document-OCR engine (verbatim, fast, local). Self-disables off macOS (falls back to pytesseract / easyocr). Set to `0` to force the cross-platform OCR path |
-| `JARVIS_APPLE_OCR_LANGS` | `en-US` | Comma-separated language-preference list passed to Apple Vision OCR |
-| `JARVIS_APPLE_OCR_LEVEL` | `accurate` | Apple Vision recognition level: `accurate` or `fast` |
-| `USE_MILVUS` | `1` | Toggle the Milvus backend |
-| `JARVIS_HYBRID` | `1` | **Diagnostic switch only.** Hybrid BM25 + dense retrieval (Reciprocal Rank Fusion) is the native runtime; `0` forces dense-only retrieval to help isolate a retrieval issue. Falls back to dense-only automatically if BM25 is unavailable or the docstore is empty |
-| `JARVIS_RETRIEVAL_TOP_K` | `32` | Candidates each retriever returns per query paraphrase, and the default for the BM25 and fusion settings below. Tuned on the retrieval evaluation set: wider values added candidate noise that cost ranking quality and latency without improving recall |
-| `JARVIS_BM25_TOP_K` | `JARVIS_RETRIEVAL_TOP_K` | Sparse (BM25) candidates retrieved before fusion |
-| `JARVIS_DUPLICATE_EVIDENCE_THRESHOLD` | `0.9` | Near-duplicate suppression (always on) drops evidence that repeats a passage already selected; this is the word-overlap ratio at which two passages count as the same. Lower suppresses more aggressively |
-| `JARVIS_FUSION_TOP_K` | `JARVIS_RETRIEVAL_TOP_K` | Results kept after Reciprocal Rank Fusion |
-| `JARVIS_ROUTER` | `0` | Set to `1` to enable the two-tier LLM router (escalate out-of-corpus questions to a larger model) |
-| `JARVIS_ESCALATION_MODEL` | `llama3:70b` | Ollama tag for the escalation model used when the router is enabled |
+| `JARVIS_CONTEXT_MODE` | `chunk` | `chunk` or `source_window` context assembly |
+| `JARVIS_RESPONSE_MODE` | `query` | `query` or `chat` synthesis mode |
+| `JARVIS_ALLOW_GENERAL_KNOWLEDGE` | `1` | On a corpus miss, allow a general-knowledge fallback answer; `0` refuses instead |
+| `JARVIS_ROUTER` | `0` | Enable the two-tier LLM router (escalate out-of-corpus questions to a larger model) |
+| `JARVIS_ESCALATION_MODEL` | `llama3:70b` | Ollama tag for the escalation model (router) |
 | `JARVIS_ESCALATION_TIMEOUT` | `600` | Request timeout (seconds) for the escalation model |
 | `JARVIS_ESCALATION_TEMPERATURE` | `0.2` | Sampling temperature for the escalation model |
-| `JARVIS_ENABLE_MCP` | `0` | Force-enable the MCP connector layer regardless of the registry. The packaged registry already sets `settings.enabled=true`, so the layer is **on by default**; each connector still only fires when a query matches it and has credentials. See [External data via MCP connectors](#external-data-via-mcp-connectors) |
-| `JARVIS_MCP_CONFIG` | _(packaged registry)_ | Path to a custom MCP connector registry; empty uses `jarvisrag/mcp/registry.json` (pure data; add a source = add an entry) |
+| `JARVIS_ENABLE_CHAT_MEMORY` | `0` | Persist conversational memory vectors across turns |
+| `JARVIS_ENABLE_IMAGE_CHAT_ENGINE` | `0` | Build the image chat engine when image documents are present |
+
+### Document extraction & OCR
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `JARVIS_ENABLE_APPLE_OCR` | `1` | macOS: use on-device Apple Vision OCR as the default document-OCR engine (verbatim, fast, local). Self-disables off macOS (falls back to pytesseract / easyocr). Set `0` to force the cross-platform path |
+| `JARVIS_APPLE_OCR_LANGS` | `en-US` | Comma-separated language preferences for Apple Vision OCR |
+| `JARVIS_APPLE_OCR_LEVEL` | `accurate` | Apple Vision recognition level: `accurate` or `fast` |
+| `JARVIS_ENABLE_VLM` | `0` | Enable the vision-language model for optional image captioning |
+| `JARVIS_VLM_MODEL` | `HuggingFaceTB/SmolVLM2-2.2B-Instruct` | VLM used for captioning when enabled |
+| `JARVIS_VLM_CAPTION` | `0` | Also caption figure/photo regions and image-only pages |
+| `JARVIS_ENABLE_SURYA` | `0` | Enable the (dormant) Surya layout + recognition stage; requires an optional dependency |
+| `JARVIS_VOCAB_FILE` | _(built-in)_ | Path to a custom English vocabulary used by the OCR-garbage check |
+
+### Text-to-speech
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `JARVIS_ENABLE_TTS` | `1` | Text-to-speech on/off (set `0` in tests) |
+| `JARVIS_TTS_VOICE` | _(built-in)_ | Voice name |
+| `JARVIS_TTS_SPEED` | `1.0` | Speech-rate multiplier |
+| `JARVIS_TTS_GOODBYE` | `0` | Speak a goodbye line on exit |
+
+### External data (MCP)
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `JARVIS_ENABLE_MCP` | `0` | Force-enable the MCP layer regardless of the registry. The packaged registry already sets `settings.enabled=true`, so the layer is **on by default**; each connector still only fires when a query matches it and has credentials. See [External data via MCP connectors](#external-data-via-mcp-connectors) |
+| `JARVIS_MCP_CONFIG` | _(packaged registry)_ | Path to a custom MCP registry; empty uses `jarvisrag/mcp/registry.json` (pure data; add a source = add an entry) |
 | `JARVIS_MCP_TIMEOUT` | `20` | Per-call timeout (seconds) for an MCP request |
 | `JARVIS_MCP_TOKEN_CACHE` | `jarvis_storage/.mcp_tokens.json` | Where OAuth tokens are cached (written `0600`, holds tokens only, gitignored) |
-| `JARVIS_MCP_PII_GUARD` | `redact` | Outbound PII guard for MCP requests: `redact` (sanitize + warn), `block` (skip the request if PII is present), or `off` |
+| `JARVIS_MCP_PII_GUARD` | `redact` | Outbound PII guard: `redact` (sanitize + warn), `block` (skip if PII is present), or `off` |
+
+### Performance tuning (per-hardware)
+
+Numeric knobs tuned to sensible defaults on the evaluation set. Adjust for your
+hardware, memory, latency, or corpus — you rarely need to.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `JARVIS_RETRIEVAL_TOP_K` | `32` | Candidates each retriever returns per query paraphrase, and the default for the BM25/fusion settings below. Tuned on the eval set: wider values added candidate noise that cost ranking quality and latency without improving recall |
+| `JARVIS_BM25_TOP_K` | `= RETRIEVAL_TOP_K` | Sparse (BM25) candidates retrieved before fusion |
+| `JARVIS_FUSION_TOP_K` | `= RETRIEVAL_TOP_K` | Results kept after Reciprocal Rank Fusion |
+| `JARVIS_QUERY_TOP_K` | `48` | Dense candidates for the direct query engine |
+| `JARVIS_MAX_EVIDENCE_LINES` | `30` | Max evidence lines assembled into the prompt |
+| `JARVIS_HOME_CORPUS_MAX_CHUNKS` | `60` | Cap on home-folder chunks force-included as candidates |
+| `JARVIS_DUPLICATE_EVIDENCE_THRESHOLD` | `0.9` | Word-overlap ratio at which two evidence passages count as duplicates (near-duplicate suppression is always on); lower suppresses more aggressively |
+| `JARVIS_ANSWER_REVIEW_ATTEMPTS` | `3` | Max synthesis/review attempts |
+| `JARVIS_CONTEXT_WINDOW_WORDS` | `2500` | Words per `source_window` context document |
+| `JARVIS_ENUM_CHUNK_CHARS` | `8000` | Char cap per evidence line for enumeration queries |
+| `JARVIS_SOURCE_HINT_CHUNK_CHARS` | `16000` | Char cap per evidence line for explicitly named files |
+| `JARVIS_HOME_CHUNK_CHARS` | `8000` | Char cap per home-folder evidence line |
+| `JARVIS_METADATA_EMBED_BUDGET_CHARS` | `1024` | Per-node embedded-metadata budget (largest keys excluded past this) |
+| `JARVIS_INDEX_BATCH_SIZE` | `64` | Documents per embedding/insert batch |
+| `JARVIS_OCR_MIN_CONF` | `0.65` | Region confidence at/above which OCR text is trusted as-is |
+| `JARVIS_OCR_VOCAB_THRESHOLD` | `0.25` | Min fraction of recognized English words before text is treated as OCR garbage |
+| `JARVIS_VLM_CONF` | `0.75` | Confidence assigned to VLM-recovered text |
+| `JARVIS_PDF_MIN_CHARS_PER_PAGE` | `40` | Min native-text chars before a PDF page is treated as born-digital (else OCR) |
+| `JARVIS_PDF_OCR_DPI` | `300` | Rasterization DPI when a PDF page is sent to OCR |
+| `JARVIS_PDF_FILE_TIMEOUT_SECONDS` | `90` | Per-file PDF extraction timeout |
+
+### Diagnostic switches
+
+Kept for isolating issues during development — not user features.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `JARVIS_HYBRID` | `1` | `0` forces dense-only retrieval (to isolate a retrieval issue); auto-falls back to dense-only if BM25 is unavailable or the docstore is empty |
+| `JARVIS_ENABLE_ANSWER_REVIEW` | `1` | `0` skips the answer review loop (faster, for quick tests) |
+
+### Debug logging
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `JARVIS_DEBUG` | `0` | Verbose Jarvis debug logging |
+| `JARVIS_DEBUG_HTTP` | `0` | Show underlying HTTP client logs |
+| `JARVIS_TTS_DEBUG` | `0` | Verbose TTS debug logging |
 
 ## External data via MCP connectors
 

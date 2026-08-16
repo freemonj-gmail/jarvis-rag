@@ -193,7 +193,7 @@ def _build_index(all_docs: list, embed_model, persist_dir=None, collection_name=
     if vector_backend not in {"milvus", "local", "memory"}:
         raise ValueError("JARVIS_VECTOR_BACKEND must be 'milvus', 'local', or 'memory'.")
 
-    use_milvus = vector_backend == "milvus" and os.environ.get("USE_MILVUS", "1") == "1"
+    use_milvus = vector_backend == "milvus"
     require_milvus = use_milvus and os.environ.get("JARVIS_REQUIRE_MILVUS", "1") == "1"
     sync_existing_index = os.environ.get("JARVIS_SYNC_EXISTING_INDEX", "0") == "1"
     rebuild_index = os.environ.get("JARVIS_REBUILD_INDEX", "0") == "1"
@@ -226,11 +226,6 @@ def _build_index(all_docs: list, embed_model, persist_dir=None, collection_name=
         print("Using in-memory VectorStoreIndex.from_documents backend (pre-Milvus style).")
         doc_index = VectorStoreIndex.from_documents(all_docs, embed_model=embed_model)
         active_vector_backend = "memory"
-    elif require_milvus and not use_milvus:
-        raise RuntimeError(
-            "Milvus is required but explicitly disabled (USE_MILVUS=0). "
-            "Set USE_MILVUS=1 or JARVIS_REQUIRE_MILVUS=0 to allow local fallback."
-        )
 
     if vector_backend != "memory":
         if use_milvus and not _is_port_open(milvus_host, milvus_port, timeout=2.0):
@@ -276,7 +271,7 @@ def _build_index(all_docs: list, embed_model, persist_dir=None, collection_name=
                 print(f"Using Milvus vector store at {milvus_host}:{milvus_port}/{milvus_collection}")
             else:
                 active_vector_backend = "local"
-                print("Using local vector store (Milvus disabled by USE_MILVUS).")
+                print("Using local vector store.")
         except Exception as e:
             if use_milvus and require_milvus:
                 raise RuntimeError(
