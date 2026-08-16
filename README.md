@@ -228,12 +228,16 @@ uv run python tests/milvus_live_test.py
 Jarvis can pull **fresh, authoritative facts** (e.g. current tax law) and
 **private account data** from external [Model Context Protocol](https://modelcontextprotocol.io/)
 servers and inject them as the **highest-precedence evidence** for a question, so
-live data overrides the model's stale general knowledge when relevant. The layer
-is **on by default** (the packaged registry sets `settings.enabled=true`), but it
-stays inert until a connector actually matches *and* has credentials — e.g.
-taxmcp.io does nothing until you run `make mcp-login`. To turn the whole layer
-off, set `settings.enabled` to `false` in `jarvisrag/mcp/registry.json` (or point
-`JARVIS_MCP_CONFIG` at a registry that disables it).
+live data overrides the model's stale general knowledge when relevant. Two
+connectors ship in the packaged registry: **taxmcp.io** (current U.S. tax law,
+OAuth) and the **eCFR federal-regulations** server (Title 5 — federal retirement
+and benefits, keyless). The layer is **on by default** (the packaged registry
+sets `settings.enabled=true`), but it stays inert until a connector actually
+matches — and, for authenticated sources, has credentials (e.g. taxmcp.io does
+nothing until you run `make mcp-login`; the keyless eCFR server needs no sign-in).
+To turn the whole layer off, set `settings.enabled` to `false` in
+`jarvisrag/mcp/registry.json` (or point `JARVIS_MCP_CONFIG` at a registry that
+disables it).
 
 It is designed to be safe and unobtrusive:
 
@@ -246,6 +250,18 @@ It is designed to be safe and unobtrusive:
   never breaks a turn; the answer proceeds on local/document evidence as before.
 - **Untrusted by default.** External content is treated as DATA, not instructions
   (labeled, size-capped, control-characters stripped) to blunt prompt injection.
+
+### Transports
+
+Connectors reach their server one of two ways, chosen per entry in the registry:
+
+- **HTTP + OAuth** (e.g. taxmcp.io) — a remote endpoint reached over HTTPS, with
+  the OAuth flow below.
+- **Keyless stdio** (e.g. the eCFR federal-regulations server) — Jarvis spawns the
+  server locally on demand (via `npx`) and speaks newline-delimited JSON-RPC over
+  its stdin/stdout, then terminates it when the call returns. No endpoint, no
+  account, no token — nothing to sign into, and the child process is always
+  cleaned up.
 
 ### Authentication (OAuth)
 
@@ -282,11 +298,60 @@ any MCP request and acts per `JARVIS_MCP_PII_GUARD`:
 > or use `JARVIS_MCP_PII_GUARD=block` for a hard stop. Credit-card matches are
 > Luhn-validated so section numbers, years, and long IDs are not false-flagged.
 
+## Domain corpora (routed sub-indexes)
+
+Some subjects deserve their own **authoritative reference corpus** kept apart from
+your everyday documents — e.g. a set of federal-benefits handbooks (OPM/SSA) that
+should answer retirement questions without diluting résumé or contract retrieval.
+Jarvis supports this with **routed domain sub-indexes**, declared as data in
+`document_sources.json` and **on by default** (no flag).
+
+How it works:
+
+- **Separate index, not a filter.** Each domain builds its **own** index with its
+  **own** docstore and vector collection. This is deliberate: the BM25 sparse
+  retriever indexes the whole docstore and has no metadata-filter support, so a
+  single shared collection could not keep domain text from leaking into — or
+  crowding — ordinary queries. A separate index is the only clean isolation.
+- **Gated by routing terms.** A domain is consulted **only** when the query
+  matches one of its `match_any` terms (e.g. `fers`, `tsp`, `federal annuity`).
+  Non-matching queries never touch it, so general retrieval is unchanged.
+- **Merged like MCP evidence.** When a domain matches, its evidence is prepended
+  as high-precedence context (after any MCP evidence, before local evidence).
+- **Clean references.** For a domain-routed query, the normal home-corpus
+  force-include is suppressed, so the answer cites the domain sources rather than
+  pulling in unrelated files from your working folder.
+- **Persistent.** Each domain persists into its own collection + directory and
+  **reloads** on later startups instead of re-embedding every launch; after a
+  `make docs-refresh` changes a file, only the changed documents are re-embedded.
+
+A domain self-activates when its entry has `match_any` routing terms and its
+`corpus_dir` exists; otherwise it is silently skipped. Any per-domain failure is
+logged and never blocks startup.
+
+## Keeping remote sources fresh (docsync)
+
+Reference corpora that come from the web (e.g. OPM/SSA benefit handbooks) are
+refreshed with a small **document-sync** step, driven by the same
+`document_sources.json` recipe:
+
+```bash
+make docs-refresh
+```
+
+It downloads each declared document into its `corpus_dir`, compares the new bytes
+against the on-disk copy by SHA-256, and **rewrites only when the content changed**
+(atomic replace). Where the server supports it, a conditional `ETag` /
+`Last-Modified` request avoids re-downloading unchanged files entirely; a small
+state sidecar tracks those validators. Because a rewrite happens only on real
+change, the domain index's delta-sync then re-embeds just the documents that moved.
+
 ## Layout
 
 ```
 Jarvis.py              # Application entry point (thin CLI)
 jarvis_helpers.py      # Facade re-exporting the public API surface
+document_sources.json  # Remote-document + domain-corpus recipe (docsync + routing)
 jarvisrag/             # Umbrella package (organized by function)
   config/              # Settings + env-var configuration
   iotools/             # File I/O helpers (named to avoid shadowing stdlib io)
@@ -299,9 +364,10 @@ jarvisrag/             # Umbrella package (organized by function)
   answer/              # Answer synthesis + runtime bootstrap
     math/              #   deterministic calculation lane (arithmetic, %, stats, probability)
   speech/              # TTS / speech
-  mcp/                 # MCP connector layer (OAuth, transport, PII guard)
-    connector.py       #   transport + OAuth + outbound PII guard
+  mcp/                 # MCP connector layer (OAuth + keyless stdio, PII guard)
+    connector.py       #   HTTP/OAuth + stdio transports + outbound PII guard
     registry.json      #   MCP connector registry (pure data)
+  docsync/             # Remote-document refresh (SHA-256 + conditional GET)
   evaluation/          # Privacy-safe retrieval + answer-quality harnesses
 scripts/               # Local evaluation CLIs (evaluate_retrieval.py, evaluate_answers.py)
 tests/                 # Unit + smoke + Milvus tests
