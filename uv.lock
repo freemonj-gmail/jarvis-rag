@@ -1976,7 +1976,7 @@ wheels = [
 
 [[package]]
 name = "my-python-examples"
-version = "1.18.0"
+version = "1.18.1"
 source = { virtual = "." }
 dependencies = [
     { name = "docling" },
