@@ -33,7 +33,7 @@ from jarvisrag.retrieval import build_hybrid_retriever
 from jarvisrag.iotools import _is_port_open
 from jarvisrag.mcp.connector import load_mcp_registry
 from jarvisrag.docsync import load_document_sources
-from jarvisrag.answer.answer import QueryRuntime, _purge_chat_memory_vectors
+from jarvisrag.answer.answer import QueryRuntime
 
 
 PERSIST_DIR = os.path.abspath(os.path.expanduser(os.environ.get(
@@ -249,8 +249,6 @@ def _build_index(all_docs: list, embed_model, persist_dir=None, collection_name=
                 try:
                     has_collection = vector_store.has_collection()
                     print(f"Milvus collection '{milvus_collection}' exists={has_collection}")
-                    if has_collection and os.environ.get("JARVIS_PURGE_CHAT_MEMORY", "1") == "1":
-                        _purge_chat_memory_vectors(vector_store)
                 except Exception as e:
                     print(f"Warning: Unable to verify Milvus collection state: {e}")
             else:

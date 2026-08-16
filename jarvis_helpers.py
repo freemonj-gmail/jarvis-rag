@@ -180,7 +180,6 @@ from jarvisrag.answer.answer import (
     _format_response_for_display,
     _llm_output_budget,
     _not_found_answer,
-    _purge_chat_memory_vectors,
     _reasoning_guidance,
     _response_is_dismissive,
     _review_answer_against_evidence,

@@ -208,7 +208,6 @@ development, not day-to-day use.
 | `JARVIS_PERSIST_DIR` | packaged runtime storage | Location of local index metadata + extraction cache; point at an ignored directory to isolate evaluations |
 | `JARVIS_REBUILD_INDEX` | `0` | Force a full re-embed of the corpus |
 | `JARVIS_SYNC_EXISTING_INDEX` | `0` | Reconcile the persistent index against the current corpus on load |
-| `JARVIS_PURGE_CHAT_MEMORY` | `1` | Drop stored chat-memory vectors when opening an existing collection |
 | `JARVIS_DISABLE_EXTRACTION_CACHE` | `0` | Bypass the per-file extraction cache (always re-extract) |
 | `JARVIS_DOCUMENT_SOURCES` | `document_sources.json` | Path to the docsync / domain-corpus recipe |
 | `MILVUS_HOST` / `MILVUS_PORT` / `MILVUS_COLLECTION` | `127.0.0.1` / `19530` / `jarvis_context` | Milvus connection + collection (used when the backend is `milvus`) |
@@ -226,7 +225,6 @@ development, not day-to-day use.
 | `JARVIS_ESCALATION_MODEL` | `llama3:70b` | Ollama tag for the escalation model (router) |
 | `JARVIS_ESCALATION_TIMEOUT` | `600` | Request timeout (seconds) for the escalation model |
 | `JARVIS_ESCALATION_TEMPERATURE` | `0.2` | Sampling temperature for the escalation model |
-| `JARVIS_ENABLE_CHAT_MEMORY` | `0` | Persist conversational memory vectors across turns |
 | `JARVIS_ENABLE_IMAGE_CHAT_ENGINE` | `0` | Build the image chat engine when image documents are present |
 
 ### Document extraction & OCR

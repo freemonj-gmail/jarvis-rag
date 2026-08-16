@@ -14,7 +14,6 @@ import os
 import re
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime, UTC
 from typing import Any, List, Optional
 
 from llama_index.core import VectorStoreIndex
@@ -1456,31 +1455,6 @@ def _build_corpus_details_preview(documents: list[Document], max_items: int = 8)
     return "\n".join(lines)
 
 
-def _purge_chat_memory_vectors(vector_store: object) -> None:
-    try:
-        vector_store._connect()
-        client = vector_store._client
-        collection = vector_store.collection_name
-        if client is None or not client.has_collection(collection):
-            return
-
-        rows = client.query(
-            collection,
-            filter='source == "chat_memory"',
-            output_fields=["node_id"],
-            limit=1000,
-        )
-        node_ids = [row.get("node_id") for row in rows if row.get("node_id")]
-        if not node_ids:
-            debug_print("[debug] No chat-memory vectors found in Milvus document collection.")
-            return
-
-        client.delete(collection_name=collection, ids=node_ids)
-        print(f"Purged {len(node_ids)} chat-memory vectors from Milvus document collection.")
-    except Exception as e:
-        print(f"Warning: Unable to purge chat-memory vectors: {e}")
-
-
 def build_chunk_query_engines(
     documents: List[Document],
     docs_per_chunk: int = 40,
@@ -1916,23 +1890,6 @@ def handle_query(
             "response_text": response_text,
             "evidence_lines": evidence_lines,
         }
-
-        if os.environ.get("JARVIS_ENABLE_CHAT_MEMORY", "0") == "1" and runtime.doc_index is not None and runtime.storage_context is not None:
-            if not review_passed or _response_is_dismissive(response_text):
-                debug_print("[debug] Skipping chat memory persistence (response was a fallback or not reviewed).")
-            else:
-                chat_doc = Document(
-                    text=f"User: {user_query}\nAssistant: {response_text}",
-                    metadata={
-                        "source": "chat_memory",
-                        "timestamp": datetime.now(UTC).isoformat(),
-                    },
-                )
-                try:
-                    runtime.doc_index.insert(chat_doc)
-                    runtime.storage_context.persist(runtime.persist_dir)
-                except Exception as e:
-                    print(f"Warning: chat memory persistence failed: {e}")
     except Exception as e:
         print("Context engine failed:", e)
         tts.speak("Sorry, I encountered an error processing your request.")

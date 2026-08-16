@@ -72,7 +72,6 @@ _PUBLIC_API_SURFACE = (
     "_effective_query_for_turn",
     "_looks_like_follow_up",
     "_is_port_open",
-    "_purge_chat_memory_vectors",
 )
 
 
