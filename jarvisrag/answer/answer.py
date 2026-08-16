@@ -1565,6 +1565,53 @@ class QueryRuntime:
     home_indexed_files: list[str] | None = None
     home_excluded_files: list[str] | None = None
     mcp_registry: object | None = None
+    domain_retrievers: list | None = None
+
+
+# Cap on domain-corpus evidence lines merged per turn (small so a routed query
+# stays grounded in the domain without flooding the evidence window).
+_DOMAIN_EVIDENCE_LINES = 15
+
+
+def _query_matches_domain(query: str, domain_retrievers: list | None) -> bool:
+    """True if ``query`` routes to any domain corpus (matches its routing terms).
+
+    Used to suppress the home-corpus force-include for domain-routed questions so
+    unrelated launch-folder files don't crowd the context or the citations."""
+    if not domain_retrievers:
+        return False
+    ql = query.lower()
+    for domain in domain_retrievers:
+        if any(str(term).lower() in ql for term in (domain.get("match_any") or []) if term):
+            return True
+    return False
+
+
+def _retrieve_domain_evidence(query: str, domain_retrievers: list | None) -> list[str]:
+    """Retrieve evidence from any domain corpus whose routing terms match ``query``.
+
+    Gated + additive + fail-safe: a non-matching query, no domain layer, or any
+    error yields []. Domain evidence carries its own source filenames (e.g. the
+    OPM/SSA PDFs) so it is citeable like local evidence, and is merged at high
+    precedence. The domain index is SEPARATE from the main index, so this never
+    affects retrieval for non-matching (e.g. resume) queries."""
+    if not domain_retrievers:
+        return []
+    ql = query.lower()
+    cap = _DOMAIN_EVIDENCE_LINES
+    lines: list[str] = []
+    for domain in domain_retrievers:
+        if len(lines) >= cap:
+            break
+        terms = domain.get("match_any") or []
+        if not any(str(term).lower() in ql for term in terms if term):
+            continue
+        try:
+            evidence, _nodes = _retrieve_query_supported_evidence(query, domain["retriever"])
+            lines.extend(evidence)
+        except Exception as exc:  # noqa: BLE001 - never let a domain lookup break a turn
+            debug_print(f"[domain] {domain.get('name')} retrieval failed ({exc}); skipping.")
+    return lines[:cap]
 
 
 def handle_query(
@@ -1688,8 +1735,17 @@ def handle_query(
         if runtime.doc_retriever is None:
             raise RuntimeError("No retriever available")
 
+        # A domain-routed query (e.g. federal benefits) is answered from the
+        # domain + MCP sources, so suppress the home-corpus force-include: it
+        # otherwise pins every launch-folder file into the evidence, bloating the
+        # synthesis context and the References with unrelated local documents.
+        domain_routed = _query_matches_domain(
+            effective_user_query, getattr(runtime, "domain_retrievers", None)
+        )
         evidence_lines, source_nodes = _retrieve_query_supported_evidence(
-            effective_user_query, runtime.doc_retriever, home_corpus_dir=runtime.home_corpus_dir
+            effective_user_query,
+            runtime.doc_retriever,
+            home_corpus_dir=(None if domain_routed else runtime.home_corpus_dir),
         )
         evidence_lines = _evidence_lines_for_turn(
             evidence_lines,
@@ -1698,6 +1754,17 @@ def handle_query(
             negative_evidence_feedback,
             source_hints,
         )
+        # Consult gated domain corpora (e.g. federal-benefits PDFs) kept SEPARATE
+        # from the main index. Additive + fail-safe: only fires when the query
+        # matches a domain's routing terms, and is prepended so on-topic domain
+        # evidence outranks off-topic local noise for routed questions. Non-
+        # matching (e.g. resume) queries are completely unaffected.
+        domain_evidence = _retrieve_domain_evidence(
+            effective_user_query, getattr(runtime, "domain_retrievers", None)
+        )
+        if domain_evidence:
+            debug_print(f"[debug] Injected {len(domain_evidence)} domain-corpus evidence line(s).")
+            evidence_lines = domain_evidence + evidence_lines
         # Pull fresh authoritative/account intelligence from matching MCP
         # connectors (e.g. taxmcp.io for IRS questions, Truthify for the
         # financial institutions) and PREPEND it so it outranks the local corpus
@@ -1722,13 +1789,18 @@ def handle_query(
         # Launch-folder files actually present in this turn's evidence must be
         # representable in References even if the LLM cites them descriptively or
         # their filename contains spaces (which the prose citation regex mangles).
-        home_evidence_refs = _home_files_in_evidence(evidence_lines, runtime.home_indexed_files)
+        # Domain-routed answers come from the domain/MCP sources, not the launch
+        # folder, so drop the home-folder References and excluded-file notes.
+        home_evidence_refs = [] if domain_routed else _home_files_in_evidence(
+            evidence_lines, runtime.home_indexed_files
+        )
+        excluded_for_display = None if domain_routed else runtime.home_excluded_files
 
         if _query_requests_authoring(user_query):
             response_text = _author_from_evidence(effective_user_query, evidence_lines, runtime.llm)
             if response_text:
                 debug_print("[debug] Used authoring/composition path (single pass, no review loop).")
-                print(f"Jarvis: {_format_response_for_display(response_text, runtime.home_excluded_files, home_evidence_refs)}\n")
+                print(f"Jarvis: {_format_response_for_display(response_text, excluded_for_display, home_evidence_refs)}\n")
                 tts.speak(_spoken_response_text(response_text))
                 return {
                     "user_query": user_query,
@@ -1835,7 +1907,7 @@ def handle_query(
         else:
             debug_print("[debug] Returning reviewed answer.")
 
-        print(f"Jarvis: {_format_response_for_display(response_text, runtime.home_excluded_files, home_evidence_refs)}\n")
+        print(f"Jarvis: {_format_response_for_display(response_text, excluded_for_display, home_evidence_refs)}\n")
         tts.speak(_spoken_response_text(response_text))
         last_turn = {
             "user_query": user_query,

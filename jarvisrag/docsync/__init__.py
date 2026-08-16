@@ -52,10 +52,15 @@ class DocSource:
 
 @dataclass
 class DocSet:
-    """A named group of remote documents synced into one corpus directory."""
+    """A named group of remote documents synced into one corpus directory.
+
+    ``match_any``/``label`` are optional routing metadata consumed by the
+    domain-corpus layer (not by docsync itself)."""
     name: str
     corpus_dir: str
     documents: list[DocSource] = field(default_factory=list)
+    match_any: list[str] = field(default_factory=list)
+    label: str = ""
 
 
 def load_document_sources(config_path: Optional[str] = None) -> list[DocSet]:
@@ -78,6 +83,8 @@ def load_document_sources(config_path: Optional[str] = None) -> list[DocSet]:
                 name=str(entry["name"]),
                 corpus_dir=str(entry["corpus_dir"]),
                 documents=docs,
+                match_any=[str(t) for t in entry.get("match_any", [])],
+                label=str(entry.get("label", "")),
             ))
         except (KeyError, TypeError):
             continue

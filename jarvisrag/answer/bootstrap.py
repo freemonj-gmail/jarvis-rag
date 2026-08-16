@@ -32,6 +32,7 @@ from jarvisrag.extraction.indexing import (
 from jarvisrag.retrieval import build_hybrid_retriever
 from jarvisrag.iotools import _is_port_open
 from jarvisrag.mcp.connector import load_mcp_registry
+from jarvisrag.docsync import load_document_sources
 from jarvisrag.answer.answer import QueryRuntime, _purge_chat_memory_vectors
 
 
@@ -160,11 +161,14 @@ def _load_image_documents(input_dir: str, llm) -> tuple[list, object | None]:
         return [], None
 
 
-def _build_index(all_docs: list, embed_model):
+def _build_index(all_docs: list, embed_model, persist_dir=None, collection_name=None):
     """Filter/group documents and build or load the persistent vector index.
 
     Returns (doc_index, storage_context, response_mode). `all_docs` is mutated to
-    the filtered/grouped set actually indexed."""
+    the filtered/grouped set actually indexed. ``persist_dir``/``collection_name``
+    override the module defaults so a domain corpus can persist into its own
+    Milvus collection + directory and reload instead of re-embedding."""
+    persist_dir = persist_dir or PERSIST_DIR
     raw_doc_count = len(all_docs)
     all_docs[:] = filter_informative_documents(all_docs)
     filtered_doc_count = raw_doc_count - len(all_docs)
@@ -199,7 +203,7 @@ def _build_index(all_docs: list, embed_model):
 
     milvus_host = os.environ.get("MILVUS_HOST", "127.0.0.1")
     milvus_port = os.environ.get("MILVUS_PORT", "19530")
-    milvus_collection = os.environ.get("MILVUS_COLLECTION", "jarvis_context")
+    milvus_collection = collection_name or os.environ.get("MILVUS_COLLECTION", "jarvis_context")
 
     if filtered_doc_count and vector_backend != "memory" and not rebuild_index:
         print(
@@ -262,7 +266,7 @@ def _build_index(all_docs: list, embed_model):
             doc_index, storage_context = build_or_load_persistent_index(
                 all_docs,
                 vector_store,
-                persist_dir=PERSIST_DIR,
+                persist_dir=persist_dir,
                 embed_model=embed_model,
                 sync_existing=sync_existing_index,
                 rebuild=rebuild_index,
@@ -287,7 +291,7 @@ def _build_index(all_docs: list, embed_model):
             doc_index, storage_context = build_or_load_persistent_index(
                 all_docs,
                 local_store,
-                persist_dir=PERSIST_DIR,
+                persist_dir=persist_dir,
                 embed_model=embed_model,
                 sync_existing=sync_existing_index,
                 rebuild=rebuild_index,
@@ -335,6 +339,62 @@ def _partition_home_files(input_dir: str, indexed_docs: list) -> tuple[list[str]
     indexed = [name for key, name in items if key in indexed_keys]
     excluded = [name for key, name in items if key not in indexed_keys]
     return indexed, excluded
+
+
+def _build_domain_retrievers(embed_model, llm) -> list:
+    """Build gated, SEPARATE retrievers for volatile domain corpora (e.g.
+    federal-benefits PDFs) declared in document_sources.json.
+
+    Each domain persists into its OWN collection + directory, so it has its own
+    docstore (BM25 cannot leak into or crowd the main index, no persist/collection
+    collision with production) AND it reloads on later startups instead of
+    re-embedding. A domain is consulted only when a query matches its routing
+    terms (handled in the answer layer). Active whenever a set with match_any and
+    a present corpus_dir exists; any per-set failure is logged and skipped."""
+    try:
+        sets = load_document_sources()
+    except Exception as exc:
+        print(f"[jarvis] Domain-corpus layer: could not load document_sources.json ({exc}); skipping.")
+        return []
+
+    top_k = int(os.environ.get("JARVIS_RETRIEVAL_TOP_K", DEFAULT_RETRIEVAL_TOP_K))
+    domains: list = []
+    for doc_set in sets:
+        if not doc_set.match_any or not os.path.isdir(doc_set.corpus_dir):
+            continue
+        try:
+            docs = _load_corpus_documents(doc_set.corpus_dir)
+        except Exception as exc:
+            print(f"[jarvis] Domain corpus '{doc_set.name}': load failed ({exc}); skipping.")
+            continue
+        if not docs:
+            continue
+        # Persist each domain into its OWN collection + directory: isolated
+        # docstore (no BM25 leak, no collision with the main index) that reloads
+        # on later startups instead of re-embedding.
+        safe = "".join(c if c.isalnum() else "_" for c in doc_set.name)
+        domain_persist = os.path.join(PERSIST_DIR, "domains", safe)
+        domain_collection = f"jarvis_domain_{safe}"
+        domain_index = None
+        try:
+            domain_index, _sc, _rm, _bk = _build_index(
+                docs, embed_model, persist_dir=domain_persist, collection_name=domain_collection,
+            )
+        except Exception as exc:
+            print(f"[jarvis] Domain corpus '{doc_set.name}': index build failed ({exc}); skipping.")
+        if domain_index is None:
+            continue
+        retriever = build_hybrid_retriever(
+            domain_index, dense_top_k=top_k, bm25_top_k=top_k, fusion_top_k=top_k, llm=llm,
+        )
+        domains.append({
+            "name": doc_set.name,
+            "retriever": retriever,
+            "match_any": doc_set.match_any,
+            "label": doc_set.label or doc_set.name,
+        })
+        print(f"[jarvis] Domain corpus '{doc_set.name}' loaded ({len(docs)} docs); routes on {doc_set.match_any}.")
+    return domains
 
 
 def build_runtime(input_dir: str) -> QueryRuntime:
@@ -405,6 +465,7 @@ def build_runtime(input_dir: str) -> QueryRuntime:
         )
 
     mcp_registry = load_mcp_registry()
+    domain_retrievers = _build_domain_retrievers(embed_model, llm)
 
     return QueryRuntime(
         all_docs=all_docs,
@@ -420,4 +481,5 @@ def build_runtime(input_dir: str) -> QueryRuntime:
         home_indexed_files=home_indexed_files,
         home_excluded_files=home_excluded_files,
         mcp_registry=mcp_registry,
+        domain_retrievers=domain_retrievers,
     )
