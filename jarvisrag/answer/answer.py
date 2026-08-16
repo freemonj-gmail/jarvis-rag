@@ -1703,7 +1703,14 @@ def handle_query(
         # financial institutions) and PREPEND it so it outranks the local corpus
         # and the model's general knowledge. Fully gated + fail-safe: a non-
         # matching question, a disabled layer, or any fetch failure yields [].
-        mcp_evidence = fetch_mcp_evidence(effective_user_query, runtime.mcp_registry)
+        # Literal full-text back-ends (e.g. eCFR) need salient keywords, not a
+        # raw question, so pass a compact set reusing the existing query analysis.
+        mcp_terms = _query_terms(effective_user_query)
+        mcp_anchors = _query_anchor_terms(effective_user_query, mcp_terms)
+        mcp_keywords = " ".join((mcp_anchors + _query_topic_terms(mcp_terms, mcp_anchors))[:4])
+        mcp_evidence = fetch_mcp_evidence(
+            effective_user_query, runtime.mcp_registry, search_terms=mcp_keywords
+        )
         if mcp_evidence:
             debug_print(f"[debug] Injected {len(mcp_evidence)} MCP evidence line(s) at highest precedence.")
             evidence_lines = mcp_evidence + evidence_lines

@@ -79,6 +79,35 @@
           "args": { "query": "{query}", "limit": 5 }
         }
       ]
+    },
+    {
+      "name": "ecfr",
+      "enabled": true,
+      "_note": "US Code of Federal Regulations via the keyless @cyanheads/federal-regulations-mcp-server, run ON-DEMAND over stdio (npx spawns the process per matching query and it is torn down after — no daemon, no idle resources, no API key). Scoped to CFR Title 5, which holds the federal-benefit rules taxmcp cannot reach: FERS/CSRS + OPM annuity (5 CFR / 5 USC 83-84) and the Thrift Savings Plan / FRTIB (5 CFR 1600s). Results are DATA-ONLY and UNTRUSTED: they pass through the exact same sanitize + outbound-PII-guard + treat-as-data-not-instructions gates as every MCP source, and are injected as evidence AFTER retrieval ranking, so the local ranker and the index are never touched. Requires Node (v24+). Kept DISABLED until the live tools/list schema + a smoke test have vetted it; flip 'enabled' to true only then. The two Regulations.gov tools need a separate free api.data.gov key and are not used here.",
+      "transport": "stdio",
+      "command": ["npx", "-y", "@cyanheads/federal-regulations-mcp-server@latest"],
+      "env": { "MCP_TRANSPORT_TYPE": "stdio", "MCP_LOG_LEVEL": "error" },
+      "url": "",
+      "auth": "none",
+      "source_label": "eCFR (Code of Federal Regulations, Title 5 — cited, unofficial)",
+      "precedence": 140,
+      "max_chars_per_result": 8000,
+      "match_any": [
+        "fers",
+        "csrs",
+        "thrift savings plan",
+        "tsp",
+        "opm",
+        "federal annuity",
+        "federal employees retirement",
+        "5 cfr"
+      ],
+      "calls": [
+        {
+          "tool": "regulations_browse_cfr",
+          "args": { "mode": "search", "query": "{keywords}", "title": 5 }
+        }
+      ]
     }
   ]
 }

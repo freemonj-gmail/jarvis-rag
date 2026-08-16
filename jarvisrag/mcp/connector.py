@@ -116,16 +116,19 @@ class MCPConnector:
     """A single MCP source, loaded from the registry as pure data."""
     name: str
     enabled: bool
-    transport: str                      # currently only "http" (streamable HTTP)
+    transport: str                      # "http" (streamable HTTP) | "stdio" (on-demand local process)
     url: str
     auth: str = "none"                  # "none" | "bearer" | "oauth"
     auth_env: Optional[str] = None      # bearer: env var holding the token (never the token)
     oauth_scope: str = ""               # oauth: scope requested during authorization
+    command: list[str] = field(default_factory=list)    # stdio: process argv, spawned per query then torn down
+    env: dict[str, str] = field(default_factory=dict)   # stdio: extra environment variables for the child
     match_any: list[str] = field(default_factory=list)   # case-insensitive substrings
     match_regex: Optional[str] = None
     calls: list[MCPCall] = field(default_factory=list)
     source_label: str = ""              # human label cited in evidence/References
     precedence: int = 100               # higher = more authoritative / injected first
+    max_chars: Optional[int] = None     # per-connector result char cap (falls back to the registry default)
 
     def matches(self, query: str) -> bool:
         """Routing gate: does this connector apply to ``query``?"""
@@ -224,11 +227,14 @@ def _connector_from_dict(entry: dict[str, Any]) -> MCPConnector:
         auth=str(entry.get("auth", "none")),
         auth_env=entry.get("auth_env"),
         oauth_scope=str(entry.get("oauth_scope", "")),
+        command=[str(a) for a in entry.get("command", [])],
+        env={str(k): str(v) for k, v in (entry.get("env", {}) or {}).items()},
         match_any=[str(t) for t in entry.get("match_any", [])],
         match_regex=entry.get("match_regex"),
         calls=calls,
         source_label=str(entry.get("source_label", entry.get("name", ""))),
         precedence=int(entry.get("precedence", 100)),
+        max_chars=(int(entry["max_chars_per_result"]) if entry.get("max_chars_per_result") is not None else None),
     )
 
 
@@ -327,6 +333,105 @@ class HttpMCPTransport:
         if session_id:
             result = {**result, "_session_id": session_id}
         return result
+
+
+class StdioMCPTransport:
+    """On-demand transport: spawns a local MCP server over stdio for the call and
+    tears it down afterward, so a keyless local server (e.g. the eCFR
+    federal-regulations server via ``npx``) consumes NO idle resources between
+    queries. Speaks newline-delimited JSON-RPC 2.0 on the child's stdin/stdout.
+
+    Command + environment come from the connector (``command``/``env``);
+    ``url``/``token`` are unused. Any failure raises so ``fetch_mcp_evidence``
+    catches it and skips the connector (fail-safe), and the child process is
+    always terminated in ``finally``."""
+
+    def __init__(self, command: list[str], env: Optional[dict[str, str]] = None) -> None:
+        self._command = list(command or [])
+        self._env = dict(env or {})
+
+    def call_tool(
+        self,
+        url: str,
+        token: Optional[str],
+        tool: str,
+        arguments: dict[str, Any],
+        timeout: float,
+    ) -> dict[str, Any]:
+        import subprocess  # lazy: only needed when a stdio connector fires
+
+        if not self._command:
+            raise RuntimeError("stdio transport requires a non-empty 'command'")
+
+        proc = subprocess.Popen(
+            self._command,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env={**os.environ, **self._env},
+            text=True,
+            bufsize=1,
+        )
+        try:
+            self._send(proc, {
+                "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {
+                    "protocolVersion": _MCP_PROTOCOL_VERSION,
+                    "capabilities": {},
+                    "clientInfo": {"name": "jarvis", "version": "1.0"},
+                },
+            })
+            self._read_result(proc, 1)
+            self._send(proc, {"jsonrpc": "2.0", "method": "notifications/initialized"})
+            self._send(proc, {
+                "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                "params": {"name": tool, "arguments": arguments},
+            })
+            return self._read_result(proc, 2)
+        finally:
+            self._terminate(proc)
+
+    @staticmethod
+    def _send(proc: Any, message: dict[str, Any]) -> None:
+        if proc.stdin is None:
+            raise RuntimeError("stdio MCP server has no stdin")
+        proc.stdin.write(json.dumps(message) + "\n")
+        proc.stdin.flush()
+
+    @staticmethod
+    def _read_result(proc: Any, want_id: int) -> dict[str, Any]:
+        if proc.stdout is None:
+            raise RuntimeError("stdio MCP server has no stdout")
+        for line in proc.stdout:  # blocks; the caller's time_limit SIGALRM interrupts
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                message = json.loads(line)
+            except json.JSONDecodeError:
+                continue  # non-JSON log noise on stdout — ignore
+            if isinstance(message, dict) and message.get("id") == want_id:
+                if message.get("error"):
+                    raise RuntimeError(f"MCP error: {message['error']}")
+                result = message.get("result", {})
+                return result if isinstance(result, dict) else {}
+        raise RuntimeError("stdio MCP server closed before responding")
+
+    @staticmethod
+    def _terminate(proc: Any) -> None:
+        try:
+            if proc.stdin is not None:
+                proc.stdin.close()
+        except Exception:
+            pass
+        try:
+            proc.terminate()
+            proc.wait(timeout=2)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
 
 
 def _parse_jsonrpc_body(text: str, content_type: str) -> dict[str, Any]:
@@ -737,12 +842,17 @@ def _result_to_text(result: dict[str, Any]) -> str:
     return ""
 
 
-def _substitute_args(args: dict[str, Any], query: str) -> dict[str, Any]:
-    """Fill ``{query}`` placeholders in a call's argument template."""
+def _substitute_args(args: dict[str, Any], query: str, keywords: Optional[str] = None) -> dict[str, Any]:
+    """Fill placeholders in a call's argument template.
+
+    ``{query}`` -> the raw (effective) user query. ``{keywords}`` -> a compact
+    keyword form for literal full-text-search back-ends (falls back to the raw
+    query when the caller supplies none)."""
+    kw = keywords if keywords is not None else query
     out: dict[str, Any] = {}
     for key, value in args.items():
         if isinstance(value, str):
-            out[key] = value.replace("{query}", query)
+            out[key] = value.replace("{query}", query).replace("{keywords}", kw)
         else:
             out[key] = value
     return out
@@ -840,10 +950,18 @@ def _guard_outbound_args(
     return sanitized, False
 
 
+def _transport_for(connector: MCPConnector) -> MCPTransport:
+    """Pick the transport a connector's ``transport`` field asks for."""
+    if connector.transport == "stdio":
+        return StdioMCPTransport(connector.command, connector.env)
+    return HttpMCPTransport()
+
+
 def fetch_mcp_evidence(
     query: str,
     registry: Optional[MCPRegistry],
     transport: Optional[MCPTransport] = None,
+    search_terms: Optional[str] = None,
 ) -> list[str]:
     """Pull evidence lines from every connector that matches ``query``.
 
@@ -858,13 +976,15 @@ def fetch_mcp_evidence(
     if not selected:
         return []
 
-    transport = transport or HttpMCPTransport()
+    injected_transport = transport
+    search_keywords = (search_terms or "").strip() or query
     lines: list[str] = []
 
     for connector in selected:
         if len(lines) >= registry.max_evidence_lines:
             break
         token = _resolve_secret(connector)
+        active_transport = injected_transport or _transport_for(connector)
         if connector.auth in ("bearer", "oauth") and not token:
             detail = (
                 f"env {connector.auth_env}" if connector.auth == "bearer"
@@ -879,17 +999,17 @@ def fetch_mcp_evidence(
         for call in connector.calls:
             if len(lines) >= registry.max_evidence_lines:
                 break
-            arguments = _substitute_args(call.args, query)
+            arguments = _substitute_args(call.args, query, search_keywords)
             arguments, blocked = _guard_outbound_args(arguments, connector.name, call.tool)
             if blocked:
                 continue
             try:
                 with time_limit(registry.timeout_seconds, operation=f"mcp:{connector.name}:{call.tool}"):
-                    result = transport.call_tool(
+                    result = active_transport.call_tool(
                         connector.url, token, call.tool, arguments, registry.timeout_seconds
                     )
                 text = _sanitize_external_text(
-                    _result_to_text(result), registry.max_chars_per_result
+                    _result_to_text(result), connector.max_chars or registry.max_chars_per_result
                 )
                 if text:
                     label = connector.source_label or connector.name
