@@ -1,6 +1,6 @@
 # Minimal test helper commands
 
-.PHONY: test interrupt-test math-test retrieval-eval-test answer-eval-test smoke-test smoke-test-e2e retrieval-eval answer-eval mcp-login
+.PHONY: test interrupt-test math-test retrieval-eval-test answer-eval-test smoke-test smoke-test-e2e retrieval-eval answer-eval mcp-login docs-refresh
 
 test: interrupt-test math-test retrieval-eval-test answer-eval-test smoke-test
 
@@ -42,3 +42,10 @@ retrieval-eval:
 # Example: make answer-eval ARGS='"/path/to/corpus" "jarvis_storage/evaluation/answer_cases.json" --case-details'
 answer-eval:
 	uv run python scripts/evaluate_answers.py $(ARGS)
+
+# Refresh volatile remote document corpora (recipe: document_sources.json).
+# Downloads each source and rewrites a corpus file only when its content changed
+# (sha256), so a later index build re-embeds just the changed chunks into Milvus.
+# Files + fetch state stay local/gitignored. Pass --set NAME or --force via ARGS.
+docs-refresh:
+	uv run python -m jarvisrag.docsync $(ARGS)

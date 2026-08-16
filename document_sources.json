@@ -1,0 +1,17 @@
+{
+  "_comment": "Recipe for volatile remote document corpora synced by `make docs-refresh` (jarvisrag.docsync). The document LIST (names + URLs) is committed here; the downloaded files and per-file fetch state (.docsync_state.json) stay LOCAL/gitignored under each set's corpus_dir. A refresh rewrites a file only when its content actually changed (sha256), so the index manifest + delta-sync re-embed just the changed chunks into Milvus. Production promotion (indexing corpus_dir into jarvis_context) is a separate, gated step.",
+  "sets": [
+    {
+      "name": "fedbenefits",
+      "corpus_dir": "jarvis_storage/fedbenefits_corpus",
+      "_note": "US federal retirement-benefit rules (OPM CSRS/FERS Handbook + SSA pubs). Volatile: updated on policy/administration changes. Complements the eCFR MCP connector (which serves live Title-5 CFR text) with plain-language computation guidance.",
+      "documents": [
+        { "name": "OPM_C050_Computation_General_Formula.pdf", "url": "https://www.opm.gov/retirement-center/publications-forms/csrsfers-handbook/c050.pdf" },
+        { "name": "OPM_C051_Retiree_Annuity_Supplement.pdf", "url": "https://www.opm.gov/retirement-center/publications-forms/csrsfers-handbook/c051.pdf" },
+        { "name": "OPM_C041_Voluntary_Retirement_Age_Service.pdf", "url": "https://www.opm.gov/retirement-center/publications-forms/csrsfers-handbook/c041.pdf" },
+        { "name": "SSA_05-10035_Retirement.pdf", "url": "https://www.ssa.gov/pubs/EN-05-10035.pdf" },
+        { "name": "SSA_05-10070_Retirement_Benefit_How_Determined.pdf", "url": "https://www.ssa.gov/pubs/EN-05-10070.pdf" }
+      ]
+    }
+  ]
+}
