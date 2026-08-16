@@ -5,7 +5,7 @@
     skips re-embedding into Milvus when the document signature matches.
 
 It does this by importing Jarvis directly so its module-level init runs once.
-TTS is stubbed out via JARVIS_DISABLE_TTS=1.
+TTS is stubbed out via JARVIS_ENABLE_TTS=0.
 
 Usage:
     JARVIS_DEBUG=1 uv run python tests/smoke_test_jarvis.py "What is the definition of weather?"
@@ -22,7 +22,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 # Stub TTS BEFORE importing Jarvis (its module-level init reads this env var).
-os.environ.setdefault("JARVIS_DISABLE_TTS", "1")
+os.environ.setdefault("JARVIS_ENABLE_TTS", "0")
 
 # If the first arg is an existing directory, treat it as the input_dir
 # override that Jarvis.py reads from sys.argv[1]. Otherwise leave Jarvis to

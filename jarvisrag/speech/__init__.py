@@ -784,7 +784,7 @@ class TTSManager:
 
 class _SilentTTS:
     """Fallback no-op TTS used when a runtime has no speech manager attached or
-    when speech is disabled via JARVIS_DISABLE_TTS=1 (e.g. smoke tests)."""
+    when speech is disabled via JARVIS_ENABLE_TTS=0 (e.g. smoke tests)."""
 
     def speak(self, _text: str) -> None:  # pragma: no cover - trivial
         pass

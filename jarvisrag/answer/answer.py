@@ -317,6 +317,7 @@ def _review_answer_against_evidence(
     evidence_lines: list[str],
     llm_client: Ollama,
 ) -> tuple[bool, str]:
+    # Diagnostic switch only: JARVIS_ENABLE_ANSWER_REVIEW=0 skips the review loop.
     if os.environ.get("JARVIS_ENABLE_ANSWER_REVIEW", "1") != "1":
         return True, "review disabled"
     if _response_is_dismissive(answer):
@@ -1349,8 +1350,8 @@ def _build_source_details_preview(user_query: str, documents: list[Document], ll
             return (
                 f"{', '.join(source_hints)} was loaded from disk, but every chunk extracted from it "
                 "was dropped by the informative-content / OCR-garbage filter before indexing. "
-                "Re-run with JARVIS_OCR_GARBAGE_FILTER=0 (or lower JARVIS_OCR_VOCAB_THRESHOLD) and "
-                "JARVIS_REBUILD_INDEX=1 to retain noisier text from this file."
+                "Lower JARVIS_OCR_VOCAB_THRESHOLD and re-run with JARVIS_REBUILD_INDEX=1 to "
+                "retain noisier text from this file."
             )
         return (
             f"I did not find extracted indexed text for {', '.join(source_hints)}. "

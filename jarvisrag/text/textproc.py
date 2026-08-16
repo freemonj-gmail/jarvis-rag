@@ -163,9 +163,6 @@ def _is_ocr_garbage_text(text: str) -> tuple[bool, str]:
     when the fraction of recognized English words is well below normal AND no
     structured signals (currency, dates, IDs, IRS forms, proper names) appear.
     Pure-numeric receipts and form-line content are preserved via whitelist."""
-    if os.environ.get("JARVIS_OCR_GARBAGE_FILTER", "1") != "1":
-        return False, ""
-
     raw = (text or "").strip()
     if len(raw) < 40:
         return False, ""

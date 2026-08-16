@@ -224,7 +224,7 @@ def _source_nodes_to_query_evidence_lines(
     # versions, so the same passage can occupy several evidence slots and crowd
     # out distinct material. Explicitly requested (source-hinted) lines are kept
     # and only serve as comparison points.
-    suppress_duplicates = os.environ.get("JARVIS_SUPPRESS_DUPLICATE_EVIDENCE", "1") != "0"
+    suppress_duplicates = True  # always on: near-duplicate crowding hurts recall
     duplicate_threshold = float(os.environ.get("JARVIS_DUPLICATE_EVIDENCE_THRESHOLD", "0.9"))
     signatures = [_line_tokens(line) for line in selected] if suppress_duplicates else []
 
@@ -324,7 +324,7 @@ def _retrieve_query_supported_evidence(
     retriever: object,
     home_corpus_dir: str | None = None,
 ) -> tuple[list[str], list[object]]:
-    max_queries = max(1, int(os.environ.get("JARVIS_RETRIEVAL_ATTEMPTS", "20")))
+    max_queries = 20  # fixed ceiling on query paraphrases; the generator yields far fewer
     max_evidence = max(1, int(os.environ.get("JARVIS_MAX_EVIDENCE_LINES", "30")))
     all_nodes = []
     seen_node_ids = set()
@@ -483,8 +483,9 @@ def _force_include_home_corpus_nodes(
 
 
 def _hybrid_enabled() -> bool:
-    """Hybrid (BM25 + dense) retrieval is the native runtime. Set
-    JARVIS_HYBRID=0 to opt out and fall back to dense-only vector retrieval."""
+    """Hybrid (BM25 + dense) retrieval is the native runtime. Diagnostic switch
+    only: JARVIS_HYBRID=0 forces dense-only retrieval to help isolate a
+    retrieval issue; it is not a user-facing option."""
     return os.environ.get("JARVIS_HYBRID", "1") != "0"
 
 

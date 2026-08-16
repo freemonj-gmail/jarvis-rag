@@ -20,7 +20,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-os.environ.setdefault("JARVIS_DISABLE_TTS", "1")
+os.environ.setdefault("JARVIS_ENABLE_TTS", "0")
 
 from jarvisrag.evaluation import evaluate_retrieval, load_retrieval_cases
 
@@ -162,7 +162,6 @@ def main(argv: list[str] | None = None) -> int:
         "vector_backend_requested": os.environ.get("JARVIS_VECTOR_BACKEND", "milvus"),
         "milvus_collection": os.environ.get("MILVUS_COLLECTION", "jarvis_context"),
         "retrieval_top_k": int(os.environ.get("JARVIS_RETRIEVAL_TOP_K", DEFAULT_RETRIEVAL_TOP_K)),
-        "retrieval_attempts": int(os.environ.get("JARVIS_RETRIEVAL_ATTEMPTS", "20")),
         "max_evidence_lines": int(os.environ.get("JARVIS_MAX_EVIDENCE_LINES", "30")),
     }
     report = evaluate_retrieval(

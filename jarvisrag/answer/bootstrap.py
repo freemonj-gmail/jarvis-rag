@@ -308,7 +308,7 @@ def _build_index(all_docs: list, embed_model, persist_dir=None, collection_name=
 
 def _build_tts():
     """Construct the TTS manager, or a silent stub when TTS is disabled."""
-    if os.environ.get("JARVIS_DISABLE_TTS", "0") == "1":
+    if os.environ.get("JARVIS_ENABLE_TTS", "1") != "1":
         return _SilentTTS()
     return TTSManager()
 

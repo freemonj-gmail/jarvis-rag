@@ -25,7 +25,7 @@ import time
 # Hermetic run - no outbound calls, and no query text leaving the machine.
 os.environ["JARVIS_ENABLE_MCP"] = "0"
 os.environ["JARVIS_MCP_CONFIG"] = "jarvis-mcp-disabled-for-evaluation.json"
-os.environ.setdefault("JARVIS_DISABLE_TTS", "1")
+os.environ.setdefault("JARVIS_ENABLE_TTS", "0")
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -122,7 +122,7 @@ def main(argv: list[str] | None = None) -> int:
             "startup_seconds": round(startup_seconds, 3),
             "retrieval_top_k": int(os.environ.get("JARVIS_RETRIEVAL_TOP_K", DEFAULT_RETRIEVAL_TOP_K)),
             "max_evidence_lines": int(os.environ.get("JARVIS_MAX_EVIDENCE_LINES", "30")),
-            "suppress_duplicate_evidence": os.environ.get("JARVIS_SUPPRESS_DUPLICATE_EVIDENCE", "1"),
+            "suppress_duplicate_evidence": True,
             "milvus_collection": os.environ.get("MILVUS_COLLECTION", "jarvis_context"),
         },
     )

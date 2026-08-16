@@ -6,8 +6,8 @@ parsing, on-device OCR, a Milvus / local vector store, and optional text-to-spee
 ## Document extraction & OCR
 
 Jarvis extracts text from scanned pages and images through a **confidence-routed
-page pipeline** that is **on by default** (`JARVIS_ENABLE_PAGE_PIPELINE=1`). Native
-text is read directly; low-confidence regions and image-only pages are routed to OCR.
+page pipeline** that is **always on**. Native text is read directly; low-confidence
+regions and image-only pages are routed to OCR.
 
 On **macOS**, the default document-OCR engine is **Apple Vision OCR** (via the
 on-device `Vision` framework) — it is verbatim, fast (~200 ms/image), fully local,
@@ -38,8 +38,8 @@ set `JARVIS_ENABLE_APPLE_OCR=0`.
 Jarvis retrieves with **hybrid search by default** — it runs a **BM25 sparse
 lexical** retriever and a **dense vector** retriever (Milvus, or the local store)
 on *every* query and merges their results with **Reciprocal Rank Fusion (RRF)**.
-This is the native runtime; set `JARVIS_HYBRID=0` to opt out and fall back to
-dense-only.
+This is the native runtime. (`JARVIS_HYBRID=0` is a diagnostic switch that forces
+dense-only retrieval when isolating a retrieval issue.)
 
 Why hybrid: this corpus (resumes, contracts, PDFs) is full of exact tokens —
 names, dates, dollar amounts, IDs, defined terms — where pure embedding search can
@@ -201,17 +201,15 @@ uv run python tests/milvus_live_test.py
 | `JARVIS_PERSIST_DIR` | packaged runtime storage | Override local index metadata and extraction-cache location; use an ignored directory to isolate evaluations |
 | `JARVIS_CONTEXT_MODE` | `chunk` | `chunk` or `source_window` |
 | `JARVIS_DOMAIN` | `general` | `general` or `tax` detail profile |
-| `JARVIS_DISABLE_TTS` | unset | Set to `1` to disable text-to-speech |
-| `JARVIS_ENABLE_PAGE_PIPELINE` | `1` | Confidence-routed page extraction pipeline (native text + OCR). On by default; set to `0` to opt out |
+| `JARVIS_ENABLE_TTS` | `1` | Text-to-speech. Set to `0` to disable (e.g. tests) |
 | `JARVIS_ENABLE_APPLE_OCR` | `1` | On macOS, use on-device Apple Vision OCR as the default document-OCR engine (verbatim, fast, local). Self-disables off macOS (falls back to pytesseract / easyocr). Set to `0` to force the cross-platform OCR path |
 | `JARVIS_APPLE_OCR_LANGS` | `en-US` | Comma-separated language-preference list passed to Apple Vision OCR |
 | `JARVIS_APPLE_OCR_LEVEL` | `accurate` | Apple Vision recognition level: `accurate` or `fast` |
 | `USE_MILVUS` | `1` | Toggle the Milvus backend |
-| `JARVIS_HYBRID` | `1` | Hybrid BM25 + dense retrieval (Reciprocal Rank Fusion) is the native runtime. Set to `0` to opt out and use dense-only vector retrieval. Falls back to dense-only automatically if BM25 is unavailable or the docstore is empty |
+| `JARVIS_HYBRID` | `1` | **Diagnostic switch only.** Hybrid BM25 + dense retrieval (Reciprocal Rank Fusion) is the native runtime; `0` forces dense-only retrieval to help isolate a retrieval issue. Falls back to dense-only automatically if BM25 is unavailable or the docstore is empty |
 | `JARVIS_RETRIEVAL_TOP_K` | `32` | Candidates each retriever returns per query paraphrase, and the default for the BM25 and fusion settings below. Tuned on the retrieval evaluation set: wider values added candidate noise that cost ranking quality and latency without improving recall |
 | `JARVIS_BM25_TOP_K` | `JARVIS_RETRIEVAL_TOP_K` | Sparse (BM25) candidates retrieved before fusion |
-| `JARVIS_SUPPRESS_DUPLICATE_EVIDENCE` | `1` | Drop retrieved evidence that repeats a passage already selected, so near-identical document versions cannot occupy several evidence slots. Set to `0` to keep every ranked line |
-| `JARVIS_DUPLICATE_EVIDENCE_THRESHOLD` | `0.9` | Word-overlap ratio at which two evidence passages count as the same; lower values suppress more aggressively |
+| `JARVIS_DUPLICATE_EVIDENCE_THRESHOLD` | `0.9` | Near-duplicate suppression (always on) drops evidence that repeats a passage already selected; this is the word-overlap ratio at which two passages count as the same. Lower suppresses more aggressively |
 | `JARVIS_FUSION_TOP_K` | `JARVIS_RETRIEVAL_TOP_K` | Results kept after Reciprocal Rank Fusion |
 | `JARVIS_ROUTER` | `0` | Set to `1` to enable the two-tier LLM router (escalate out-of-corpus questions to a larger model) |
 | `JARVIS_ESCALATION_MODEL` | `llama3:70b` | Ollama tag for the escalation model used when the router is enabled |

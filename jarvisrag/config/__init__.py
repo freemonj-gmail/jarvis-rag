@@ -82,10 +82,10 @@ JARVIS_MCP_PII_GUARD = os.environ.get("JARVIS_MCP_PII_GUARD", "redact").strip().
 #      low-confidence regions to the pytesseract/easyocr fallback.
 # Every stage records per-region provenance + confidence in Document metadata.
 # The whole feature degrades gracefully: if PyMuPDF/Apple Vision/Surya are not
-# installed, the extractors fall back to their original behavior. Set
-# JARVIS_ENABLE_PAGE_PIPELINE=0 to force the legacy extraction path.
+# installed, the extractors fall back to their original behavior.
 # ---------------------------------------------------------------------------
-JARVIS_ENABLE_PAGE_PIPELINE = os.environ.get("JARVIS_ENABLE_PAGE_PIPELINE", "1") == "1"
+# Always on: the confidence-routed page pipeline is the native extraction path.
+JARVIS_ENABLE_PAGE_PIPELINE = True
 # Enable the Surya layout + recognition stage specifically. It requires the
 # optional ``surya-ocr`` dependency (see the ``ocr`` extra in pyproject.toml);
 # when off (or Surya is unavailable) the pipeline still uses the native PDF text
@@ -105,9 +105,8 @@ JARVIS_PDF_MIN_CHARS_PER_PAGE = int(os.environ.get("JARVIS_PDF_MIN_CHARS_PER_PAG
 # local engines (the VLM when on, then the pytesseract/easyocr fallback) and
 # keeps the highest-quality, non-garbage transcription. This closes the
 # "confidently-wrong or empty page slips through" gap using only local engines
-# already present — no new dependency, no cloud, no fee. On by default; set
-# JARVIS_OCR_ESCALATE_ON_FAILURE=0 to restore first-non-empty-wins behavior.
-JARVIS_OCR_ESCALATE_ON_FAILURE = os.environ.get("JARVIS_OCR_ESCALATE_ON_FAILURE", "1") == "1"
+# already present — no new dependency, no cloud, no fee. Always on.
+JARVIS_OCR_ESCALATE_ON_FAILURE = True
 # Resolution (DPI) used to rasterize a PDF page when it must be sent through the
 # OCR path. 300 DPI is the accuracy/latency sweet spot for document OCR.
 JARVIS_PDF_OCR_DPI = int(os.environ.get("JARVIS_PDF_OCR_DPI", "300"))
