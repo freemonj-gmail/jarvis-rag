@@ -383,6 +383,7 @@ def _build_domain_retrievers(embed_model, llm) -> list:
         domains.append({
             "name": doc_set.name,
             "retriever": retriever,
+            "index": domain_index,
             "match_any": doc_set.match_any,
             "label": doc_set.label or doc_set.name,
         })

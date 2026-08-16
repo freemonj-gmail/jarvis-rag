@@ -1548,39 +1548,63 @@ class QueryRuntime:
 _DOMAIN_EVIDENCE_LINES = 15
 
 
-def _query_matches_domain(query: str, domain_retrievers: list | None) -> bool:
-    """True if ``query`` routes to any domain corpus (matches its routing terms).
+def _domains_for_turn(
+    query: str, domain_retrievers: list | None, prior_domain_names: list | None = None
+) -> tuple[list, list]:
+    """Select the domain corpora to consult this turn.
 
-    Used to suppress the home-corpus force-include for domain-routed questions so
-    unrelated launch-folder files don't crowd the context or the citations."""
+    Keyword matches take priority (an explicit on-topic query, or a topic switch).
+    When nothing matches, fall back to STICKY routing: the domain(s) the previous
+    turn used, so a follow-up that drops the subject keyword still reaches the
+    right corpus. The sticky domain's own relevance gate then decides whether it
+    actually applies. Returns (active_domains, keyword_matched_domains)."""
     if not domain_retrievers:
-        return False
+        return [], []
     ql = query.lower()
-    for domain in domain_retrievers:
-        if any(str(term).lower() in ql for term in (domain.get("match_any") or []) if term):
-            return True
-    return False
+    keyword_matched = [
+        d for d in domain_retrievers
+        if any(str(term).lower() in ql for term in (d.get("match_any") or []) if term)
+    ]
+    if keyword_matched:
+        return keyword_matched, keyword_matched
+    if prior_domain_names:
+        prior = set(prior_domain_names)
+        return [d for d in domain_retrievers if d.get("name") in prior], []
+    return [], []
 
 
-def _retrieve_domain_evidence(query: str, domain_retrievers: list | None) -> list[str]:
-    """Retrieve evidence from any domain corpus whose routing terms match ``query``.
+def _corpus_relevance(query: str, index: object) -> float:
+    """Top dense cosine similarity of ``query`` against a corpus's vector index.
 
-    Gated + additive + fail-safe: a non-matching query, no domain layer, or any
-    error yields []. Domain evidence carries its own source filenames (e.g. the
-    OPM/SSA PDFs) so it is citeable like local evidence, and is merged at high
-    precedence. The domain index is SEPARATE from the main index, so this never
-    affects retrieval for non-matching (e.g. resume) queries."""
-    if not domain_retrievers:
+    Used to arbitrate sticky domain routing. The domain and main indexes share
+    the same embedding model, so their dense similarity scores are directly
+    comparable, and a keyword-less follow-up is routed to whichever corpus fits
+    it better. Fail-safe: any error yields 0.0."""
+    if index is None:
+        return 0.0
+    try:
+        nodes = index.as_retriever(similarity_top_k=3).retrieve(query)
+    except Exception:  # noqa: BLE001 - arbitration must never break a turn
+        return 0.0
+    return max((float(getattr(n, "score", 0.0) or 0.0) for n in nodes), default=0.0)
+
+
+def _retrieve_domain_evidence(query: str, domains: list | None) -> list[str]:
+    """Retrieve evidence from the already-selected domain corpora.
+
+    Additive + fail-safe: no domains or any error yields []. Domain evidence
+    carries its own source filenames (e.g. the OPM/SSA PDFs) so it is citeable
+    like local evidence, and is merged at high precedence. Each domain index is
+    SEPARATE from the main index, and its own relevance gate decides whether it
+    contributes — so a sticky (prior-topic) domain that no longer applies simply
+    returns nothing and the turn falls back to normal retrieval."""
+    if not domains:
         return []
-    ql = query.lower()
     cap = _DOMAIN_EVIDENCE_LINES
     lines: list[str] = []
-    for domain in domain_retrievers:
+    for domain in domains:
         if len(lines) >= cap:
             break
-        terms = domain.get("match_any") or []
-        if not any(str(term).lower() in ql for term in terms if term):
-            continue
         try:
             evidence, _nodes = _retrieve_query_supported_evidence(query, domain["retriever"])
             lines.extend(evidence)
@@ -1714,9 +1738,34 @@ def handle_query(
         # domain + MCP sources, so suppress the home-corpus force-include: it
         # otherwise pins every launch-folder file into the evidence, bloating the
         # synthesis context and the References with unrelated local documents.
-        domain_routed = _query_matches_domain(
-            effective_user_query, getattr(runtime, "domain_retrievers", None)
+        # Consult gated domain corpora (e.g. federal-benefits PDFs) kept SEPARATE
+        # from the main index. A keyword match routes explicitly. A follow-up that
+        # drops the subject keyword STICKS to the previous turn's domain, but only
+        # when that domain is MORE relevant to the query than the main index —
+        # otherwise it is a real topic change and we fall back to normal routing.
+        domain_retrievers = getattr(runtime, "domain_retrievers", None)
+        prior_domain_names = last_turn.get("domain_names")
+        active_domains, keyword_domains = _domains_for_turn(
+            effective_user_query, domain_retrievers, prior_domain_names
         )
+        domain_routed = False
+        routed_domain_names: list = []
+        domain_evidence: list[str] = []
+        if keyword_domains:
+            domain_routed = True
+            routed_domain_names = [d.get("name") for d in keyword_domains]
+            domain_evidence = _retrieve_domain_evidence(effective_user_query, keyword_domains)
+        elif active_domains:
+            domain_rel = max(
+                (_corpus_relevance(effective_user_query, d.get("index")) for d in active_domains),
+                default=0.0,
+            )
+            main_rel = _corpus_relevance(effective_user_query, runtime.doc_index)
+            debug_print(f"[debug] sticky arbitration: domain_rel={domain_rel:.4f} main_rel={main_rel:.4f}")
+            if domain_rel > main_rel:
+                domain_routed = True
+                routed_domain_names = [d.get("name") for d in active_domains]
+                domain_evidence = _retrieve_domain_evidence(effective_user_query, active_domains)
         evidence_lines, source_nodes = _retrieve_query_supported_evidence(
             effective_user_query,
             runtime.doc_retriever,
@@ -1728,14 +1777,6 @@ def handle_query(
             is_follow_up,
             negative_evidence_feedback,
             source_hints,
-        )
-        # Consult gated domain corpora (e.g. federal-benefits PDFs) kept SEPARATE
-        # from the main index. Additive + fail-safe: only fires when the query
-        # matches a domain's routing terms, and is prepended so on-topic domain
-        # evidence outranks off-topic local noise for routed questions. Non-
-        # matching (e.g. resume) queries are completely unaffected.
-        domain_evidence = _retrieve_domain_evidence(
-            effective_user_query, getattr(runtime, "domain_retrievers", None)
         )
         if domain_evidence:
             debug_print(f"[debug] Injected {len(domain_evidence)} domain-corpus evidence line(s).")
@@ -1889,6 +1930,7 @@ def handle_query(
             "effective_query": effective_user_query,
             "response_text": response_text,
             "evidence_lines": evidence_lines,
+            "domain_names": routed_domain_names,
         }
     except Exception as e:
         print("Context engine failed:", e)
