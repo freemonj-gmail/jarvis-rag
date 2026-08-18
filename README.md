@@ -3,6 +3,8 @@
 A local document Retrieval-Augmented Generation (RAG) assistant with multi-format
 parsing, on-device OCR, a Milvus / local vector store, and optional text-to-speech.
 
+**Quick start:** `ollama pull gemma4:31b-mlx && uv sync && uv run python Jarvis.py /path/to/your/documents` — see [Installation](#installation) for full prerequisites.
+
 ## Document extraction & OCR
 
 Jarvis extracts text from scanned pages and images through a **confidence-routed
@@ -140,19 +142,126 @@ The lane is deliberately **domain-agnostic and conservative**: any question that
 mentions a document, report, or file is left to retrieval, so the calculator can
 never hijack a corpus lookup.
 
-## Requirements
+## Installation
 
-- Python >= 3.13
-- [uv](https://docs.astral.sh/uv/) for dependency management
-- (Optional) A running [Milvus](https://milvus.io/) server at `127.0.0.1:19530`
-  for the default vector backend
-- (Optional) [Ollama](https://ollama.com/) for the local LLM
+Jarvis runs **100% locally**. Beyond the Python packages, it relies on a local
+LLM runtime (Ollama), an embedding model, a vector backend, and a handful of
+native command-line tools that some document extractors shell out to. This
+section lists **everything** needed for a full-featured install; each piece notes
+whether it is required or only needed for a specific feature.
 
-## Setup
+### 1. System requirements
+
+- **Operating system** — macOS, Linux, or Windows.
+  - On **macOS** the default document-OCR engine is on-device **Apple Vision**
+    (installed automatically via the `ocrmac` / `pyobjc` dependency, which is
+    resolved only on macOS). No manual OCR setup is needed.
+  - Off macOS, OCR falls back to **Tesseract + EasyOCR** (see the native tools
+    below).
+- **Python >= 3.13**.
+- **[uv](https://docs.astral.sh/uv/)** for dependency management and running the app.
+- **Disk / memory** — the models are large (the default LLM is a ~30B model and
+  the `bge-m3` embedding model is ~2 GB). Plan for several GB of free disk and
+  enough RAM/VRAM to run a 30B-class model. Apple Silicon or a discrete GPU is
+  recommended for acceptable latency.
+
+### 2. Local LLM runtime (Ollama) + models
+
+Jarvis synthesizes answers with a local model served by
+**[Ollama](https://ollama.com/)**. Install Ollama, then pull the model Jarvis
+uses by default:
+
+```bash
+# Install Ollama (macOS): brew install --cask ollama   (or download from ollama.com)
+ollama serve                      # start the Ollama server (default: 127.0.0.1:11434)
+ollama pull gemma4:31b-mlx        # default synthesis model Jarvis loads
+```
+
+- The default synthesis model tag is **`gemma4:31b-mlx`** (set in
+  `jarvisrag/answer/bootstrap.py`). It must be available in your local Ollama.
+  On non–Apple-Silicon hardware, pull an equivalent Gemma tag your machine can
+  run and update that tag.
+- The **escalation model** (`llama3:70b`, env `JARVIS_ESCALATION_MODEL`) is
+  **optional** — it is only used when the two-tier router is enabled
+  (`JARVIS_ROUTER=1`). You do not need it for normal use.
+
+### 3. Embedding + speech models (auto-downloaded)
+
+These download automatically on first run (an internet connection is needed
+once; they are then cached locally):
+
+- **Embedding model** — `BAAI/bge-m3` (from Hugging Face). Set `HF_TOKEN` only if
+  you need authenticated downloads.
+- **Text-to-speech** — the Kokoro TTS model. TTS is on by default; set
+  `JARVIS_ENABLE_TTS=0` to skip it entirely (no audio, no TTS model download).
+
+### 4. Vector backend
+
+The default backend is **[Milvus](https://milvus.io/)**. The easiest way to run
+it locally is Docker:
+
+```bash
+# Milvus standalone (listens on 127.0.0.1:19530 by default)
+# See https://milvus.io/docs/install_standalone-docker.md
+docker compose up -d
+```
+
+Connection is configured via `MILVUS_HOST` / `MILVUS_PORT` / `MILVUS_COLLECTION`.
+
+If you do **not** want to run Milvus, select an in-process backend instead — no
+server required:
+
+```bash
+export JARVIS_VECTOR_BACKEND=local    # persistent local vector store
+# or
+export JARVIS_VECTOR_BACKEND=memory   # ephemeral, rebuilt each run
+```
+
+### 5. Native command-line tools
+
+Several document extractors call out to native binaries. Install the ones for the
+file types and features you need. On macOS use `brew`; on Debian/Ubuntu use
+`apt`.
+
+| Tool | Powers | Required? | macOS (`brew`) | Debian/Ubuntu (`apt`) |
+| --- | --- | --- | --- | --- |
+| **Tesseract** | `pytesseract` OCR (cross-platform OCR fallback; primary OCR off macOS) | Needed for OCR off macOS | `brew install tesseract` | `apt install tesseract-ocr` |
+| **Poppler** | `pdf2image` — rasterizes PDF pages before OCR | Needed to OCR scanned PDFs | `brew install poppler` | `apt install poppler-utils` |
+| **Java (JRE 8+)** | `tabula-py` — extracts tables from PDFs | Needed for PDF table extraction | `brew install openjdk` | `apt install default-jre` |
+| **libmagic** | `unstructured` — file-type detection | Recommended for robust extraction | `brew install libmagic` | `apt install libmagic1` |
+| **Pandoc** | `pypandoc` — legacy document/RTF conversion | Needed for some `.rtf` / legacy docs | `brew install pandoc` | `apt install pandoc` |
+| **Node.js + `npx`** | eCFR federal-regulations MCP connector (spawned on demand) | Only for that MCP connector | `brew install node` | `apt install nodejs npm` |
+| **espeak-ng** | Kokoro TTS phoneme fallback | Optional (only if TTS phonemization needs it) | `brew install espeak-ng` | `apt install espeak-ng` |
+
+> The macOS Apple Vision OCR path needs none of Tesseract/Poppler; those are the
+> cross-platform fallback. Install them if you run off macOS or set
+> `JARVIS_ENABLE_APPLE_OCR=0`.
+
+### 6. Install the Python dependencies
+
+From the project root:
 
 ```bash
 uv sync
 ```
+
+This creates a virtual environment and installs every Python dependency pinned in
+`uv.lock` (LlamaIndex, Milvus client, Docling, EasyOCR/pytesseract, PyMuPDF,
+pdfplumber, tabula-py, python-pptx, transformers, Kokoro TTS, pygame, etc.). On
+macOS it also installs `ocrmac` (Apple Vision); that dependency is skipped on
+other platforms automatically.
+
+### 7. Verify the install
+
+Run the fast, model-free test suite (no Ollama/Milvus/model downloads required):
+
+```bash
+make test
+```
+
+If that passes, your Python environment is set up correctly. To exercise the full
+runtime (models + vector backend), make sure Ollama (and Milvus, if using it) are
+running, then use the **Run** command below.
 
 ## Run
 
