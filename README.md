@@ -194,6 +194,13 @@ once; they are then cached locally):
   you need authenticated downloads.
 - **Text-to-speech** — the Kokoro TTS model. TTS is on by default; set
   `JARVIS_ENABLE_TTS=0` to skip it entirely (no audio, no TTS model download).
+- **Optional cloned voice (Chatterbox)** — set `JARVIS_TTS_ENGINE=chatterbox` to
+  read answers in a voice cloned from a reference clip instead of Kokoro.
+  Chatterbox pins dependencies that cannot co-resolve with Jarvis's, so it runs
+  **out-of-process**: point `JARVIS_CHATTERBOX_DIR` at a separate Chatterbox
+  checkout (with its own virtualenv) and `JARVIS_CHATTERBOX_REF_WAV` at the
+  reference clip. If it is unconfigured or unavailable, Jarvis falls back to
+  Kokoro, so the default install needs nothing extra.
 
 ### 4. Vector backend
 
@@ -357,6 +364,13 @@ development, not day-to-day use.
 | `JARVIS_TTS_VOICE` | _(built-in)_ | Voice name |
 | `JARVIS_TTS_SPEED` | `1.0` | Speech-rate multiplier |
 | `JARVIS_TTS_GOODBYE` | `0` | Speak a goodbye line on exit |
+| `JARVIS_TTS_ENGINE` | `kokoro` | Speech engine: `kokoro` or `chatterbox` (opt-in cloned voice, out-of-process) |
+| `JARVIS_CHATTERBOX_DIR` | _(unset)_ | Chatterbox checkout; its `.venv/bin/python` runs the synthesis worker |
+| `JARVIS_CHATTERBOX_PYTHON` | _(from DIR)_ | Explicit Chatterbox venv interpreter (overrides `<DIR>/.venv/bin/python`) |
+| `JARVIS_CHATTERBOX_REF_WAV` | _(unset)_ | Reference voice clip to clone |
+| `JARVIS_CHATTERBOX_EXAGGERATION` | `0.3` | Chatterbox expressiveness |
+| `JARVIS_CHATTERBOX_CFG_WEIGHT` | `0.5` | Chatterbox guidance weight |
+| `JARVIS_CHATTERBOX_SILENCE_MS` | `125` | Breath inserted between synthesized chunks |
 
 ### External data (MCP)
 
