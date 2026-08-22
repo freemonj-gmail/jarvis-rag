@@ -262,6 +262,10 @@ class ChatterboxTTSClient:
                 stderr=self._stderr_log,
                 text=True,
                 bufsize=1,
+                # Own session so a terminal Ctrl+C (SIGINT) meant for the REPL is
+                # not delivered to the worker and kill its synthesis mid-answer;
+                # cleanup() still stops it by pid, and stdin EOF shuts it down.
+                start_new_session=True,
                 # Malloc* settings inherited from the shell make libmalloc write
                 # diagnostics straight to the terminal, past our redirection.
                 env={k: v for k, v in os.environ.items() if not k.startswith("Malloc")},
