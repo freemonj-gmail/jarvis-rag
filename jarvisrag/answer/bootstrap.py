@@ -18,6 +18,7 @@ from llama_index.llms.ollama import Ollama
 
 from jarvisrag.config import JARVIS_DOMAIN, short_text_qa_template
 from jarvisrag.speech import TTSManager, _SilentTTS
+from jarvisrag.speech.chatterbox import ChatterboxTTSClient, _CLIENT_LOG
 from jarvisrag.extraction.extractors import (
     file_extractor,
     has_files_with_extensions,
@@ -303,7 +304,58 @@ def _build_tts():
     """Construct the TTS manager, or a silent stub when TTS is disabled."""
     if os.environ.get("JARVIS_ENABLE_TTS", "1") != "1":
         return _SilentTTS()
+    if os.environ.get("JARVIS_TTS_ENGINE", "kokoro").strip().lower() == "chatterbox":
+        return _build_chatterbox_tts()
     return TTSManager()
+
+
+def _build_chatterbox_tts():
+    """Voice-cloned engine running under its own interpreter, Kokoro on failure.
+
+    Chatterbox cannot share Jarvis's environment (it pins transformers/torch
+    versions that conflict), so it needs an external interpreter and a checkout;
+    when either is unconfigured this stays on Kokoro rather than failing.
+    """
+    chatterbox_dir = os.environ.get("JARVIS_CHATTERBOX_DIR", "").strip()
+    python = os.environ.get("JARVIS_CHATTERBOX_PYTHON", "").strip()
+    ref_wav = os.environ.get("JARVIS_CHATTERBOX_REF_WAV", "").strip()
+
+    if chatterbox_dir:
+        python = python or os.path.join(chatterbox_dir, ".venv", "bin", "python")
+    if not python or not ref_wav:
+        print(
+            "[jarvis] JARVIS_TTS_ENGINE=chatterbox needs JARVIS_CHATTERBOX_PYTHON "
+            "(or JARVIS_CHATTERBOX_DIR) and JARVIS_CHATTERBOX_REF_WAV; using Kokoro."
+        )
+        return TTSManager()
+
+    worker = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+        "scripts",
+        "chatterbox_tts_worker.py",
+    )
+
+    def _optional_float(name):
+        raw = os.environ.get(name, "").strip()
+        try:
+            return float(raw) if raw else None
+        except ValueError:
+            return None
+
+    silence_ms = os.environ.get("JARVIS_CHATTERBOX_SILENCE_MS", "").strip()
+    print(
+        f"[tts] Speech engine -> chatterbox (voice: {os.path.basename(ref_wav)}); "
+        f"loading in the background. Speech logs: {_CLIENT_LOG}"
+    )
+    return ChatterboxTTSClient(
+        python,
+        worker,
+        ref_wav,
+        exaggeration=_optional_float("JARVIS_CHATTERBOX_EXAGGERATION"),
+        cfg_weight=_optional_float("JARVIS_CHATTERBOX_CFG_WEIGHT"),
+        silence_ms=int(silence_ms) if silence_ms.isdigit() else None,
+        fallback_factory=TTSManager,
+    )
 
 
 def _partition_home_files(input_dir: str, indexed_docs: list) -> tuple[list[str], list[str]]:
@@ -460,6 +512,12 @@ def build_runtime(input_dir: str) -> QueryRuntime:
 
     mcp_registry = load_mcp_registry()
     domain_retrievers = _build_domain_retrievers(embed_model, llm)
+
+    # The speech worker loads on a background thread so it overlaps with the work
+    # above; join it here so its readiness notice lands before the REPL prompt
+    # rather than printing over it.
+    if hasattr(tts_manager, "wait_until_ready"):
+        tts_manager.wait_until_ready()
 
     return QueryRuntime(
         all_docs=all_docs,

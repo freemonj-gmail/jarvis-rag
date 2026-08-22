@@ -216,6 +216,37 @@ def _expand_time_units(text: str) -> str:
     return _TIME_UNIT_RE.sub(_repl, text)
 
 
+# Street abbreviations that collide with a title ("Dr." Drive/Doctor, "St."
+# Street/Saint). A house number in front is what distinguishes the address.
+_STREET_WORDS = {"Dr": "Drive", "St": "Street"}
+_STREET_ADDRESS_RE = re.compile(r"(\d+\s+(?:[A-Z][\w'\u2019-]*\s+)*)(Dr|St)\.")
+
+# Spoken names for the two-letter state codes, expanded only inside an address
+# so ordinary words that share a code ("OR", "IN", "ME") are left alone.
+_STATE_NAMES = {
+    "AL": "Alabama", "AK": "Alaska", "AZ": "Arizona", "AR": "Arkansas",
+    "CA": "California", "CO": "Colorado", "CT": "Connecticut", "DE": "Delaware",
+    "FL": "Florida", "GA": "Georgia", "HI": "Hawaii", "ID": "Idaho",
+    "IL": "Illinois", "IN": "Indiana", "IA": "Iowa", "KS": "Kansas",
+    "KY": "Kentucky", "LA": "Louisiana", "ME": "Maine", "MD": "Maryland",
+    "MA": "Massachusetts", "MI": "Michigan", "MN": "Minnesota",
+    "MS": "Mississippi", "MO": "Missouri", "MT": "Montana", "NE": "Nebraska",
+    "NV": "Nevada", "NH": "New Hampshire", "NJ": "New Jersey",
+    "NM": "New Mexico", "NY": "New York", "NC": "North Carolina",
+    "ND": "North Dakota", "OH": "Ohio", "OK": "Oklahoma", "OR": "Oregon",
+    "PA": "Pennsylvania", "RI": "Rhode Island", "SC": "South Carolina",
+    "SD": "South Dakota", "TN": "Tennessee", "TX": "Texas", "UT": "Utah",
+    "VT": "Vermont", "VA": "Virginia", "WA": "Washington",
+    "WV": "West Virginia", "WI": "Wisconsin", "WY": "Wyoming",
+    "DC": "District of Columbia", "PR": "Puerto Rico",
+}
+# "City, ST" followed by a ZIP, punctuation or the end of the text. Requiring
+# that trailing context keeps prose like "sales, OR marketing" untouched.
+_STATE_IN_ADDRESS_RE = re.compile(
+    r",\s*([A-Z]{2})\b(?=\s*(?:\d{5}(?:-\d{4})?|[.,;:!?)]|$))"
+)
+
+
 def _normalize_for_speech(text: str) -> str:
     """Expand context-dependent abbreviations and numerals for natural speech.
 
@@ -233,6 +264,13 @@ def _normalize_for_speech(text: str) -> str:
         return text
     s = text
 
+    # 0) A street number ahead of the abbreviation settles it as an address, so
+    #    resolve those before the title rules below can claim them: in
+    #    "11955 Freedom Dr. Reston" the following word is a city, not a name.
+    s = _STREET_ADDRESS_RE.sub(
+        lambda m: m.group(1) + _STREET_WORDS[m.group(2)], s
+    )
+
     # 1) Honorific / title abbreviations that are FOLLOWED by a capitalized name
     #    read as titles. The name itself is preserved via a zero-width lookahead.
     title_map = (
@@ -249,6 +287,12 @@ def _normalize_for_speech(text: str) -> str:
     # 2) Remaining "Dr." / "St." are address abbreviations (not before a name).
     s = re.sub(r"\bDr\.", "Drive", s)
     s = re.sub(r"\bSt\.", "Street", s)
+
+    # 2b) State codes in a "City, ST" address read as the full state name.
+    s = _STATE_IN_ADDRESS_RE.sub(
+        lambda m: ", " + _STATE_NAMES[m.group(1)] if m.group(1) in _STATE_NAMES else m.group(0),
+        s,
+    )
 
     # 3) Generational suffixes (period-terminated form first so the standalone
     #    boundary form does not re-match the same token).
@@ -451,6 +495,24 @@ _SOURCE_REFERENCE_RE = re.compile(
 )
 
 
+def _resolve_audio_player():
+    """Return the platform's command-line audio player, or None if absent."""
+    if sys.platform == "darwin":
+        return shutil.which("afplay")
+    if sys.platform.startswith("linux"):
+        return shutil.which("ffplay") or shutil.which("mpg123") or shutil.which("aplay")
+    if sys.platform == "win32":
+        return "powershell"
+    return None
+
+
+def _audio_player_command(player, path):
+    """Build the argv that plays `path` to completion with `player`."""
+    if sys.platform == "win32":
+        return [player, "-c", f"(New-Object Media.SoundPlayer '{path}').PlaySync();"]
+    return [player, path]
+
+
 class TTSManager:
     # Curated Kokoro voice list (en-US + en-GB). Daniel is the default
     # British male voice requested by the user.
@@ -506,13 +568,7 @@ class TTSManager:
             except (TypeError, ValueError):
                 self.speed = 1.0
 
-            self.audio_player = None
-            if sys.platform == "darwin":
-                self.audio_player = shutil.which("afplay")
-            elif sys.platform.startswith("linux"):
-                self.audio_player = shutil.which("ffplay") or shutil.which("mpg123") or shutil.which("aplay")
-            elif sys.platform == "win32":
-                self.audio_player = "powershell"
+            self.audio_player = _resolve_audio_player()
 
             # Lazy-import + eagerly construct the Kokoro pipeline so the model
             # weights are downloaded/loaded once at startup instead of on the
@@ -613,19 +669,7 @@ class TTSManager:
         return " ".join(rewritten)
 
     def clean_text(self, text):
-        cleaned = str(text or "")
-        # Expand context-dependent abbreviations/numerals (Dr., Jr., III, ...)
-        # before any punctuation/hyphen stripping, so the rules can see periods
-        # and hyphens (e.g. "Dr.", "J-R", "I-I-I").
-        cleaned = _normalize_for_speech(cleaned)
-        cleaned = re.sub(r"https?://\S+", " link omitted ", cleaned)
-        # Recognize money-shaped numbers in financial sentences (no `$` needed).
-        cleaned = self._add_dollar_sign_in_financial_context(cleaned)
-        cleaned = re.sub(r"\$\s*(\d[\d,]*)(?:\.(\d{1,2}))?" + _DOLLAR_SCALE_SUFFIX, self._spoken_dollar_amount, cleaned)
-        cleaned = re.sub(r"\b(\d[\d,]*)\.(\d+)\s*%", lambda m: f"{m.group(1).replace(',', '')} point {m.group(2)} percent", cleaned)
-        cleaned = re.sub(r"\b(\d[\d,]*)\s*%", lambda m: f"{m.group(1).replace(',', '')} percent", cleaned)
-        cleaned = re.sub(r"(?<=\d),(?=\d)", "", cleaned)
-        cleaned = re.sub(r"(?<=\d)\.(?=\d)", " point ", cleaned)
+        cleaned = _normalize_spoken_semantics(text)
         cleaned = re.sub(r"[\u2010-\u2015\-]+", " ", cleaned)
         cleaned = cleaned.replace("'", "")
         cleaned = cleaned.replace("\u2019", "")
@@ -741,20 +785,12 @@ class TTSManager:
                 playback_succeeded = False
                 if generation_succeeded and self.audio_player:
                     try:
-                        if sys.platform == "win32":
-                            subprocess.run(
-                                [self.audio_player, "-c", f"(New-Object Media.SoundPlayer '{tmp_file.name}').PlaySync();"],
-                                check=True,
-                                stdout=subprocess.DEVNULL,
-                                stderr=subprocess.DEVNULL,
-                            )
-                        else:
-                            subprocess.run(
-                                [self.audio_player, tmp_file.name],
-                                check=True,
-                                stdout=subprocess.DEVNULL,
-                                stderr=subprocess.DEVNULL,
-                            )
+                        subprocess.run(
+                            _audio_player_command(self.audio_player, tmp_file.name),
+                            check=True,
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                        )
                         playback_succeeded = True
                     except Exception as e:
                         if tts_debug:
@@ -780,6 +816,42 @@ class TTSManager:
         except Exception as e:
             if os.environ.get("JARVIS_TTS_DEBUG", "0") == "1":
                 logger.debug(f"Failed to generate or play speech: {e}")
+
+
+def _normalize_spoken_semantics(text: str) -> str:
+    """Rewrite text into the words a speech engine should actually say.
+
+    Covers what a listener would otherwise hear wrong regardless of engine:
+    context-dependent abbreviations (Dr., Jr., III), URLs, money, percentages
+    and decimals. Purely orthographic scrubbing -- stripping apostrophes and
+    punctuation -- is deliberately excluded, because that is a Kokoro/espeak
+    front-end requirement and degrades engines that use punctuation for phrasing.
+    """
+    cleaned = str(text or "")
+    # Expand abbreviations before any punctuation/hyphen stripping downstream, so
+    # the rules can still see periods and hyphens ("Dr.", "J-R", "I-I-I").
+    cleaned = _normalize_for_speech(cleaned)
+    cleaned = re.sub(r"https?://\S+", " link omitted ", cleaned)
+    # Recognize money-shaped numbers in financial sentences (no `$` needed).
+    cleaned = TTSManager._add_dollar_sign_in_financial_context(cleaned)
+    cleaned = re.sub(
+        r"\$\s*(\d[\d,]*)(?:\.(\d{1,2}))?" + _DOLLAR_SCALE_SUFFIX,
+        TTSManager._spoken_dollar_amount,
+        cleaned,
+    )
+    cleaned = re.sub(
+        r"\b(\d[\d,]*)\.(\d+)\s*%",
+        lambda m: f"{m.group(1).replace(',', '')} point {m.group(2)} percent",
+        cleaned,
+    )
+    cleaned = re.sub(
+        r"\b(\d[\d,]*)\s*%",
+        lambda m: f"{m.group(1).replace(',', '')} percent",
+        cleaned,
+    )
+    cleaned = re.sub(r"(?<=\d),(?=\d)", "", cleaned)
+    cleaned = re.sub(r"(?<=\d)\.(?=\d)", " point ", cleaned)
+    return cleaned
 
 
 class _SilentTTS:
