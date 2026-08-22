@@ -246,6 +246,16 @@ _STATE_IN_ADDRESS_RE = re.compile(
     r",\s*([A-Z]{2})\b(?=\s*(?:\d{5}(?:-\d{4})?|[.,;:!?)]|$))"
 )
 
+# A ZIP is read digit-by-digit when it follows a state, whether written as the
+# 2-letter code ("WA 98052") or the full name that _STATE_IN_ADDRESS_RE expands
+# the code into before step 5 runs ("Maryland 20878"). One pattern, reused by
+# step 5's _state_zip_repl alongside _US_STATE_ABBR / _spell_digits.
+_STATE_NAME_SET = frozenset(_STATE_NAMES.values())
+_STATE_ZIP_RE = re.compile(
+    r"\b(" + "|".join(sorted((re.escape(n) for n in _STATE_NAME_SET), key=len, reverse=True))
+    + r"|[A-Z]{2})\s+(\d{5})(?:-(\d{4}))?\b"
+)
+
 
 def _normalize_for_speech(text: str) -> str:
     """Expand context-dependent abbreviations and numerals for natural speech.
@@ -325,7 +335,8 @@ def _normalize_for_speech(text: str) -> str:
     # 5) ZIP codes in addresses -> read digit by digit. Only fire on a strong
     #    address signal so ordinary 5-digit numbers (years, counts, IDs) are
     #    left alone: (a) ZIP+4 form "12345-6789", or (b) a 5-digit number
-    #    immediately following a US state abbreviation ("WA 98052").
+    #    immediately following a US state, as the 2-letter code ("WA 98052") or
+    #    the full name step 2b expanded it into ("Maryland 20878").
     def _zip4_repl(match: "re.Match[str]") -> str:
         return f"{_spell_digits(match.group(1))} {_spell_digits(match.group(2))}"
 
@@ -333,14 +344,14 @@ def _normalize_for_speech(text: str) -> str:
 
     def _state_zip_repl(match: "re.Match[str]") -> str:
         state, zip5, plus4 = match.group(1), match.group(2), match.group(3)
-        if state not in _US_STATE_ABBR:
+        if state not in _US_STATE_ABBR and state not in _STATE_NAME_SET:
             return match.group(0)
         spoken = _spell_digits(zip5)
         if plus4:
             spoken = f"{spoken} {_spell_digits(plus4)}"
         return f"{state} {spoken}"
 
-    s = re.sub(r"\b([A-Z]{2})\s+(\d{5})(?:-(\d{4}))?\b", _state_zip_repl, s)
+    s = _STATE_ZIP_RE.sub(_state_zip_repl, s)
 
     # 6) Rate slash -> "per" before a known unit, e.g. "$7,500/month" ->
     #    "$7,500 per month". Dates ("12/25"), "and/or", "TCP/IP" etc. are

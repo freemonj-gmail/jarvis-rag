@@ -22,6 +22,7 @@ import json
 import os
 import queue
 import re
+import signal
 import subprocess
 import sys
 import tempfile
@@ -142,6 +143,57 @@ def _expand_numbers_to_words(text: str) -> str:
     # not as a quantity ("one point forty-five").
     text = _DECIMAL_TAIL_RE.sub(lambda m: "point " + " ".join(m.group(1)), text)
     return _STANDALONE_NUMBER_RE.sub(spoken, text)
+
+
+class _SpawnedPlayer:
+    """Popen-shaped handle for an audio player launched via ``posix_spawn``.
+
+    subprocess.Popen launches with ``fork``+``exec``; on macOS the fork child
+    runs libmalloc's at-fork handler, which prints a stray ``MallocStackLogging``
+    line onto the REPL prompt once a native library has touched malloc logging.
+    ``posix_spawn`` is a single syscall that never runs those handlers, so the
+    line does not appear. Only ``poll``/``wait``/``terminate`` are needed, so
+    ``cleanup`` keeps calling the same methods it did for Popen.
+    """
+
+    def __init__(self, argv):
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        actions = [
+            (os.POSIX_SPAWN_DUP2, devnull, 1),
+            (os.POSIX_SPAWN_DUP2, devnull, 2),
+        ]
+        try:
+            self.pid = os.posix_spawn(argv[0], list(argv), os.environ, file_actions=actions)
+        finally:
+            # The child dup'd its own copies during the spawn; the parent's is done.
+            os.close(devnull)
+        self._returncode = None
+
+    def poll(self):
+        if self._returncode is not None:
+            return self._returncode
+        pid, status = os.waitpid(self.pid, os.WNOHANG)
+        if pid == 0:
+            return None
+        self._returncode = os.waitstatus_to_exitcode(status)
+        return self._returncode
+
+    def wait(self):
+        if self._returncode is not None:
+            return self._returncode
+        _, status = os.waitpid(self.pid, 0)
+        self._returncode = os.waitstatus_to_exitcode(status)
+        return self._returncode
+
+    def terminate(self):
+        # Guard + catch so a player that already exited (and whose pid may be
+        # reused) is never signalled.
+        if self._returncode is not None:
+            return
+        try:
+            os.kill(self.pid, signal.SIGTERM)
+        except (ProcessLookupError, ChildProcessError):
+            pass
 
 
 class ChatterboxTTSClient:
@@ -391,12 +443,9 @@ class ChatterboxTTSClient:
         if not self.audio_player or not path or not os.path.exists(path):
             return False
         try:
-            # Popen rather than run() so cleanup() can cut playback short.
-            self._playback = subprocess.Popen(
-                _audio_player_command(self.audio_player, path),
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
+            # posix_spawn, not Popen: a fork here makes macOS libmalloc print an
+            # at-fork line onto the prompt. Popen-shaped so cleanup() is unchanged.
+            self._playback = _SpawnedPlayer(_audio_player_command(self.audio_player, path))
             self._playback.wait()
             return True
         except Exception as error:
