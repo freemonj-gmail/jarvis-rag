@@ -56,12 +56,25 @@ IMAGE_EXTENSIONS = [".jpg", ".jpeg", ".png", ".tiff", ".bmp", ".gif"]
 
 def _build_llm() -> Ollama:
     # make sure ollama is running: `ollama run llama3`
-    return Ollama(
+    kwargs: dict = dict(
         model="gemma4:31b-mlx",
         request_timeout=600,
         temperature=0.2,
         additional_kwargs={"num_predict": 256},
     )
+    # Loaded context window. The model's own max is 262144 (256K). The largest
+    # possible prompt here is bounded by the evidence caps (30 lines x 8000 chars
+    # + MCP + generation) at ~100k tokens worst case, ~20k typical, so 131072
+    # (128K, ChatGPT-class) never truncates while halving KV-cache memory vs 256K.
+    # Raise toward 262144 for more headroom; 0 keeps the model's own default.
+    try:
+        num_ctx = int(os.environ.get("JARVIS_NUM_CTX", "131072"))
+    except ValueError:
+        num_ctx = 131072
+    if num_ctx > 0:
+        kwargs["context_window"] = num_ctx
+        kwargs["additional_kwargs"] = {"num_predict": 256, "num_ctx": num_ctx}
+    return Ollama(**kwargs)
 
 
 def _build_embed_model() -> HuggingFaceEmbedding:

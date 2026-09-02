@@ -399,6 +399,7 @@ hardware, memory, latency, or corpus — you rarely need to.
 | `JARVIS_HOME_CORPUS_MAX_CHUNKS` | `60` | Cap on home-folder chunks force-included as candidates |
 | `JARVIS_DUPLICATE_EVIDENCE_THRESHOLD` | `0.9` | Word-overlap ratio at which two evidence passages count as duplicates (near-duplicate suppression is always on); lower suppresses more aggressively |
 | `JARVIS_ANSWER_REVIEW_ATTEMPTS` | `3` | Max synthesis/review attempts |
+| `JARVIS_NUM_CTX` | `131072` | Primary model context window (128K, ChatGPT-class). Bounded worst-case prompt is ~100k tokens so this never truncates, while halving KV-cache memory vs the model's 262144 max. Raise toward `262144` for more headroom; `0` keeps the model default |
 | `JARVIS_CONTEXT_WINDOW_WORDS` | `2500` | Words per `source_window` context document |
 | `JARVIS_ENUM_CHUNK_CHARS` | `8000` | Char cap per evidence line for enumeration queries |
 | `JARVIS_SOURCE_HINT_CHUNK_CHARS` | `16000` | Char cap per evidence line for explicitly named files |
