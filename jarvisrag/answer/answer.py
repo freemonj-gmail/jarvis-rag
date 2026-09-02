@@ -107,6 +107,9 @@ from jarvisrag.retrieval import (
 #   JARVIS_ESCALATION_MODEL       "llama3:70b"  Ollama tag for the escalation model
 #   JARVIS_ESCALATION_TIMEOUT     "600"         request timeout (seconds)
 #   JARVIS_ESCALATION_TEMPERATURE "0.2"         sampling temperature
+#   JARVIS_ESCALATION_NUM_CTX     "8192"        escalation context window (0 = model default)
+#   JARVIS_ESCALATION_KEEP_ALIVE  "0"           Ollama keep_alive; "0" unloads the model
+#                                               after each call ("5m"/"-1" to keep resident)
 #
 # FAILURE HANDLING
 #   If the escalation client cannot be built (Ollama down, model not pulled),
@@ -132,11 +135,29 @@ def _build_escalation_llm() -> Any:
     try:
         timeout = float(os.environ.get("JARVIS_ESCALATION_TIMEOUT", "600"))
         temperature = float(os.environ.get("JARVIS_ESCALATION_TEMPERATURE", "0.2"))
-        client = Ollama(
+        # Bound the escalation context so the large model's KV cache (and thus the
+        # peak memory footprint when it is co-resident with the primary model) is
+        # deterministic; short general-knowledge answers do not need the primary
+        # model's large synthesis window. 0 defers to the model/Ollama default.
+        try:
+            num_ctx = int(os.environ.get("JARVIS_ESCALATION_NUM_CTX", "8192"))
+        except ValueError:
+            num_ctx = 8192
+        client_kwargs: dict[str, Any] = dict(
             model=model,
             request_timeout=timeout,
             temperature=temperature,
         )
+        if num_ctx > 0:
+            client_kwargs["context_window"] = num_ctx
+            client_kwargs["additional_kwargs"] = {"num_ctx": num_ctx}
+        # Unload the large escalation model when idle so it does not hold memory
+        # while the primary model does ordinary work. "0" evicts it right after
+        # each escalation; "5m"/"-1" keep it resident for back-to-back queries.
+        keep_alive = os.environ.get("JARVIS_ESCALATION_KEEP_ALIVE", "0").strip()
+        if keep_alive:
+            client_kwargs["keep_alive"] = keep_alive
+        client = Ollama(**client_kwargs)
     except Exception as e:
         debug_print(f"[debug] Router: failed to build escalation LLM '{model}': {e}")
         client = None

@@ -341,6 +341,8 @@ development, not day-to-day use.
 | `JARVIS_ESCALATION_MODEL` | `llama3:70b` | Ollama tag for the escalation model (router) |
 | `JARVIS_ESCALATION_TIMEOUT` | `600` | Request timeout (seconds) for the escalation model |
 | `JARVIS_ESCALATION_TEMPERATURE` | `0.2` | Sampling temperature for the escalation model |
+| `JARVIS_ESCALATION_NUM_CTX` | `8192` | Escalation model context window; bounds its KV-cache memory (`0` = model default) |
+| `JARVIS_ESCALATION_KEEP_ALIVE` | `0` | Ollama `keep_alive` for the escalation model; `0` unloads it after each call (`5m`/`-1` keep it resident) |
 | `JARVIS_ENABLE_IMAGE_CHAT_ENGINE` | `0` | Build the image chat engine when image documents are present |
 
 ### Document extraction & OCR
