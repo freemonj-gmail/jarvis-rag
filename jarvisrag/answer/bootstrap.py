@@ -56,8 +56,13 @@ IMAGE_EXTENSIONS = [".jpg", ".jpeg", ".png", ".tiff", ".bmp", ".gif"]
 
 def _build_llm() -> Ollama:
     # make sure ollama is running: `ollama run llama3`
+    # JARVIS_LLM_MODEL selects the primary synthesis model (deployment/hardware
+    # choice, mirrors JARVIS_ESCALATION_MODEL). Default is the MoE build: it matched
+    # the dense 31B on the answer harness (identical accuracy) at ~4x faster median
+    # latency; the dense tag stays selectable via the env var.
+    model = os.environ.get("JARVIS_LLM_MODEL", "gemma4:26b-mlx").strip() or "gemma4:26b-mlx"
     kwargs: dict = dict(
-        model="gemma4:31b-mlx",
+        model=model,
         request_timeout=600,
         temperature=0.2,
         additional_kwargs={"num_predict": 256},

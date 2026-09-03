@@ -120,6 +120,7 @@ def main(argv: list[str] | None = None) -> int:
         include_case_details=args.case_details,
         metadata={
             "startup_seconds": round(startup_seconds, 3),
+            "llm_model": os.environ.get("JARVIS_LLM_MODEL", "gemma4:31b-mlx"),
             "retrieval_top_k": int(os.environ.get("JARVIS_RETRIEVAL_TOP_K", DEFAULT_RETRIEVAL_TOP_K)),
             "max_evidence_lines": int(os.environ.get("JARVIS_MAX_EVIDENCE_LINES", "30")),
             "suppress_duplicate_evidence": True,

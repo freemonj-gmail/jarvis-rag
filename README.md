@@ -3,7 +3,7 @@
 A local document Retrieval-Augmented Generation (RAG) assistant with multi-format
 parsing, on-device OCR, a Milvus / local vector store, and optional text-to-speech.
 
-**Quick start:** `ollama pull gemma4:31b-mlx && uv sync && uv run python Jarvis.py /path/to/your/documents` — see [Installation](#installation) for full prerequisites.
+**Quick start:** `ollama pull gemma4:26b-mlx && uv sync && uv run python Jarvis.py /path/to/your/documents` — see [Installation](#installation) for full prerequisites.
 
 ## Document extraction & OCR
 
@@ -174,13 +174,16 @@ uses by default:
 ```bash
 # Install Ollama (macOS): brew install --cask ollama   (or download from ollama.com)
 ollama serve                      # start the Ollama server (default: 127.0.0.1:11434)
-ollama pull gemma4:31b-mlx        # default synthesis model Jarvis loads
+ollama pull gemma4:26b-mlx        # default synthesis model Jarvis loads
 ```
 
-- The default synthesis model tag is **`gemma4:31b-mlx`** (set in
-  `jarvisrag/answer/bootstrap.py`). It must be available in your local Ollama.
-  On non–Apple-Silicon hardware, pull an equivalent Gemma tag your machine can
-  run and update that tag.
+- The default synthesis model tag is **`gemma4:26b-mlx`** — the Gemma 4 26B
+  Mixture-of-Experts build (set in `jarvisrag/answer/bootstrap.py`, overridable
+  with env `JARVIS_LLM_MODEL`). It matched the dense `gemma4:31b-mlx` on the answer
+  harness at ~4x faster median latency, so it is the default; set
+  `JARVIS_LLM_MODEL=gemma4:31b-mlx` to use the dense build instead. The tag must be
+  available in your local Ollama. On non–Apple-Silicon hardware, pull an equivalent
+  Gemma tag your machine can run and set `JARVIS_LLM_MODEL` to it.
 - The **escalation model** (`llama3:70b`, env `JARVIS_ESCALATION_MODEL`) is
   **optional** — it is only used when the two-tier router is enabled
   (`JARVIS_ROUTER=1`). You do not need it for normal use.
@@ -399,6 +402,7 @@ hardware, memory, latency, or corpus — you rarely need to.
 | `JARVIS_HOME_CORPUS_MAX_CHUNKS` | `60` | Cap on home-folder chunks force-included as candidates |
 | `JARVIS_DUPLICATE_EVIDENCE_THRESHOLD` | `0.9` | Word-overlap ratio at which two evidence passages count as duplicates (near-duplicate suppression is always on); lower suppresses more aggressively |
 | `JARVIS_ANSWER_REVIEW_ATTEMPTS` | `3` | Max synthesis/review attempts |
+| `JARVIS_LLM_MODEL` | `gemma4:26b-mlx` | Ollama tag for the primary synthesis model |
 | `JARVIS_NUM_CTX` | `131072` | Primary model context window (128K, ChatGPT-class). Bounded worst-case prompt is ~100k tokens so this never truncates, while halving KV-cache memory vs the model's 262144 max. Raise toward `262144` for more headroom; `0` keeps the model default |
 | `JARVIS_CONTEXT_WINDOW_WORDS` | `2500` | Words per `source_window` context document |
 | `JARVIS_ENUM_CHUNK_CHARS` | `8000` | Char cap per evidence line for enumeration queries |
