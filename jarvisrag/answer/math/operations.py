@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from decimal import Decimal, DivisionByZero, InvalidOperation, localcontext
-from math import comb
+from math import comb, gcd
 from statistics import (
     StatisticsError,
     mean,
@@ -246,3 +246,68 @@ class FinancialOperations:
         number_of_payments = to_decimal(periods_per_year) * to_decimal(years)
         total_paid = payment * number_of_payments
         return payment, total_paid, total_paid - loan, number_of_payments
+
+
+class RatioOperations:
+    """Simplify ratios, solve proportions, and divide a quantity by a ratio."""
+
+    @staticmethod
+    def _scaled_integers(values: list[Decimal]) -> list[int]:
+        """Scale decimal ratio terms to whole numbers without losing precision."""
+        places = 0
+        for value in values:
+            exponent = value.normalize().as_tuple().exponent
+            if isinstance(exponent, int) and exponent < 0:
+                places = max(places, -exponent)
+        scale = Decimal(10) ** places
+        return [int((value * scale).to_integral_value()) for value in values]
+
+    @classmethod
+    def simplify(cls, terms: Iterable[Number]) -> list[Decimal]:
+        """Reduce a ratio to its lowest whole-number terms."""
+        values = [to_decimal(term) for term in terms]
+        if len(values) < 2:
+            raise MathOperationError("A ratio needs at least two terms.")
+        if any(value < 0 for value in values):
+            raise MathOperationError("Ratio terms must not be negative.")
+        if all(value == 0 for value in values):
+            raise MathOperationError("A ratio cannot be all zeros.")
+        scaled = cls._scaled_integers(values)
+        divisor = 0
+        for number in scaled:
+            divisor = gcd(divisor, abs(number))
+        divisor = divisor or 1
+        return [Decimal(number // divisor) for number in scaled]
+
+    @staticmethod
+    def solve_proportion(terms: list[Number | None]) -> Decimal:
+        """Solve a:b = c:d (given as [a, b, c, d]) for its single unknown (None)."""
+        if len(terms) != 4:
+            raise MathOperationError("A proportion has four terms: a to b as c to d.")
+        unknowns = [index for index, term in enumerate(terms) if term is None]
+        if len(unknowns) != 1:
+            raise MathOperationError("A proportion needs exactly one unknown term.")
+        a, b, c, d = (to_decimal(term) if term is not None else None for term in terms)
+        # Cross-multiplication: a*d = b*c.
+        position = unknowns[0]
+        if position == 0:
+            return ArithmeticOperations.divide(b * c, d)
+        if position == 1:
+            return ArithmeticOperations.divide(a * d, c)
+        if position == 2:
+            return ArithmeticOperations.divide(a * d, b)
+        return ArithmeticOperations.divide(b * c, a)
+
+    @staticmethod
+    def divide_in_ratio(total: Number, parts: Iterable[Number]) -> list[Decimal]:
+        """Split ``total`` into shares proportional to ``parts``."""
+        amount = to_decimal(total)
+        weights = [to_decimal(part) for part in parts]
+        if len(weights) < 2:
+            raise MathOperationError("A ratio needs at least two terms.")
+        if any(weight < 0 for weight in weights):
+            raise MathOperationError("Ratio terms must not be negative.")
+        divisor = sum(weights, Decimal(0))
+        if divisor == 0:
+            raise MathOperationError("The ratio terms must not sum to zero.")
+        return [ArithmeticOperations.divide(amount * weight, divisor) for weight in weights]

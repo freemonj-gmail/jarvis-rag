@@ -370,6 +370,66 @@ def run_tests() -> None:
     ):
         assert router.solve(non_finance) is None, non_finance
 
+    # Ratios: simplify to lowest terms, solve a proportion, and share a quantity.
+    ratio_cases = {
+        "Simplify the ratio 8 to 12": "The ratio 8 to 12 in simplest form is 2 to 3.",
+        "Reduce the ratio 100:250 to lowest terms": "The ratio 100 to 250 in simplest form is 2 to 5.",
+        "What is the ratio 2.5 to 5 in simplest form?": "The ratio 2.5 to 5 in simplest form is 1 to 2.",
+        "Simplify the ratio 4:8:12": "The ratio 4 to 8 to 12 in simplest form is 1 to 2 to 3.",
+        "Solve the proportion 3:4 = 9:x": "The unknown in the proportion 3 to 4 as 9 to x is 12.",
+        "Divide 100 in the ratio 2:3": "Dividing 100 in the ratio 2 to 3 gives 40 and 60.",
+        "Share $250 in the ratio 2:3": "Dividing $250.00 in the ratio 2 to 3 gives $100.00 and $150.00.",
+        "Split 120 in the ratio 1:2:3": "Dividing 120 in the ratio 1 to 2 to 3 gives 20 and 40 and 60.",
+    }
+    for query, expected in ratio_cases.items():
+        result = router.solve(query)
+        assert result is not None, f"ratio case was not recognized: {query!r}"
+        assert result.category == "ratio", query
+        assert result.response_text == expected, f"{query!r} -> {result.response_text!r}"
+
+    # A proportion's unknown may sit in any position, in colon or "is to ... as" form.
+    for query, expected in {
+        "3 is to 4 as 9 is to what?": Decimal("12"),
+        "Solve the proportion x:4 = 9:12": Decimal("3"),
+        "If 2:5 = x:20, solve for x": Decimal("8"),
+        "1 is to 3 as what is to 12": Decimal("4"),
+    }.items():
+        result = router.solve(query)
+        assert result is not None and result.value == expected, query
+        assert result.category == "ratio", query
+
+    # A proportion that would divide by zero is reported, not crashed.
+    bad_proportion = router.solve("Solve the proportion x:4 = 9:0")
+    assert bad_proportion is not None and bad_proportion.value is None
+    assert "zero" in bad_proportion.response_text.lower()
+
+    # Terms may carry currency symbols and thousands separators; the answer is money.
+    money_proportion = router.solve("solve the proportion $200,000:$5,000=$220,000:x.")
+    assert money_proportion is not None and money_proportion.category == "ratio"
+    assert money_proportion.response_text == (
+        "The unknown in the proportion $200,000.00 to $5,000.00 as $220,000.00 to x is $5,500.00."
+    )
+    assert router.solve("Divide $1,000 in the ratio 3:2").response_text == (
+        "Dividing $1,000.00 in the ratio 3 to 2 gives $600.00 and $400.00."
+    )
+
+    # Ratio intent must not steal plain division, percentages, or retrieval questions.
+    for non_ratio in (
+        "divide 20 by 4",
+        "Reduce 80 by 25 percent",
+        "What is the percentage increase from 80 to 100?",
+        "What is the ratio described in the report?",
+    ):
+        result = router.solve(non_ratio)
+        assert result is None or result.category != "ratio", non_ratio
+
+    # A ratio answer flows through the real query pipeline and is spoken.
+    ratio_runtime = QueryRuntime(all_docs=[], llm=None, doc_retriever=None, tts=RecordingTTS())
+    ratio_turn: dict[str, Any] = handle_query("Divide 100 in the ratio 2:3", ratio_runtime)
+    assert ratio_turn["response_text"] == "Dividing 100 in the ratio 2 to 3 gives 40 and 60."
+    assert ratio_turn["calculation"]["category"] == "ratio"
+    assert ratio_turn["calculation"]["value"] is None
+
     print(f"math router tests passed ({len(cases)} calculations)")
 
 

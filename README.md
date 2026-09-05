@@ -125,6 +125,11 @@ What it handles:
   quarterly, monthly, weekly, daily, or *N times per year*), and fixed-rate loan
   amortization (`the monthly payment on a $200,000 loan at 6% for 30 years`),
   which also reports the total interest over the life of the loan.
+- **Ratios** — simplify a ratio to lowest terms (`simplify the ratio 8 to 12` →
+  `2 to 3`), solve a proportion for its unknown (`3:4 = 9:x` → `12`, in colon or
+  `is to ... as` form, the unknown in any position), and divide a quantity by a
+  ratio (`divide 100 in the ratio 2:3` → `40 and 60`). Money terms are supported
+  (`share $250 in the ratio 2:3`).
 
 Conversational and format-aware:
 

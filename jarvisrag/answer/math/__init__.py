@@ -4,6 +4,7 @@ from .operations import (
     ArithmeticOperations,
     MathOperationError,
     ProbabilityOperations,
+    RatioOperations,
     StatisticsOperations,
     FinancialOperations,
 )
@@ -22,6 +23,7 @@ __all__ = [
     "MathOperationError",
     "MathQueryRouter",
     "ProbabilityOperations",
+    "RatioOperations",
     "StatisticsOperations",
     "previous_calculation_value",
     "solve_math_query",

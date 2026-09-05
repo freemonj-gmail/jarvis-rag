@@ -396,9 +396,10 @@ def run_tests():
     assert TTSManager.clean_text(_speak, "a $2.3 billion market") == (
         "a 2 point 3 billion dollars market"
     )
-    # Plain amounts with real cents keep the existing dollars-and-cents wording.
+    # Plain amounts are spelled out so an engine never reads a 4-digit figure as
+    # a year (e.g. "$1,250" as "twelve fifty").
     assert TTSManager.clean_text(_speak, "a $1,250.75 balance") == (
-        "a 1250 dollars and 75 cents balance"
+        "a one thousand two hundred and fifty dollars and seventy five cents balance"
     )
     print("- TTS money-scale wording OK")
 

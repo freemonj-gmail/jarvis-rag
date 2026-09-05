@@ -184,6 +184,18 @@ _DOLLAR_SCALE_SUFFIX = (
     r"|\s+(?P<word>[Tt]housand|[Mm]illion|[Bb]illion|[Tt]rillion))?"
 )
 
+
+def _cardinal_words(digits: str) -> str:
+    """Spell an integer string as cardinal words so a speech engine never applies
+    a year-style reading (e.g. 4534 -> 'four thousand ...' not 'forty-five
+    thirty-four'). Falls back to the digits if num2words is unavailable."""
+    try:
+        from num2words import num2words
+
+        return num2words(int(digits)).replace(",", "")
+    except Exception:
+        return digits
+
 # Sub-second time-unit abbreviations -> spoken words. Only expanded when the
 # unit is attached to a number (e.g. "200 ms" / "5us" / "10 ns"), so the plain
 # English word "us" ("tell us") and unrelated tokens are left untouched. The
@@ -708,9 +720,11 @@ class TTSManager:
             return f"{number} {scale_word} dollars"
         cents_raw = frac.ljust(2, "0")[:2]
         cents = int(cents_raw) if cents_raw else 0
+        # Spell the amount out so the engine never reads a 4-digit figure as a year.
+        dollars = _cardinal_words(whole)
         if cents:
-            return f"{whole} dollars and {cents} cents"
-        return f"{whole} dollars"
+            return f"{dollars} dollars and {_cardinal_words(str(cents))} cents"
+        return f"{dollars} dollars"
 
     def say_goodbye(self):
         if not getattr(self, 'initialized', False):

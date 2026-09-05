@@ -21,6 +21,7 @@ from .operations import (
     FinancialOperations,
     MathOperationError,
     ProbabilityOperations,
+    RatioOperations,
     StatisticsOperations,
     to_decimal,
 )
@@ -159,6 +160,36 @@ _FREQUENCY_LABELS = {1: "annually", 2: "semiannually", 4: "quarterly", 12: "mont
 _PAYMENT_LABELS = {1: "annual", 2: "semiannual", 4: "quarterly", 12: "monthly", 24: "semimonthly", 26: "biweekly", 52: "weekly"}
 _RATE_UNIT = r"%|percent|per\s*cent"
 
+# Ratios: fire only on explicit ratio intent so ordinary numbers, ranges, and
+# clock times are never mistaken for a ratio.
+_RATIO_WORD_RE = re.compile(r"\bratio\b|\bproportion(?:al|ally|s)?\b", re.I)
+_RATIO_SHARE_RE = re.compile(
+    r"\b(?:divide[sd]?|split|shared?|allocate[sd]?|distribute[sd]?|apportion(?:ed)?)\b",
+    re.I,
+)
+_RATIO_SIMPLIFY_RE = re.compile(
+    r"\bsimplif(?:y|ied|ies)\b|\breduc(?:e|ed|es)\b|\blowest\s+terms\b|\bsimplest\s+form\b",
+    re.I,
+)
+_RATIO_UNKNOWN = r"(?:x|n|\?|what|unknown|blank|missing)"
+_RATIO_TERM = rf"(?:{_NUMBER}|{_RATIO_UNKNOWN})"
+# Each ratio term may carry a leading currency symbol ("$1,200"); it is matched
+# outside the capture groups so the groups hold only the number or the unknown.
+_CURRENCY_PREFIX = r"[$\u20ac\u00a3\u00a5]?\s*"
+# A full proportion equation with one unknown: "3:4 = 9:x", "3 is to 4 as 9 is to what".
+_PROPORTION_RE = re.compile(
+    rf"{_CURRENCY_PREFIX}({_RATIO_TERM})\s*(?::|\bis\s+to\b)\s*{_CURRENCY_PREFIX}({_RATIO_TERM})"
+    rf"\s*(?:=|::|\bas\b)\s*"
+    rf"{_CURRENCY_PREFIX}({_RATIO_TERM})\s*(?::|\bis\s+to\b)\s*{_CURRENCY_PREFIX}({_RATIO_TERM})",
+    re.I,
+)
+_RATIO_COLON_LIST_RE = re.compile(
+    rf"{_CURRENCY_PREFIX}{_NUMBER}(?:\s*:\s*{_CURRENCY_PREFIX}{_NUMBER})+"
+)
+_RATIO_TO_LIST_RE = re.compile(
+    rf"{_CURRENCY_PREFIX}{_NUMBER}(?:\s+to\s+{_CURRENCY_PREFIX}{_NUMBER})+", re.I
+)
+
 
 @dataclass(frozen=True)
 class CalculationResult:
@@ -198,6 +229,14 @@ class _NumericTerm:
 
 def _numbers(text: str) -> list[Decimal]:
     return [to_decimal(match.group(0).replace(",", "")) for match in _NUMBER_RE.finditer(text)]
+
+
+_RATIO_CLEAN_RE = re.compile(r"[$\u20ac\u00a3\u00a5,\s]")
+
+
+def _ratio_decimal(token: str) -> Decimal:
+    """Read a ratio term, dropping any currency symbol and thousands separators."""
+    return to_decimal(_RATIO_CLEAN_RE.sub("", token))
 
 
 def _numeric_terms(text: str) -> list[_NumericTerm]:
@@ -558,6 +597,25 @@ def _dataset_after(text: str) -> list[Decimal] | None:
     return values if len(values) >= 2 else None
 
 
+def _ratio_parts_with_span(
+    text: str, allow_to: bool
+) -> tuple[list[Decimal] | None, tuple[int, int] | None]:
+    """Parse a ratio written as "a:b:c" (or "a to b to c") into its terms and span."""
+    colon = _RATIO_COLON_LIST_RE.search(text)
+    if colon is not None:
+        parts = [_ratio_decimal(part) for part in colon.group(0).split(":")]
+        return parts, colon.span()
+    if allow_to:
+        listed = _RATIO_TO_LIST_RE.search(text)
+        if listed is not None:
+            parts = [
+                _ratio_decimal(part)
+                for part in re.split(r"\s+to\s+", listed.group(0), flags=re.I)
+            ]
+            return parts, listed.span()
+    return None, None
+
+
 def _error_result(category: str, operation: str, expression: str, message: str) -> CalculationResult:
     return CalculationResult(category, operation, expression, None, f"I could not calculate that: {message}")
 
@@ -706,6 +764,7 @@ class MathQueryRouter:
             lambda text: self._try_amortization(text, currency),
             lambda text: self._try_compound_interest(text, currency),
             lambda text: self._try_percentage(text, previous_value, currency),
+            lambda text: self._try_ratio(text, currency),
             lambda text: self._try_word_arithmetic(text, currency),
             lambda text: self._try_symbolic_arithmetic(text, currency),
         ):
@@ -886,6 +945,84 @@ class MathQueryRouter:
             f"{_plain_number(count)} payments."
         )
         return CalculationResult("finance", "loan payment", expression, payment, response_text, currency)
+
+    def _try_ratio(self, query: str, currency: str | None = None) -> CalculationResult | None:
+        proportion = self._ratio_proportion(query, currency)
+        if proportion is not None:
+            return proportion
+        share = self._ratio_share(query, currency)
+        if share is not None:
+            return share
+        return self._ratio_simplify(query)
+
+    def _ratio_proportion(self, query: str, currency: str | None = None) -> CalculationResult | None:
+        match = _PROPORTION_RE.search(query)
+        if match is None:
+            return None
+        terms: list[Decimal | None] = []
+        for token in match.groups():
+            if re.fullmatch(_RATIO_UNKNOWN, token, re.I):
+                terms.append(None)
+            else:
+                terms.append(_ratio_decimal(token))
+        if sum(1 for term in terms if term is None) != 1:
+            return None
+        value = RatioOperations.solve_proportion(terms)
+        labels = [_money(term, currency) if term is not None else "x" for term in terms]
+        expression = (
+            f"The unknown in the proportion {labels[0]} to {labels[1]} "
+            f"as {labels[2]} to {labels[3]}"
+        )
+        if currency:
+            rendered, qualifier = _format_amount(value, currency), ""
+        else:
+            rendered, approximate = _format_decimal(value)
+            qualifier = "approximately " if approximate else ""
+        return CalculationResult(
+            "ratio",
+            "solve proportion",
+            expression,
+            value,
+            f"{expression} is {qualifier}{rendered}.",
+            currency,
+        )
+
+    def _ratio_share(self, query: str, currency: str | None) -> CalculationResult | None:
+        if not _RATIO_SHARE_RE.search(query):
+            return None
+        has_word = bool(_RATIO_WORD_RE.search(query))
+        if not (has_word or _RATIO_COLON_LIST_RE.search(query)):
+            return None
+        parts, span = _ratio_parts_with_span(query, allow_to=has_word)
+        if parts is None or span is None or len(parts) < 2:
+            return None
+        outside = [
+            term for term in _numeric_terms(query) if term.end <= span[0] or term.start >= span[1]
+        ]
+        if not outside:
+            return None
+        total = outside[0].value
+        shares = RatioOperations.divide_in_ratio(total, parts)
+        ratio_text = " to ".join(_plain_number(part) for part in parts)
+        shares_text = " and ".join(_money(share, currency) for share in shares)
+        expression = f"Dividing {_money(total, currency)} in the ratio {ratio_text}"
+        return CalculationResult(
+            "ratio", "divide in ratio", expression, None, f"{expression} gives {shares_text}.", currency
+        )
+
+    def _ratio_simplify(self, query: str) -> CalculationResult | None:
+        if not (_RATIO_SIMPLIFY_RE.search(query) or _RATIO_WORD_RE.search(query)):
+            return None
+        parts, _span = _ratio_parts_with_span(query, allow_to=True)
+        if parts is None or len(parts) < 2:
+            return None
+        in_text = " to ".join(_plain_number(part) for part in parts)
+        simplified = RatioOperations.simplify(parts)
+        out_text = " to ".join(_plain_number(part) for part in simplified)
+        expression = f"The ratio {in_text} in simplest form"
+        return CalculationResult(
+            "ratio", "simplify ratio", expression, None, f"{expression} is {out_text}."
+        )
 
     def _try_percent_change(
         self,
