@@ -430,6 +430,108 @@ def run_tests() -> None:
     assert ratio_turn["calculation"]["category"] == "ratio"
     assert ratio_turn["calculation"]["value"] is None
 
+    # Business & finance operations (exact wording).
+    business_cases = {
+        "What is the markup if cost is $40 and price is $50?":
+            "The markup on cost $40.00 at price $50.00 equals 25 percent.",
+        "What is the gross margin if cost is $40 and price is $50?":
+            "The margin on cost $40.00 at price $50.00 equals 20 percent.",
+        "What selling price gives a 30% markup on $40?":
+            "The price at 30 percent markup on $40.00 equals $52.00.",
+        "What price gives a 40% margin on a cost of $30?":
+            "The price at 40 percent margin on $30.00 equals $50.00.",
+        "What is the simple interest on $1,000 at 5% for 3 years?":
+            "The simple interest on $1,000.00 at 5 percent for 3 years is $150.00, for a total of $1,150.00.",
+        # No currency marker stays symbol-free but keeps two decimals for money math.
+        "What is the simple interest on 2,000 at 5% for 2 years?":
+            "The simple interest on 2,000.00 at 5 percent for 2 years is 200.00, for a total of 2,200.00.",
+        "What is the present value of $10,000 in 5 years at 4%?":
+            "The present value of $10,000.00 in 5 years at 4 percent compounded annually is $8,219.27.",
+        "What is the ROI if I invested $1,000 and got back $1,200?":
+            "The return on investment from $1,000.00 to $1,200.00 equals 20 percent.",
+        "What is the return on investment for a $200 profit on $1,000?":
+            "The return on investment for a $200.00 gain on $1,000.00 equals 20 percent.",
+        "Add 8% sales tax to $50":
+            "8 percent tax on $50.00 is $4.00, for a total of $54.00.",
+        "What is a 15% tip on $60?":
+            "15 percent tip on $60.00 is $9.00, for a total of $69.00.",
+        "What was the original price before a 20% discount if the sale price is $80?":
+            "The original price before a 20 percent discount on a $80.00 sale price equals $100.00.",
+        "Apply a 20% then 10% discount to $80":
+            "$80.00 after successive discounts of 20 percent then 10 percent equals $57.60.",
+        "What is the break-even quantity at a $50 price, $30 variable cost, and $10,000 fixed costs?":
+            "The break-even quantity at a $50.00 price, $30.00 variable cost, and $10,000.00 fixed costs is 500 units.",
+        "Straight-line depreciation of a $20,000 asset with a $2,000 salvage value over 5 years":
+            "The annual straight-line depreciation of a $20,000.00 asset with a $2,000.00 salvage value "
+            "over 5 years is $3,600.00 per year.",
+        "Using the rule of 72, how long to double at 6% growth?":
+            "The time to double at 6 percent growth (rule of 72) is 12 years.",
+        "Rule of 70 doubling time at 5%":
+            "The time to double at 5 percent growth (rule of 70) is 14 years.",
+    }
+    for query, expected in business_cases.items():
+        result = router.solve(query)
+        assert result is not None, f"business case was not recognized: {query!r}"
+        assert result.response_text == expected, f"{query!r} -> {result.response_text!r}"
+
+    # Magnitude shorthand (1M, 1.5M, 5k) is expanded to the full number before parsing.
+    assert router.solve("What is the CAGR from $1M to $1.5M over 3 years?").response_text == (
+        "The compound annual growth rate from $1,000,000.00 to $1,500,000.00 over 3 years "
+        "equals approximately 14.471424255333 percent."
+    )
+    assert router.solve("What is the simple interest on $2M at 5% for 3 years?").response_text == (
+        "The simple interest on $2,000,000.00 at 5 percent for 3 years is $300,000.00, "
+        "for a total of $2,300,000.00."
+    )
+    assert router.solve("Add 5k and 3k").value == Decimal("8000")
+
+    # Rate results that are not terminating are reported to full precision; check values.
+    cagr = router.solve("What is the CAGR from $1,000,000 to $1,500,000 over 3 years?")
+    assert cagr is not None and cagr.operation == "compound annual growth rate"
+    assert cagr.value.quantize(Decimal("0.0001")) == Decimal("14.4714")
+    effective = router.solve("What is the effective annual rate for 6% compounded monthly?")
+    assert effective is not None and effective.operation == "effective annual rate"
+    assert effective.value.quantize(Decimal("0.0001")) == Decimal("6.1678")
+
+    # A few structured values carry through for follow-ups and metadata.
+    assert router.solve("What is the markup if cost is $40 and price is $50?").value == Decimal("25")
+    assert router.solve("What is the simple interest on $1,000 at 5% for 3 years?").value == Decimal("150")
+    assert router.solve(
+        "What is the present value of $10,000 in 5 years at 4%?"
+    ).value.quantize(Decimal("0.01")) == Decimal("8219.27")
+    assert router.solve("Using the rule of 72, how long to double at 6% growth?").value == Decimal("12")
+    assert router.solve(
+        "What is the break-even quantity at a $50 price, $30 variable cost, and $10,000 fixed costs?"
+    ).value == Decimal("500")
+
+    # Guard rails: impossible inputs are reported, not crashed.
+    bad_break_even = router.solve(
+        "What is the break-even quantity at a $30 price, $50 variable cost, and $10,000 fixed costs?"
+    )
+    assert bad_break_even is not None and bad_break_even.value is None
+    assert "exceed" in bad_break_even.response_text.lower()
+    bad_margin = router.solve("What price gives a 100% margin on a cost of $30?")
+    assert bad_margin is not None and bad_margin.value is None
+    assert "less than 100" in bad_margin.response_text.lower()
+
+    # The business lane must not hijack plain percentages, loans, or a tax-bracket reduction.
+    assert router.solve("What is 20% off of 50?").response_text == "50 reduced by 20 percent equals 40."
+    assert router.solve("What is 20% of 50?").response_text == "20 percent of 50 equals 10."
+    assert router.solve(
+        "What is the compound interest on $10,000 at 5% for 3 years compounded monthly?"
+    ).category == "finance"
+    bracket_runtime = QueryRuntime(all_docs=[], llm=None, doc_retriever=None, tts=RecordingTTS())
+    bracket_base = handle_query(
+        "If my total salary is $120,000 and I am getting a 5% increase, what is my new salary amount?",
+        bracket_runtime,
+    )
+    bracket_follow = handle_query(
+        "If I am in a 24% tax bracket, what is my take home salary after taxes?",
+        bracket_runtime,
+        bracket_base,
+    )
+    assert bracket_follow["response_text"].startswith("$126,000.00 reduced by 24 percent equals $95,760.00.")
+
     print(f"math router tests passed ({len(cases)} calculations)")
 
 

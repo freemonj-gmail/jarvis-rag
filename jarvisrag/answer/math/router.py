@@ -18,6 +18,7 @@ from .lexicon import (
 )
 from .operations import (
     ArithmeticOperations,
+    BusinessOperations,
     FinancialOperations,
     MathOperationError,
     ProbabilityOperations,
@@ -616,6 +617,111 @@ def _ratio_parts_with_span(
     return None, None
 
 
+# --- Business/finance extraction helpers -----------------------------------
+_CUR_CHARS = "$\u20ac\u00a3\u00a5"
+_RATE_NEAR_PERCENT_RE = re.compile(rf"({_NUMBER})\s*(?:{_RATE_UNIT})", re.I)
+_YEARS_RE = re.compile(rf"({_NUMBER})\s*(?:years?|yrs?)\b", re.I)
+_MONTHS_RE = re.compile(rf"({_NUMBER})\s*(?:months?|mos?)\b", re.I)
+
+
+def _rate_value(query: str) -> Decimal | None:
+    match = _RATE_NEAR_PERCENT_RE.search(query)
+    return to_decimal(match.group(1).replace(",", "")) if match else None
+
+
+def _all_rate_values(query: str) -> list[Decimal]:
+    return [to_decimal(m.group(1).replace(",", "")) for m in _RATE_NEAR_PERCENT_RE.finditer(query)]
+
+
+def _years_value(query: str) -> Decimal | None:
+    years = _YEARS_RE.search(query)
+    if years is not None:
+        return to_decimal(years.group(1).replace(",", ""))
+    months = _MONTHS_RE.search(query)
+    if months is not None:
+        return ArithmeticOperations.divide(to_decimal(months.group(1).replace(",", "")), 12)
+    return None
+
+
+def _labeled_amount(query: str, label: str) -> Decimal | None:
+    """Find the number closest to any occurrence of a label word, on either side."""
+    best: Decimal | None = None
+    best_gap: int | None = None
+    for marker in re.finditer(rf"\b(?:{label})\b", query, re.I):
+        tail = query[marker.end():]
+        after = re.match(rf"[^0-9{_CUR_CHARS}]{{0,12}}?([{_CUR_CHARS}]?\s*{_NUMBER})", tail)
+        if after is not None:
+            gap = after.start(1)
+            if best_gap is None or gap < best_gap:
+                best, best_gap = _ratio_decimal(after.group(1)), gap
+        head = query[: marker.start()]
+        before = re.search(rf"([{_CUR_CHARS}]?\s*{_NUMBER})[^0-9]{{0,4}}$", head)
+        if before is not None:
+            gap = len(head) - before.end(1)
+            if best_gap is None or gap < best_gap:
+                best, best_gap = _ratio_decimal(before.group(1)), gap
+    return best
+
+
+def _amount_excluding(query: str, *exclude: Decimal | None) -> Decimal | None:
+    """The first money value (else first number) not equal to an excluded value."""
+    skip = {value for value in exclude if value is not None}
+    monetary = _monetary_values(query)
+    remaining = [term.value for term in _numeric_terms(query) if term.value not in skip]
+    money = [value for value in remaining if value in monetary]
+    if money:
+        return money[0]
+    return remaining[0] if remaining else None
+
+
+_MARKUP_RE = re.compile(r"\bmark(?:ed)?[-\s]?up\b|\bmargin\b", re.I)
+_SIMPLE_INTEREST_RE = re.compile(r"\bsimple\s+interest\b", re.I)
+_PRESENT_VALUE_RE = re.compile(r"\bpresent\s+value\b|\bdiscounted\s+value\b|\bpv\s+of\b", re.I)
+_ROI_RE = re.compile(r"\broi\b|\breturn\s+on\s+investment\b", re.I)
+_CAGR_RE = re.compile(
+    r"\bcagr\b|\bcompound\s+annual\s+growth\b|\baverage\s+annual\s+growth\s+rate\b", re.I
+)
+_TIP_RE = re.compile(r"\btip\b|\bgratuity\b", re.I)
+_TAX_ADD_RE = re.compile(
+    r"\bsales\s+tax\b"
+    r"|\b(?:add|adding|plus|with|including|include|on\s+top\s+of)\b[^.?!]*\btax(?:es)?\b"
+    r"|\btax(?:es)?\b[^.?!]*\b(?:added|included?|on\s+top)\b",
+    re.I,
+)
+_TAX_TIP_EXCLUDE_RE = re.compile(
+    r"\bbracket\b|\btake[-\s]?home\b|\bafter\s+tax|\bnet\b|\bwithh(?:eld|olding)\b|\bdeduct", re.I
+)
+_DISCOUNT_CTX_RE = re.compile(r"\bdiscount\b|\boff\b|\bon\s+sale\b|\bmark(?:ed)?\s*down\b", re.I)
+_ORIGINAL_PRICE_RE = re.compile(r"\boriginal\b|\bbefore\b|\blist\s+price\b|\bpre[-\s]?discount\b", re.I)
+_BREAKEVEN_RE = re.compile(r"\bbreak[-\s]?even\b", re.I)
+_DEPRECIATION_RE = re.compile(r"\bdepreciat\w*\b", re.I)
+_EFFECTIVE_RATE_RE = re.compile(
+    r"\beffective\s+(?:annual\s+)?(?:rate|yield|interest)\b|\bapy\b"
+    r"|\bannual\s+percentage\s+yield\b|\beffective\s+annual\b",
+    re.I,
+)
+_DOUBLING_RE = re.compile(r"\brule\s+of\s+(?:70|72|seventy)\b|\bdoubl(?:e|es|ing)\b", re.I)
+
+# Magnitude shorthand: "$1M" -> 1000000, "5k" -> 5000, "2.3 billion" -> ...
+_MAGNITUDE = {
+    "k": 3, "m": 6, "b": 9, "t": 12,
+    "thousand": 3, "million": 6, "billion": 9, "trillion": 12,
+}
+_MAGNITUDE_LETTER_RE = re.compile(rf"({_NUMBER})(k|m|b|t)\b(?![A-Za-z])", re.I)
+_MAGNITUDE_WORD_RE = re.compile(rf"({_NUMBER})\s+(thousand|million|billion|trillion)\b", re.I)
+
+
+def _expand_magnitudes(query: str) -> str:
+    """Rewrite magnitude shorthand into full numbers before parsing, so a value
+    like "$1.5M" is read as 1,500,000 rather than 1.5."""
+    def expand(match: re.Match[str]) -> str:
+        scaled = to_decimal(match.group(1).replace(",", "")) * (Decimal(10) ** _MAGNITUDE[match.group(2).lower()])
+        return _plain_number(scaled)
+
+    query = _MAGNITUDE_LETTER_RE.sub(expand, query)
+    return _MAGNITUDE_WORD_RE.sub(expand, query)
+
+
 def _error_result(category: str, operation: str, expression: str, message: str) -> CalculationResult:
     return CalculationResult(category, operation, expression, None, f"I could not calculate that: {message}")
 
@@ -694,6 +800,7 @@ class MathQueryRouter:
         query = " ".join((user_query or "").strip().split())
         if not query or _DOCUMENT_CONTEXT_RE.search(query):
             return None
+        query = _expand_magnitudes(query)
 
         previous_value, previous_currency = _prior_context(prior_turn)
         currency = _currency_symbol(query) or previous_currency
@@ -761,6 +868,7 @@ class MathQueryRouter:
         for parser in (
             self._try_probability,
             lambda text: self._try_statistics(text, currency),
+            lambda text: self._try_business(text, currency),
             lambda text: self._try_amortization(text, currency),
             lambda text: self._try_compound_interest(text, currency),
             lambda text: self._try_percentage(text, previous_value, currency),
@@ -945,6 +1053,238 @@ class MathQueryRouter:
             f"{_plain_number(count)} payments."
         )
         return CalculationResult("finance", "loan payment", expression, payment, response_text, currency)
+
+    def _try_business(self, query: str, currency: str | None = None) -> CalculationResult | None:
+        for parser in (
+            self._business_markup,
+            self._business_simple_interest,
+            self._business_present_value,
+            self._business_roi,
+            self._business_cagr,
+            self._business_tax_tip,
+            self._business_discount,
+            self._business_break_even,
+            self._business_depreciation,
+            self._business_effective_rate,
+            self._business_doubling_time,
+        ):
+            result = parser(query, currency)
+            if result is not None:
+                return result
+        return None
+
+    def _business_markup(self, query: str, currency: str | None) -> CalculationResult | None:
+        if not _MARKUP_RE.search(query):
+            return None
+        is_margin = bool(re.search(r"\bmargin\b", query, re.I))
+        label = "margin" if is_margin else "markup"
+        rate = _rate_value(query)
+        cost = _labeled_amount(query, r"cost|costs|bought|buy|purchased?")
+        price = _labeled_amount(query, r"price|sell|sells|sold|selling|retail")
+        if rate is not None:
+            base = cost if cost is not None else _amount_excluding(query, rate)
+            if base is None:
+                return None
+            operation = (
+                BusinessOperations.price_from_margin if is_margin else BusinessOperations.price_from_markup
+            )
+            value = operation(base, rate)
+            expression = f"The price at {_plain_number(rate)} percent {label} on {_money(base, currency)}"
+            return _value_result("business", f"price from {label}", expression, value, currency=currency)
+        if cost is not None and price is not None:
+            operation = (
+                BusinessOperations.margin_percent if is_margin else BusinessOperations.markup_percent
+            )
+            value = operation(cost, price)
+            expression = f"The {label} on cost {_money(cost, currency)} at price {_money(price, currency)}"
+            return _percentage_rate_result(expression, value, operation=label)
+        return None
+
+    def _business_simple_interest(self, query: str, currency: str | None) -> CalculationResult | None:
+        if not _SIMPLE_INTEREST_RE.search(query):
+            return None
+        inputs = _financial_inputs(query, default_periods=1, default_label="annually")
+        if inputs is None:
+            return None
+        interest = BusinessOperations.simple_interest(inputs.principal, inputs.rate, inputs.years)
+        total = inputs.principal + interest
+        expression = (
+            f"The simple interest on {_money_amount(inputs.principal, currency)} at "
+            f"{_plain_number(inputs.rate)} percent for {inputs.duration_label}"
+        )
+        response = (
+            f"{expression} is {_money_amount(interest, currency)}, "
+            f"for a total of {_money_amount(total, currency)}."
+        )
+        return CalculationResult("finance", "simple interest", expression, interest, response, currency)
+
+    def _business_present_value(self, query: str, currency: str | None) -> CalculationResult | None:
+        if not _PRESENT_VALUE_RE.search(query):
+            return None
+        inputs = _financial_inputs(query, default_periods=1, default_label="annually")
+        if inputs is None:
+            return None
+        value = BusinessOperations.present_value(
+            inputs.principal, inputs.rate, inputs.years, inputs.periods
+        )
+        expression = (
+            f"The present value of {_money_amount(inputs.principal, currency)} in {inputs.duration_label} "
+            f"at {_plain_number(inputs.rate)} percent compounded {inputs.frequency_label}"
+        )
+        return CalculationResult(
+            "finance", "present value", expression, value, f"{expression} is {_money_amount(value, currency)}.", currency
+        )
+
+    def _business_roi(self, query: str, currency: str | None) -> CalculationResult | None:
+        if not _ROI_RE.search(query):
+            return None
+        cost = _labeled_amount(query, r"invested|cost|spent|principal|paid|put\s+in")
+        final = _labeled_amount(
+            query, r"got\s+back|get\s+back|returned|grew\s+to|now\s+worth|worth|sold\s+for|received|ended\s+with"
+        )
+        gain = _labeled_amount(query, r"profit|gain|gained|earned|made")
+        if gain is not None:
+            basis = cost if cost is not None else _amount_excluding(query, gain)
+            if basis is None:
+                return None
+            value = BusinessOperations.roi_percent(gain, basis)
+            expression = f"The return on investment for a {_money(gain, currency)} gain on {_money(basis, currency)}"
+        elif final is not None and cost is not None:
+            value = BusinessOperations.roi_from_final(final, cost)
+            expression = f"The return on investment from {_money(cost, currency)} to {_money(final, currency)}"
+        else:
+            return None
+        return _percentage_rate_result(expression, value, operation="return on investment")
+
+    def _business_cagr(self, query: str, currency: str | None) -> CalculationResult | None:
+        if not _CAGR_RE.search(query):
+            return None
+        begin = _labeled_amount(query, r"from|begin(?:ning)?|start(?:ing)?|initial")
+        end = _labeled_amount(query, r"to|end(?:ing)?|final|grew\s+to|reach(?:ed|es)?")
+        years = _years_value(query)
+        if begin is None or end is None or years is None:
+            return None
+        value = BusinessOperations.cagr_percent(begin, end, years)
+        expression = (
+            f"The compound annual growth rate from {_money(begin, currency)} to "
+            f"{_money(end, currency)} over {_plain_number(years)} years"
+        )
+        return _percentage_rate_result(expression, value, operation="compound annual growth rate")
+
+    def _business_tax_tip(self, query: str, currency: str | None) -> CalculationResult | None:
+        is_tip = bool(_TIP_RE.search(query))
+        if not (is_tip or _TAX_ADD_RE.search(query)) or _TAX_TIP_EXCLUDE_RE.search(query):
+            return None
+        rate = _rate_value(query)
+        if rate is None:
+            return None
+        base = _amount_excluding(query, rate)
+        if base is None:
+            return None
+        amount, total = BusinessOperations.rate_total(base, rate)
+        kind = "tip" if is_tip else "tax"
+        expression = f"{_plain_number(rate)} percent {kind} on {_money(base, currency)}"
+        response = (
+            f"{expression} is {_money_amount(amount, currency)}, "
+            f"for a total of {_money_amount(total, currency)}."
+        )
+        return CalculationResult("business", f"{kind} total", expression, total, response, currency)
+
+    def _business_discount(self, query: str, currency: str | None) -> CalculationResult | None:
+        if not _DISCOUNT_CTX_RE.search(query):
+            return None
+        rates = _all_rate_values(query)
+        if _ORIGINAL_PRICE_RE.search(query) and len(rates) >= 1:
+            discount = rates[0]
+            sale = _amount_excluding(query, *rates)
+            if sale is None:
+                return None
+            value = BusinessOperations.original_from_sale(sale, discount)
+            expression = (
+                f"The original price before a {_plain_number(discount)} percent discount on a "
+                f"{_money(sale, currency)} sale price"
+            )
+            return _value_result("business", "original price", expression, value, currency=currency)
+        if len(rates) >= 2:
+            base = _amount_excluding(query, *rates)
+            if base is None:
+                return None
+            value = BusinessOperations.chained_discount_price(base, rates)
+            chain = " then ".join(f"{_plain_number(rate)} percent" for rate in rates)
+            expression = f"{_money(base, currency)} after successive discounts of {chain}"
+            return _value_result("business", "chained discount", expression, value, currency=currency)
+        return None
+
+    def _business_break_even(self, query: str, currency: str | None) -> CalculationResult | None:
+        if not _BREAKEVEN_RE.search(query):
+            return None
+        fixed = _labeled_amount(query, r"fixed(?:\s+costs?)?")
+        price = _labeled_amount(query, r"price|sell(?:ing)?\s+price")
+        variable = _labeled_amount(query, r"variable(?:\s+costs?)?|per\s+unit\s+cost")
+        if fixed is None or price is None or variable is None:
+            return None
+        value = BusinessOperations.break_even_units(fixed, price, variable)
+        expression = (
+            f"The break-even quantity at a {_money(price, currency)} price, "
+            f"{_money(variable, currency)} variable cost, and {_money(fixed, currency)} fixed costs"
+        )
+        rendered, approximate = _format_decimal(value)
+        qualifier = "approximately " if approximate else ""
+        return CalculationResult(
+            "business", "break-even", expression, value, f"{expression} is {qualifier}{rendered} units."
+        )
+
+    def _business_depreciation(self, query: str, currency: str | None) -> CalculationResult | None:
+        if not _DEPRECIATION_RE.search(query):
+            return None
+        cost = _labeled_amount(query, r"cost|asset|equipment|machine|machinery|item|purchased?|vehicle")
+        salvage = _labeled_amount(query, r"salvage|residual|scrap")
+        life = _years_value(query)
+        if cost is None or salvage is None or life is None:
+            return None
+        value = BusinessOperations.straight_line_depreciation(cost, salvage, life)
+        expression = (
+            f"The annual straight-line depreciation of a {_money(cost, currency)} asset with a "
+            f"{_money(salvage, currency)} salvage value over {_plain_number(life)} years"
+        )
+        return CalculationResult(
+            "business", "depreciation", expression, value, f"{expression} is {_money_amount(value, currency)} per year.", currency
+        )
+
+    def _business_effective_rate(self, query: str, currency: str | None) -> CalculationResult | None:
+        if not _EFFECTIVE_RATE_RE.search(query):
+            return None
+        rate = _rate_value(query)
+        if rate is None:
+            return None
+        periods, frequency_label = 1, "annually"
+        for pattern, candidate, name in _COMPOUND_FREQUENCIES:
+            if pattern.search(query):
+                periods, frequency_label = candidate, name
+                break
+        value = BusinessOperations.effective_annual_rate(rate, periods)
+        expression = f"The effective annual rate for {_plain_number(rate)} percent compounded {frequency_label}"
+        return _percentage_rate_result(expression, value, operation="effective annual rate")
+
+    def _business_doubling_time(self, query: str, currency: str | None) -> CalculationResult | None:
+        if not _DOUBLING_RE.search(query):
+            return None
+        growth = _rate_value(query)
+        if growth is None:
+            return None
+        rule = 72
+        ruled = re.search(r"\brule\s+of\s+(70|72)\b", query, re.I)
+        if ruled is not None:
+            rule = int(ruled.group(1))
+        elif re.search(r"\brule\s+of\s+seventy\b", query, re.I):
+            rule = 70
+        value = BusinessOperations.doubling_time(growth, rule)
+        expression = f"The time to double at {_plain_number(growth)} percent growth (rule of {rule})"
+        rendered, approximate = _format_decimal(value)
+        qualifier = "approximately " if approximate else ""
+        return CalculationResult(
+            "finance", "doubling time", expression, value, f"{expression} is {qualifier}{rendered} years."
+        )
 
     def _try_ratio(self, query: str, currency: str | None = None) -> CalculationResult | None:
         proportion = self._ratio_proportion(query, currency)

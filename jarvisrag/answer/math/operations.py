@@ -311,3 +311,170 @@ class RatioOperations:
         if divisor == 0:
             raise MathOperationError("The ratio terms must not sum to zero.")
         return [ArithmeticOperations.divide(amount * weight, divisor) for weight in weights]
+
+
+class BusinessOperations:
+    """Everyday business, pricing, and interest-theory calculations."""
+
+    # --- Pricing: markup and margin ---
+    @staticmethod
+    def markup_percent(cost: Number, price: Number) -> Decimal:
+        cost_value = to_decimal(cost)
+        if cost_value == 0:
+            raise MathOperationError("Cost must not be zero.")
+        return ArithmeticOperations.percentage_rate(to_decimal(price) - cost_value, cost_value)
+
+    @staticmethod
+    def margin_percent(cost: Number, price: Number) -> Decimal:
+        price_value = to_decimal(price)
+        if price_value == 0:
+            raise MathOperationError("Price must not be zero.")
+        return ArithmeticOperations.percentage_rate(price_value - to_decimal(cost), price_value)
+
+    @staticmethod
+    def price_from_markup(cost: Number, markup_percent: Number) -> Decimal:
+        return ArithmeticOperations.apply_percentage(cost, markup_percent, increase=True)
+
+    @staticmethod
+    def price_from_margin(cost: Number, margin_percent: Number) -> Decimal:
+        margin = to_decimal(margin_percent)
+        if margin >= 100:
+            raise MathOperationError("Margin must be less than 100 percent.")
+        return ArithmeticOperations.divide(to_decimal(cost), Decimal(1) - margin / 100)
+
+    # --- Simple interest ---
+    @staticmethod
+    def simple_interest(principal: Number, annual_rate_percent: Number, years: Number) -> Decimal:
+        return ArithmeticOperations.multiply(
+            [to_decimal(principal), to_decimal(annual_rate_percent) / 100, to_decimal(years)]
+        )
+
+    @classmethod
+    def simple_interest_amount(
+        cls, principal: Number, annual_rate_percent: Number, years: Number
+    ) -> Decimal:
+        return to_decimal(principal) + cls.simple_interest(principal, annual_rate_percent, years)
+
+    # --- Present value (time value of money) ---
+    @staticmethod
+    def present_value(
+        future_value: Number,
+        annual_rate_percent: Number,
+        years: Number,
+        periods_per_year: Number = 1,
+    ) -> Decimal:
+        amount = to_decimal(future_value)
+        rate = to_decimal(annual_rate_percent)
+        term_years = to_decimal(years)
+        periods = to_decimal(periods_per_year)
+        if periods <= 0:
+            raise MathOperationError("Compounding periods per year must be greater than zero.")
+        with localcontext() as context:
+            context.prec = 34
+            growth = Decimal(1) + (rate / 100) / periods
+            if growth <= 0:
+                raise MathOperationError("The interest rate makes the growth factor non-positive.")
+            return amount / (growth ** (periods * term_years))
+
+    # --- Return on investment ---
+    @staticmethod
+    def roi_percent(net_gain: Number, cost: Number) -> Decimal:
+        cost_value = to_decimal(cost)
+        if cost_value == 0:
+            raise MathOperationError("The cost basis must not be zero.")
+        return ArithmeticOperations.percentage_rate(to_decimal(net_gain), cost_value)
+
+    @classmethod
+    def roi_from_final(cls, final_value: Number, cost: Number) -> Decimal:
+        return cls.roi_percent(to_decimal(final_value) - to_decimal(cost), cost)
+
+    # --- Compound annual growth rate ---
+    @staticmethod
+    def cagr_percent(begin: Number, end: Number, years: Number) -> Decimal:
+        start = to_decimal(begin)
+        finish = to_decimal(end)
+        term_years = to_decimal(years)
+        if start <= 0:
+            raise MathOperationError("The beginning value must be greater than zero.")
+        if finish <= 0:
+            raise MathOperationError("The ending value must be greater than zero.")
+        if term_years <= 0:
+            raise MathOperationError("The number of years must be greater than zero.")
+        with localcontext() as context:
+            context.prec = 34
+            growth = (finish / start) ** (Decimal(1) / term_years)
+            return (growth - Decimal(1)) * 100
+
+    # --- Sales tax / tip ---
+    @staticmethod
+    def rate_total(base: Number, rate_percent: Number) -> tuple[Decimal, Decimal]:
+        """Return (amount added, total) for a tax/tip rate applied to ``base``."""
+        base_value = to_decimal(base)
+        amount = ArithmeticOperations.percentage_of(rate_percent, base_value)
+        return amount, base_value + amount
+
+    # --- Discounts ---
+    @staticmethod
+    def sale_price(original: Number, discount_percent: Number) -> Decimal:
+        return ArithmeticOperations.apply_percentage(original, discount_percent, increase=False)
+
+    @staticmethod
+    def original_from_sale(sale: Number, discount_percent: Number) -> Decimal:
+        discount = to_decimal(discount_percent)
+        if discount >= 100:
+            raise MathOperationError("The discount must be less than 100 percent.")
+        return ArithmeticOperations.divide(to_decimal(sale), Decimal(1) - discount / 100)
+
+    @classmethod
+    def chained_discount_price(cls, base: Number, discounts: Iterable[Number]) -> Decimal:
+        price = to_decimal(base)
+        rates = [to_decimal(discount) for discount in discounts]
+        if not rates:
+            raise MathOperationError("At least one discount is required.")
+        for discount in rates:
+            price = cls.sale_price(price, discount)
+        return price
+
+    # --- Break-even ---
+    @staticmethod
+    def break_even_units(
+        fixed_costs: Number, price_per_unit: Number, variable_cost_per_unit: Number
+    ) -> Decimal:
+        price = to_decimal(price_per_unit)
+        variable = to_decimal(variable_cost_per_unit)
+        if price <= variable:
+            raise MathOperationError("Price per unit must exceed variable cost per unit.")
+        return ArithmeticOperations.divide(to_decimal(fixed_costs), price - variable)
+
+    # --- Straight-line depreciation ---
+    @staticmethod
+    def straight_line_depreciation(
+        cost: Number, salvage: Number, useful_life_years: Number
+    ) -> Decimal:
+        life = to_decimal(useful_life_years)
+        if life <= 0:
+            raise MathOperationError("The useful life must be greater than zero.")
+        depreciable = to_decimal(cost) - to_decimal(salvage)
+        if depreciable < 0:
+            raise MathOperationError("The salvage value must not exceed the cost.")
+        return ArithmeticOperations.divide(depreciable, life)
+
+    # --- Effective annual rate ---
+    @staticmethod
+    def effective_annual_rate(nominal_percent: Number, periods_per_year: Number) -> Decimal:
+        periods = to_decimal(periods_per_year)
+        if periods <= 0:
+            raise MathOperationError("Compounding periods per year must be greater than zero.")
+        with localcontext() as context:
+            context.prec = 34
+            growth = (Decimal(1) + (to_decimal(nominal_percent) / 100) / periods) ** periods
+            return (growth - Decimal(1)) * 100
+
+    # --- Doubling time (rule of 70 / 72) ---
+    @staticmethod
+    def doubling_time(growth_percent: Number, rule: Number = 72) -> Decimal:
+        rate = to_decimal(growth_percent)
+        if rate <= 0:
+            raise MathOperationError("The growth rate must be greater than zero.")
+        return ArithmeticOperations.divide(to_decimal(rule), rate)
+

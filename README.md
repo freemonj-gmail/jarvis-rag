@@ -105,31 +105,27 @@ costs no retrieval or generation time. Anything that is not self-contained math
 falls through to the normal RAG pipeline unchanged — not every RAG assistant
 does this, so it is worth knowing the lane exists.
 
-What it handles:
+What it handles, by category:
 
 - **Arithmetic** — add, subtract, multiply, divide, and multi-step expressions,
-  written with symbols (`+ - * / %`) or words (`plus`, `minus`, `times`,
-  `divided by`, `product of`, `difference between`, ...).
-- **Percentages** — four distinct operations, chosen by intent rather than
-  sentence shape: a percentage *of* a value, an unknown *rate* (`30 is what
-  percent of 80?`), a percentage *change* between two numbers (`80 to 100` = 25%
-  increase), and applying a rate *to* a base (`increase 120,000 by 5%`,
-  `20% off of 50`).
-- **Statistics** — mean, median, mode, and both **sample** and **population**
-  variance / standard deviation (the answer states which estimator ran).
+  in symbols (`+ - * / %`) or words (`plus`, `times`, `product of`, ...).
+- **Percentages** — percent *of* a value, an unknown *rate* (`30 is what percent
+  of 80?`), percent *change* between two numbers, and applying a rate *to* a base
+  (increase / decrease / discount).
+- **Statistics** — mean, median, mode, and both sample and population variance /
+  standard deviation (the answer states which estimator ran).
 - **Probability** — finite equally-likely experiments (an N-sided die, a coin),
-  single outcomes (`1/N`), conditioned events (even/odd, greater/less than, at
-  least/at most), and exact binomial probabilities.
-- **Finance** — compound interest / future value (`$10,000 at 5% for 3 years
-  compounded monthly`) with any compounding cadence (annually, semiannually,
-  quarterly, monthly, weekly, daily, or *N times per year*), and fixed-rate loan
-  amortization (`the monthly payment on a $200,000 loan at 6% for 30 years`),
-  which also reports the total interest over the life of the loan.
-- **Ratios** — simplify a ratio to lowest terms (`simplify the ratio 8 to 12` →
-  `2 to 3`), solve a proportion for its unknown (`3:4 = 9:x` → `12`, in colon or
-  `is to ... as` form, the unknown in any position), and divide a quantity by a
-  ratio (`divide 100 in the ratio 2:3` → `40 and 60`). Money terms are supported
-  (`share $250 in the ratio 2:3`).
+  conditioned events (even/odd, greater/less than, at least/at most), and exact
+  binomial probabilities.
+- **Ratios & proportions** — simplify to lowest terms, solve a proportion for its
+  unknown (colon or `is to ... as` form, unknown in any position), and divide a
+  quantity by a ratio.
+- **Finance & business** — three families: **interest and time value** (simple
+  and compound interest, future and present value, fixed-rate loan amortization,
+  effective annual rate, rule-of-70/72 doubling time); **growth and return** (ROI,
+  CAGR); and **pricing** (markup and margin, sales-tax / tip totals, discounts and
+  original-price recovery, break-even quantity, straight-line depreciation). Each
+  states the rate, term, or unit it used, so the result is self-explanatory.
 
 Conversational and format-aware:
 
@@ -139,9 +135,9 @@ Conversational and format-aware:
   misspelled operator gets a `Did you mean ...?` suggestion when the correction
   actually computes.
 - **Currency-aware.** A value written as money (`$50,000`, `500 dollars`) is
-  answered as money and spoken as dollars and cents, with magnitude scales read
-  naturally (`$4 million` → "4 million dollars"); the currency carries across
-  follow-up turns. Plain numbers stay plain.
+  answered as money and spoken as dollars and cents; magnitude shorthand is
+  understood (`$1.5M`, `5k`) and scales read naturally (`$4 million`). The currency
+  carries across follow-up turns; plain numbers stay plain.
 
 The lane is deliberately **domain-agnostic and conservative**: any question that
 mentions a document, report, or file is left to retrieval, so the calculator can

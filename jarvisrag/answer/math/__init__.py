@@ -2,6 +2,7 @@
 
 from .operations import (
     ArithmeticOperations,
+    BusinessOperations,
     MathOperationError,
     ProbabilityOperations,
     RatioOperations,
@@ -18,6 +19,7 @@ from .router import (
 
 __all__ = [
     "ArithmeticOperations",
+    "BusinessOperations",
     "CalculationResult",
     "FinancialOperations",
     "MathOperationError",
