@@ -43,6 +43,11 @@ _READY_TIMEOUT_SECONDS = 420.0
 # can stretch that several-fold before it settles into its steady rate.
 _CHUNK_TIMEOUT_SECONDS = 420.0
 
+# Once the OS kills the worker (SIGKILL, typically an out-of-memory reap) or it
+# fails to restart this many times, respawning a multi-gigabyte process into the
+# same pressure only thrashes, so Chatterbox is retired for the session.
+_MAX_WORKER_RESTARTS = 2
+
 # Digit runs not touching a letter, hyphen or slash, so identifiers like
 # "MD-102770", versions like "v1.10.0" and dates like "02/13/2034" are left as
 # written rather than half-converted into a mix of words and separators.
@@ -229,6 +234,10 @@ class ChatterboxTTSClient:
         # can be ready before then anyway.
         self._ready = threading.Event()
         self._start_failed = False
+        # Set when respawning the worker would only thrash a pressured machine;
+        # from then on answers are spoken by Kokoro instead of retried.
+        self._disabled_for_session = False
+        self._restart_attempts = 0
         threading.Thread(target=self._start, daemon=True).start()
 
     # -- worker lifecycle ---------------------------------------------------
@@ -351,11 +360,40 @@ class ChatterboxTTSClient:
             pass
         return f"{state}{tail} (full log: {_WORKER_LOG})"
 
+    def _worker_killed_by_os(self) -> bool:
+        """True when the worker exited via a signal (e.g. an out-of-memory SIGKILL)."""
+        code = self._process.poll() if self._process is not None else None
+        return code is not None and code < 0
+
+    def _disable_for_session(self, reason: str):
+        """Retire Chatterbox for the rest of the session and fall back to Kokoro."""
+        if self._disabled_for_session:
+            return
+        self._disabled_for_session = True
+        _notice(f"[tts] Chatterbox {reason}; staying on Kokoro for the rest of this session.")
+        logger.error(f"Chatterbox disabled for the session: {reason}.")
+
     def _restart_worker(self) -> bool:
-        """Bring the worker back after a death so the next answer is not degraded."""
+        """Bring the worker back after a death, unless respawning would thrash.
+
+        A worker the OS killed (SIGKILL, usually an out-of-memory reap) would
+        only be killed again if respawned into the same pressure, and repeated
+        restart failures mean the same. In either case Chatterbox is retired for
+        the session so answers stay audible via Kokoro rather than degrading and
+        reloading a multi-gigabyte process every turn.
+        """
+        if self._disabled_for_session:
+            return False
         try:
             if self._process is not None and self._process.poll() is None:
                 return True
+            if self._worker_killed_by_os():
+                self._disable_for_session("worker was killed by the OS (out of memory is the usual cause)")
+                return False
+            if self._restart_attempts >= _MAX_WORKER_RESTARTS:
+                self._disable_for_session("worker kept failing to restart")
+                return False
+            self._restart_attempts += 1
             self._events = queue.Queue()
             self._ready = threading.Event()
             self._start_failed = False
@@ -375,7 +413,11 @@ class ChatterboxTTSClient:
 
     def _speak_async(self, text):
         self._ready.wait(_READY_TIMEOUT_SECONDS)
-        if self._start_failed or not self._worker_alive():
+        if self._disabled_for_session or self._start_failed or not self._worker_alive():
+            # A worker reaped by the OS while idle means the machine is out of
+            # memory; retire it now rather than letting the next turn respawn it.
+            if not self._disabled_for_session and self._worker_killed_by_os():
+                self._disable_for_session("worker was killed by the OS (out of memory is the usual cause)")
             self._speak_with_fallback(text)
             return
         try:
@@ -384,7 +426,8 @@ class ChatterboxTTSClient:
         except Exception as error:
             self._speak_with_fallback(text)
             _notice(f"[tts] Chatterbox synthesis failed ({error}); used Kokoro for this answer.")
-            # Reinstate the worker so only this answer is degraded.
+            # Reinstate the worker so only this answer is degraded, unless doing
+            # so would thrash a pressured machine (handled in _restart_worker).
             if not self._worker_alive():
                 self._restart_worker()
 

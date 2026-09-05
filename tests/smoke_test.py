@@ -403,6 +403,41 @@ def run_tests():
     )
     print("- TTS money-scale wording OK")
 
+    # A worker the OS kills (SIGKILL, an out-of-memory reap) must not be
+    # respawned into the same pressure; Chatterbox retires for the session so
+    # Kokoro speaks instead of the machine thrashing. Dormant when no kill
+    # happens, so a machine with headroom is unaffected.
+    from jarvisrag.speech.chatterbox import ChatterboxTTSClient, _MAX_WORKER_RESTARTS
+
+    class _FakeProc:
+        def __init__(self, code):
+            self._code = code
+
+        def poll(self):
+            return self._code
+
+    killed = ChatterboxTTSClient.__new__(ChatterboxTTSClient)
+    killed._disabled_for_session = False
+    killed._restart_attempts = 0
+    killed._process = _FakeProc(-9)  # SIGKILL / out-of-memory reap
+    assert killed._restart_worker() is False
+    assert killed._disabled_for_session is True
+
+    alive = ChatterboxTTSClient.__new__(ChatterboxTTSClient)
+    alive._disabled_for_session = False
+    alive._restart_attempts = 0
+    alive._process = _FakeProc(None)  # still running
+    assert alive._restart_worker() is True
+    assert alive._disabled_for_session is False
+
+    flaky = ChatterboxTTSClient.__new__(ChatterboxTTSClient)
+    flaky._disabled_for_session = False
+    flaky._restart_attempts = _MAX_WORKER_RESTARTS  # restart budget exhausted
+    flaky._process = _FakeProc(1)
+    assert flaky._restart_worker() is False
+    assert flaky._disabled_for_session is True
+    print("- Chatterbox OOM-aware fallback OK")
+
     # create_milvus_vector_store default values
     store = create_milvus_vector_store()
     assert hasattr(store, "host") and hasattr(store, "port")
