@@ -558,6 +558,56 @@ against the on-disk copy by SHA-256, and **rewrites only when the content change
 state sidecar tracks those validators. Because a rewrite happens only on real
 change, the domain index's delta-sync then re-embeds just the documents that moved.
 
+### Local mail refresh and benchmarking
+
+Sets with `type: "mail"` use the same `make docs-refresh` command to copy local
+Apple Mail `.emlx` files into the configured corpus. Refresh does not build the
+index. Only the copy operation needs access to the live Mail directory; it does
+not open Mail's database or write back to Mail.
+
+Run refresh before indexing, not concurrently. Startup automatically builds or
+resumes the mail domain index from the staged corpus. Unchanged messages reuse
+caches; incomplete refreshes and indexing failures must be resolved before using
+the affected mail index. Legacy refresh state can require a one-time copy-and-hash
+verification, and older interrupted builds without checkpoints cannot reuse their
+uncheckpointed embeddings.
+
+Checkpointed mail indexing requires `JARVIS_CONTEXT_MODE=chunk` and a persistent
+`milvus` or `local` backend. Keep `owned_index.sqlite3` beside the domain index to
+resume interrupted work. This private checkpoint contains message text and
+embeddings; allow disk space for it and for old and replacement vectors during
+updates. Milvus capacity is governed by available resources and server configuration,
+not an application vector-count quota.
+
+Run the service-free email checks with `make mail-test`, also included in `make test`.
+They live in `tests/test_email.py` and use synthetic data. For live storage validation,
+start local Milvus on `127.0.0.1:19530` and run the following through `uv`. It creates
+and removes a uniquely named disposable collection, never the production collections:
+
+```bash
+uv run --offline python -c 'import runpy; runpy.run_path("tests/test_email.py")["verify_live_milvus"]()'
+```
+
+The standalone benchmark reads a bounded sample from the completed local copy
+and its extraction cache, retaining the current chunking, metadata, model, and
+float32 precision. It does not refresh mail, load the answer runtime, or write to
+Milvus. Model files must already be cached:
+
+```bash
+uv run --offline python scripts/bench_mail_embedding.py --sample 128 --repeat 2 --candidate-batch-sizes 8
+```
+
+Output contains aggregate timings, vector comparisons, and memory measurements,
+not message text or identifiers. Projections cover embedding only, not a complete
+build. Near-identical vectors are not proof of unchanged answer accuracy; batch
+experiments do not change production defaults. A full mail build and end-to-end
+accuracy validation remain pending. The checkpoint path has synthetic and live
+storage verification, not a measured full-mailbox completion time or answer-quality
+approval. The two-hour first-build target has not been demonstrated. MIME/thread
+context handling and mail-only/no-egress answer routing remain unresolved; separate
+vector collections alone do not enforce those boundaries. Do not treat the benchmark
+or storage tests as full-feature readiness approval.
+
 ## Layout
 
 ```

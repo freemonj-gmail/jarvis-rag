@@ -1,5 +1,5 @@
 {
-  "_comment": "Recipe for volatile remote document corpora synced by `make docs-refresh` (jarvisrag.docsync). The document LIST (names + URLs) is committed here; the downloaded files and per-file fetch state (.docsync_state.json) stay LOCAL/gitignored under each set's corpus_dir. A refresh rewrites a file only when its content actually changed (sha256), so the index manifest + delta-sync re-embed just the changed chunks into Milvus. Production promotion (indexing corpus_dir into jarvis_context) is a separate, gated step.",
+  "_comment": "Recipe for volatile remote document corpora synced by `make docs-refresh` (jarvisrag.docsync). The document LIST (names + URLs) is committed here; the downloaded files and per-file fetch state (.docsync_state.json) stay LOCAL/gitignored under each set's corpus_dir. A refresh rewrites a file only when its content actually changed (sha256), so the index manifest + delta-sync re-embed just the changed chunks into Milvus. Production promotion (indexing corpus_dir into jarvis_context) is a separate, gated step. A set with \"type\": \"mail\" instead syncs a LOCAL Apple Mail store (.emlx message files) into corpus_dir via refresh_mail_set (copy-first, delta-only, never locks Mail); it needs Full Disk Access and no committed document list.",
   "sets": [
     {
       "name": "fedbenefits",
@@ -18,6 +18,15 @@
         { "name": "SSA_05-10084_Survivors_Benefits.pdf", "url": "https://www.ssa.gov/pubs/EN-05-10084.pdf" },
         { "name": "SSA_05-10024_Understanding_The_Benefits.pdf", "url": "https://www.ssa.gov/pubs/EN-05-10024.pdf" }
       ]
+    },
+    {
+      "name": "mail",
+      "type": "mail",
+      "_note": "Local Apple Mail corpus with its own collection jarvis_domain_mail. Domain retrieval is selected by match_any and conversation routing; separate storage does not yet enforce mail-only answers or block MCP dispatch. refresh_mail_set copies changed individual .emlx files before parsing, never opens Mail's Envelope Index, preserves identical staged bytes and timestamps, and aborts incomplete scans without pruning. De-duplication is always on by RFC Message-ID, with path identity when absent. Full Disk Access is required only for refresh. Legacy whole-second sync state requires one-time copy-and-hash verification. The domain self-activates once corpus_dir exists; full-build retention, routing, and answer accuracy still require validation.",
+      "corpus_dir": "jarvis_storage/mail_corpus",
+      "mail_root": "~/Library/Mail",
+      "label": "Apple Mail (local, on-device)",
+      "match_any": ["email", "e-mail", "inbox", "mailbox"]
     }
   ]
 }

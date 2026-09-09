@@ -10,6 +10,10 @@ no longer triggers model loads or indexing as a side effect.
 
 import os
 
+# Let unsupported MPS ops fall back to CPU instead of erroring. torch reads this
+# at import, so it must be set before llama_index pulls torch in below.
+os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+
 from llama_index.core import VectorStoreIndex
 from llama_index.core.schema import Document
 from llama_index.core.settings import Settings
@@ -31,7 +35,7 @@ from jarvisrag.extraction.indexing import (
     group_documents_by_source_windows,
 )
 from jarvisrag.retrieval import build_hybrid_retriever
-from jarvisrag.iotools import _is_port_open
+from jarvisrag.iotools import Spinner, _is_port_open
 from jarvisrag.mcp.connector import load_mcp_registry
 from jarvisrag.docsync import load_document_sources
 from jarvisrag.answer.answer import QueryRuntime
@@ -49,7 +53,7 @@ DEFAULT_RETRIEVAL_TOP_K = "32"
 
 DOCUMENT_EXTENSIONS = [
     ".pdf", ".docx", ".doc", ".xlsx", ".xls", ".ppt", ".pptx", ".txt", ".csv", ".rtf",
-    ".html", ".htm", ".mhtml", ".mht",
+    ".html", ".htm", ".mhtml", ".mht", ".emlx",
 ]
 IMAGE_EXTENSIONS = [".jpg", ".jpeg", ".png", ".tiff", ".bmp", ".gif"]
 
@@ -82,6 +86,25 @@ def _build_llm() -> Ollama:
     return Ollama(**kwargs)
 
 
+def _auto_embed_device() -> str:
+    """Best available torch device for embeddings (hardware choice).
+
+    Apple Silicon (MPS) and CUDA are used automatically when present, else CPU.
+    ``JARVIS_EMBED_DEVICE`` overrides for a specific deployment."""
+    override = os.environ.get("JARVIS_EMBED_DEVICE", "").strip().lower()
+    if override:
+        return override
+    try:
+        import torch
+        if torch.backends.mps.is_available():
+            return "mps"
+        if torch.cuda.is_available():
+            return "cuda"
+    except Exception:
+        pass
+    return "cpu"
+
+
 def _build_embed_model() -> HuggingFaceEmbedding:
     # Local embedding model — bge-m3: 8192-token context, 1024-dim, multilingual,
     # strong retrieval ranking on heterogeneous content (resumes, contracts, PDFs).
@@ -89,7 +112,9 @@ def _build_embed_model() -> HuggingFaceEmbedding:
     # them degrades retrieval quality.
     # embed_batch_size raised from the default (10) so bulk indexing embeds more
     # chunks per forward pass.
-    return HuggingFaceEmbedding(model_name="BAAI/bge-m3", embed_batch_size=32)
+    device = _auto_embed_device()
+    print(f"[jarvis] Embedding model device: {device}")
+    return HuggingFaceEmbedding(model_name="BAAI/bge-m3", embed_batch_size=32, device=device)
 
 
 def _load_corpus_documents(input_dir: str) -> list:
@@ -98,14 +123,14 @@ def _load_corpus_documents(input_dir: str) -> list:
         print("\nNo documents found in directory")
         return []
 
-    print("\nProcessing documents...")
-    corpus_docs = load_documents_with_cache(
-        input_dir=input_dir,
-        required_exts=DOCUMENT_EXTENSIONS,
-        file_extractor=file_extractor,
-        cache_dir=EXTRACTION_CACHE_DIR,
-        recursive=True,
-    )
+    with Spinner("Processing documents"):
+        corpus_docs = load_documents_with_cache(
+            input_dir=input_dir,
+            required_exts=DOCUMENT_EXTENSIONS,
+            file_extractor=file_extractor,
+            cache_dir=EXTRACTION_CACHE_DIR,
+            recursive=True,
+        )
 
     # Track ALL files in input directory that match extensions (even if they produce no docs)
     all_attempted_files = []
@@ -151,16 +176,16 @@ def _load_image_documents(input_dir: str, llm) -> tuple[list, object | None]:
         print("\nNo image files found in directory")
         return [], None
 
-    print("\nFound images, processing image files...")
     img_chat_engine = None
     try:
-        img_docs = load_documents_with_cache(
-            input_dir=input_dir,
-            required_exts=IMAGE_EXTENSIONS,
-            file_extractor=file_extractor,
-            cache_dir=EXTRACTION_CACHE_DIR,
-            recursive=True,
-        )
+        with Spinner("Processing images"):
+            img_docs = load_documents_with_cache(
+                input_dir=input_dir,
+                required_exts=IMAGE_EXTENSIONS,
+                file_extractor=file_extractor,
+                cache_dir=EXTRACTION_CACHE_DIR,
+                recursive=True,
+            )
         if img_docs and os.environ.get("JARVIS_ENABLE_IMAGE_CHAT_ENGINE", "0") == "1":
             img_index = VectorStoreIndex.from_documents(img_docs)
             img_chat_engine = img_index.as_chat_engine(chat_mode="condense_plus_context", llm=llm)
@@ -180,7 +205,7 @@ def _load_image_documents(input_dir: str, llm) -> tuple[list, object | None]:
         return [], None
 
 
-def _build_index(all_docs: list, embed_model, persist_dir=None, collection_name=None):
+def _build_index(all_docs: list, embed_model, persist_dir=None, collection_name=None, *, owned_corpus_dir=None):
     """Filter/group documents and build or load the persistent vector index.
 
     Returns (doc_index, storage_context, response_mode). `all_docs` is mutated to
@@ -189,7 +214,9 @@ def _build_index(all_docs: list, embed_model, persist_dir=None, collection_name=
     Milvus collection + directory and reload instead of re-embedding."""
     persist_dir = persist_dir or PERSIST_DIR
     raw_doc_count = len(all_docs)
-    all_docs[:] = filter_informative_documents(all_docs)
+    if owned_corpus_dir is None:
+        with Spinner(f"Filtering {raw_doc_count} documents"):
+            all_docs[:] = filter_informative_documents(all_docs)
     filtered_doc_count = raw_doc_count - len(all_docs)
     if filtered_doc_count:
         print(f"Filtered {filtered_doc_count} low-information extracted chunks before indexing.")
@@ -199,6 +226,8 @@ def _build_index(all_docs: list, embed_model, persist_dir=None, collection_name=
     context_mode = os.environ.get("JARVIS_CONTEXT_MODE", "chunk").strip().lower()
     if context_mode not in {"chunk", "source_window"}:
         raise ValueError("JARVIS_CONTEXT_MODE must be 'chunk' or 'source_window'.")
+    if owned_corpus_dir is not None and context_mode != "chunk":
+        raise ValueError("Checkpointed mail indexing currently requires JARVIS_CONTEXT_MODE=chunk.")
     if context_mode == "source_window":
         context_window_words = int(os.environ.get("JARVIS_CONTEXT_WINDOW_WORDS", "2500"))
         extracted_doc_count = len(all_docs)
@@ -211,6 +240,8 @@ def _build_index(all_docs: list, embed_model, persist_dir=None, collection_name=
     vector_backend = os.environ.get("JARVIS_VECTOR_BACKEND", "milvus").strip().lower()
     if vector_backend not in {"milvus", "local", "memory"}:
         raise ValueError("JARVIS_VECTOR_BACKEND must be 'milvus', 'local', or 'memory'.")
+    if owned_corpus_dir is not None and vector_backend == "memory":
+        raise ValueError("Checkpointed mail indexing requires a persistent local or Milvus backend.")
 
     use_milvus = vector_backend == "milvus"
     require_milvus = use_milvus and os.environ.get("JARVIS_REQUIRE_MILVUS", "1") == "1"
@@ -282,6 +313,8 @@ def _build_index(all_docs: list, embed_model, persist_dir=None, collection_name=
                 embed_model=embed_model,
                 sync_existing=sync_existing_index,
                 rebuild=rebuild_index,
+                **({"owned_corpus_dir": owned_corpus_dir, "owned_extensions": (".emlx",)}
+                   if owned_corpus_dir is not None else {}),
             )
             if use_milvus:
                 active_vector_backend = "milvus"
@@ -290,6 +323,8 @@ def _build_index(all_docs: list, embed_model, persist_dir=None, collection_name=
                 active_vector_backend = "local"
                 print("Using local vector store.")
         except Exception as e:
+            if owned_corpus_dir is not None:
+                raise RuntimeError("Mail index verification failed; checkpoints retained for retry.") from e
             if use_milvus and require_milvus:
                 raise RuntimeError(
                     f"Milvus is required and initialization failed: {e}. "
@@ -425,6 +460,22 @@ def _build_domain_retrievers(embed_model, llm) -> list:
     for doc_set in sets:
         if not doc_set.match_any or not os.path.isdir(doc_set.corpus_dir):
             continue
+        # Persist each domain into its OWN collection + directory: isolated
+        # docstore (no BM25 leak, no collision with the main index) that reloads
+        # on later startups instead of re-embedding.
+        safe = "".join(c if c.isalnum() else "_" for c in doc_set.name)
+        domain_persist = os.path.join(PERSIST_DIR, "domains", safe)
+        domain_collection = f"jarvis_domain_{safe}"
+        # A first mail build takes hours, so never start one as a side effect of
+        # launching; once the checkpoint exists later startups reload it warm.
+        if (doc_set.type == "mail"
+                and not os.path.exists(os.path.join(domain_persist, "owned_index.sqlite3"))
+                and os.environ.get("JARVIS_BUILD_MAIL_INDEX", "0") != "1"):
+            print(
+                f"[jarvis] Domain corpus '{doc_set.name}': not indexed yet; skipping so startup stays fast. "
+                "Re-launch once with JARVIS_BUILD_MAIL_INDEX=1 to build it (long first run, resumable)."
+            )
+            continue
         try:
             docs = _load_corpus_documents(doc_set.corpus_dir)
         except Exception as exc:
@@ -432,16 +483,11 @@ def _build_domain_retrievers(embed_model, llm) -> list:
             continue
         if not docs:
             continue
-        # Persist each domain into its OWN collection + directory: isolated
-        # docstore (no BM25 leak, no collision with the main index) that reloads
-        # on later startups instead of re-embedding.
-        safe = "".join(c if c.isalnum() else "_" for c in doc_set.name)
-        domain_persist = os.path.join(PERSIST_DIR, "domains", safe)
-        domain_collection = f"jarvis_domain_{safe}"
         domain_index = None
         try:
             domain_index, _sc, _rm, _bk = _build_index(
                 docs, embed_model, persist_dir=domain_persist, collection_name=domain_collection,
+                **({"owned_corpus_dir": doc_set.corpus_dir} if doc_set.type == "mail" else {}),
             )
         except Exception as exc:
             print(f"[jarvis] Domain corpus '{doc_set.name}': index build failed ({exc}); skipping.")
@@ -463,8 +509,10 @@ def _build_domain_retrievers(embed_model, llm) -> list:
 
 def build_runtime(input_dir: str) -> QueryRuntime:
     """Perform all one-time startup work and return a ready `QueryRuntime`."""
-    llm = _build_llm()
-    embed_model = _build_embed_model()
+    with Spinner("Loading language model") as spin:
+        llm = _build_llm()
+        spin.update("Loading embedding model")
+        embed_model = _build_embed_model()
 
     if not os.environ.get("HF_TOKEN"):
         print(

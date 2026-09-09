@@ -1,8 +1,11 @@
 # Minimal test helper commands
 
-.PHONY: test interrupt-test math-test retrieval-eval-test answer-eval-test smoke-test smoke-test-e2e retrieval-eval answer-eval mcp-login docs-refresh
+.PHONY: test interrupt-test math-test retrieval-eval-test answer-eval-test smoke-test smoke-test-e2e retrieval-eval answer-eval mcp-login docs-refresh mail-test
 
-test: interrupt-test math-test retrieval-eval-test answer-eval-test smoke-test
+test: interrupt-test math-test retrieval-eval-test answer-eval-test smoke-test mail-test
+
+mail-test:
+	uv run python tests/test_email.py
 
 interrupt-test:
 	uv run python tests/test_interrupt.py

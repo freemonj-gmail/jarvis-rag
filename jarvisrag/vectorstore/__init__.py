@@ -74,7 +74,6 @@ class MilvusVectorStore(BasePydanticVectorStore):
     host: str = "127.0.0.1"
     port: str = "19530"
     dim: Optional[int] = None
-    max_vectors: int = 5000  # Community Edition limit
     _collection: Optional[Any] = PrivateAttr(default=None)
     _client: Optional[MilvusClient] = PrivateAttr(default=None)
 
@@ -355,74 +354,24 @@ class MilvusVectorStore(BasePydanticVectorStore):
             return None
         return ref_doc_ids
 
-    def _make_room_for_new_vectors(self, num_new_vectors: int) -> None:
-        """Delete oldest vectors if adding new_vectors would exceed max_vectors."""
-        current_size = self._get_collection_size()
-        if current_size + num_new_vectors <= self.max_vectors:
-            return
-
-        num_to_delete = (current_size + num_new_vectors) - self.max_vectors + 10  # Delete 10 extra for headroom
-        logger.info(f"Collection at {current_size}/{self.max_vectors} vectors. Deleting {num_to_delete} oldest entries to make room.")
-
+    def indexed_node_ids(self) -> Set[str]:
+        """Enumerate actual children; a failed read must not look like an empty store."""
+        self._connect()
+        if self._client is None:
+            raise RuntimeError("Milvus client is unavailable.")
+        if not self._client.has_collection(self.collection_name):
+            return set()
+        iterator = self._client.query_iterator(
+            collection_name=self.collection_name, filter='node_id != ""',
+            output_fields=["node_id"], batch_size=1000, consistency_level="Strong",
+        )
+        identities: Set[str] = set()
         try:
-            # Use client.query to retrieve node ids and metadata
-            all_rows = []
-            if self._client is not None and self._client.has_collection(self.collection_name):
-                try:
-                    all_rows = self._client.query(
-                        self.collection_name,
-                        filter='node_id != ""',
-                        output_fields=["node_id", "metadata_json"],
-                        limit=max(current_size, num_to_delete * 4, 1000),
-                    )
-                except Exception as e:
-                    logger.warning(f"Failed to enumerate vectors for eviction: {e}")
-                    all_rows = []
-
-            if all_rows:
-                entries_with_timestamps = []
-                for row in all_rows:
-                    node_id = row.get("node_id")
-                    metadata_json_str = row.get("metadata_json", "{}")
-                    try:
-                        metadata = json.loads(metadata_json_str) if isinstance(metadata_json_str, str) else {}
-                    except Exception:
-                        metadata = {}
-
-                    timestamp_str = metadata.get("insertion_timestamp", "1970-01-01T00:00:00Z")
-                    try:
-                        timestamp = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
-                    except Exception:
-                        timestamp = datetime(1970, 1, 1)
-
-                    entries_with_timestamps.append((node_id, timestamp))
-
-                entries_with_timestamps.sort(key=lambda x: x[1])
-                oldest_node_ids = [node_id for node_id, _ in entries_with_timestamps[:num_to_delete]]
-
-                if oldest_node_ids:
-                    quoted_ids = ", ".join([f'"{nid.replace("\"", "\\\"")}"' for nid in oldest_node_ids])
-                    expr = f"node_id in [{quoted_ids}]"
-                    deleted_ok = False
-                    try:
-                        self._client.delete(self.collection_name, filter=expr)
-                        deleted_ok = True
-                    except Exception as e:
-                        logger.warning(f"Failed to delete oldest vectors via client: {e}")
-                    if deleted_ok:
-                        logger.info(f"Deleted {len(oldest_node_ids)} oldest vectors to maintain capacity.")
-                    else:
-                        logger.warning(
-                            f"Eviction attempted for {len(oldest_node_ids)} vectors but the delete call failed; "
-                            "collection may exceed max_vectors."
-                        )
-            else:
-                logger.warning(
-                    "Eviction skipped: could not enumerate existing vectors. "
-                    "Collection may exceed max_vectors after insert."
-                )
-        except Exception as e:
-            logger.warning(f"Failed to delete oldest vectors: {e}. Proceeding with insert anyway.")
+            while rows := iterator.next():
+                identities.update(str(row["node_id"]) for row in rows)
+        finally:
+            iterator.close()
+        return identities
 
     def add(
         self,
@@ -435,8 +384,6 @@ class MilvusVectorStore(BasePydanticVectorStore):
 
         if self._collection is None:
             self._ensure_collection(dim=len(nodes[0].get_embedding()))
-
-        self._make_room_for_new_vectors(len(nodes))
 
         rows = []
 
@@ -476,7 +423,8 @@ class MilvusVectorStore(BasePydanticVectorStore):
                 self.collection_name
             ):
 
-                self._client.insert(
+                write = self._client.upsert if kwargs.get("upsert", False) else self._client.insert
+                write(
                     self.collection_name,
                     rows,
                 )
@@ -539,6 +487,8 @@ class MilvusVectorStore(BasePydanticVectorStore):
                     self._client.delete(self.collection_name, filter=expr)
             except Exception as e:
                 logger.warning(f"Milvus client delete_nodes failed: {e}")
+                if delete_kwargs.get("strict", False):
+                    raise
         else:
             raise RuntimeError("Milvus client is not initialized or collection does not exist; cannot perform delete_nodes.")
 

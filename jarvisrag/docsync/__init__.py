@@ -21,6 +21,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import tempfile
 from dataclasses import dataclass, field
 from typing import Optional
@@ -61,6 +62,8 @@ class DocSet:
     documents: list[DocSource] = field(default_factory=list)
     match_any: list[str] = field(default_factory=list)
     label: str = ""
+    type: str = "remote"          # "remote" (URL documents) | "mail" (local Apple Mail store)
+    mail_root: str = ""           # mail sets: path to the Apple Mail store (default ~/Library/Mail)
 
 
 def load_document_sources(config_path: Optional[str] = None) -> list[DocSet]:
@@ -85,6 +88,8 @@ def load_document_sources(config_path: Optional[str] = None) -> list[DocSet]:
                 documents=docs,
                 match_any=[str(t) for t in entry.get("match_any", [])],
                 label=str(entry.get("label", "")),
+                type=str(entry.get("type", "remote")),
+                mail_root=str(entry.get("mail_root", "")),
             ))
         except (KeyError, TypeError):
             continue
@@ -111,15 +116,23 @@ def _load_state(corpus_dir: str) -> dict:
         return {}
 
 
-def _save_state(corpus_dir: str, state: dict) -> None:
+def _save_state(corpus_dir: str, state: dict) -> bool:
     path = os.path.join(corpus_dir, _STATE_FILENAME)
-    tmp = path + ".tmp"
+    tmp = None
     try:
-        with open(tmp, "w", encoding="utf-8") as handle:
+        descriptor, tmp = tempfile.mkstemp(dir=corpus_dir, prefix=".docsync-")
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
             json.dump(state, handle, indent=2, sort_keys=True)
         os.replace(tmp, path)
+        return True
     except OSError:
-        pass
+        return False
+    finally:
+        if tmp and os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
 
 
 def refresh_document_set(doc_set: DocSet, force: bool = False) -> tuple[list[str], list[str], list[str]]:
@@ -186,7 +199,187 @@ def refresh_document_set(doc_set: DocSet, force: bool = False) -> tuple[list[str
             except Exception as exc:  # noqa: BLE001 - report and continue
                 failed.append(f"{doc.name} ({exc})")
 
-    _save_state(doc_set.corpus_dir, state)
+    if not _save_state(doc_set.corpus_dir, state):
+        failed.append("Could not save refresh state; the next refresh may repeat work.")
+    return changed, unchanged, failed
+
+
+def _msgid_key(identity: str) -> str:
+    """Flat, stable corpus filename for one LOGICAL message.
+
+    Keyed by RFC Message-ID so Gmail's copies of the same email (stored once per
+    label / All Mail as separate files) collapse to a single corpus document.
+    Flattened via hash because the domain corpus loader reads only the top level
+    of ``corpus_dir`` (non-recursive)."""
+    return hashlib.sha1(identity.encode("utf-8", "surrogatepass")).hexdigest()[:24] + ".emlx"
+
+
+def _emlx_message_id(src: str) -> Optional[str]:
+    """Best-effort RFC Message-ID from an ``.emlx`` file (stdlib only).
+
+    Reads a bounded header prefix and strips the ``.emlx`` byte-count framing
+    line before parsing. Returns None when absent/unreadable so the caller can
+    fall back to a path identity (that message is kept, not merged)."""
+    import email
+    from email import policy
+
+    try:
+        with open(src, "rb") as handle:
+            chunk = handle.read(65536)
+    except OSError:
+        return None
+    newline = chunk.find(b"\n")
+    header_bytes = chunk[newline + 1:] if newline != -1 else chunk
+    try:
+        message = email.message_from_bytes(header_bytes, policy=policy.default)
+        mid = message.get("Message-ID") or message.get("Message-Id")
+    except Exception:
+        return None
+    mid = str(mid).strip() if mid else ""
+    return mid or None
+
+
+def _mail_identity(mail_root: str, src: str, msgid: Optional[str]) -> str:
+    """Dedup identity for a message: its Message-ID, else its source path."""
+    return msgid if msgid else "path:" + os.path.relpath(src, mail_root)
+
+
+def refresh_mail_set(doc_set: DocSet, force: bool = False) -> tuple[list[str], list[str], list[str]]:
+    """Sync a local Apple Mail store into a DE-DUPLICATED corpus of ``.emlx``.
+
+    Safety by construction: reads ONLY individual message files, never Mail's
+    SQLite Envelope Index, so Mail is never locked or blocked. A stat-only walk
+    finds changes against saved per-source state. Changed files are copied into
+    ``corpus_dir`` before parsing their Message-ID. Identical copies leave the
+    destination mtime untouched so extraction and indexing can reuse their caches.
+
+    De-duplication is ALWAYS on and driven here (no caller flag): the corpus
+    filename is keyed by RFC Message-ID, so Gmail's per-label copies of one email
+    collapse to a single document; a message with no Message-ID falls back to a
+    path identity (kept, never merged). A corpus document is pruned only when NO
+    remaining source file references its Message-ID. Only deltas are read after
+    the first run; nothing is ever written back to the mail store. Returns
+    ``(changed, unchanged, failed)`` where ``changed`` counts LOGICAL messages
+    and includes ``removed:<id>`` entries so a deletion still triggers re-index.
+
+    Requires Full Disk Access for the process to read ~/Library/Mail."""
+    mail_root = os.path.expanduser(doc_set.mail_root or "~/Library/Mail")
+    os.makedirs(doc_set.corpus_dir, exist_ok=True)
+    state = _load_state(doc_set.corpus_dir)
+    prior = state.get("_sources") if isinstance(state.get("_sources"), dict) else None
+    changed: list[str] = []
+    unchanged: list[str] = []
+    failed: list[str] = []
+
+    if not os.path.isdir(mail_root):
+        return changed, unchanged, [f"mail_root not found: {mail_root}"]
+
+    current: dict[str, dict] = {}
+
+    def scan_error(error):
+        failed.append(f"Incomplete mail scan ({type(error).__name__}); refresh skipped.")
+
+    for root, _dirs, files in os.walk(mail_root, onerror=scan_error):
+        for fname in files:
+            if not fname.lower().endswith(".emlx"):
+                continue
+            src = os.path.join(root, fname)
+            try:
+                st = os.stat(src)
+            except OSError as exc:
+                scan_error(exc)
+                continue
+            current[src] = {"mtime": int(st.st_mtime), "mtime_ns": st.st_mtime_ns, "size": int(st.st_size)}
+
+    if failed:
+        return changed, unchanged, failed
+
+    # Guard: an empty scan while anything already exists almost always means the
+    # process lacks Full Disk Access; never mass-drop or wipe the corpus on that.
+    with os.scandir(doc_set.corpus_dir) as entries:
+        corpus_has_files = any(entry.name.endswith(".emlx") for entry in entries)
+    if not current and (prior or corpus_has_files or state.get("_messages")):
+        return changed, unchanged, [
+            "mail scan found no messages (Full Disk Access not granted?) — "
+            "skipping to avoid dropping the corpus"
+        ]
+
+    prior = prior or {}
+    new_sources: dict[str, dict] = {}
+    copied_ids: set[str] = set()
+    changed_ids: dict[str, None] = {}
+    unchanged_ids: dict[str, None] = {}
+
+    for src, info in current.items():
+        was = prior.get(src) if isinstance(prior.get(src), dict) else None
+        if (not force and was and was.get("mtime_ns") == info["mtime_ns"]
+                and was.get("size") == info["size"] and was.get("id")):
+            identity = str(was["id"])
+            dest = os.path.join(doc_set.corpus_dir, _msgid_key(identity))
+            if os.path.exists(dest):
+                new_sources[src] = dict(info, id=identity)
+                unchanged_ids[identity] = None
+                continue
+        tmp_dest = None
+        try:
+            descriptor, tmp_dest = tempfile.mkstemp(dir=doc_set.corpus_dir, prefix=".mail-")
+            os.close(descriptor)
+            shutil.copyfile(src, tmp_dest)
+            after = os.stat(src)
+            if (after.st_mtime_ns != info["mtime_ns"] or after.st_size != info["size"]
+                    or os.stat(tmp_dest).st_size != info["size"]):
+                raise OSError("Source changed while copying; retry on next refresh.")
+            identity = _mail_identity(mail_root, src, _emlx_message_id(tmp_dest))
+            dest = os.path.join(doc_set.corpus_dir, _msgid_key(identity))
+            if identity not in copied_ids:
+                copied_hash = _sha256_file(tmp_dest)
+                if copied_hash is None:
+                    raise OSError("Could not validate staged copy.")
+                if not force and copied_hash == _sha256_file(dest):
+                    unchanged_ids[identity] = None
+                else:
+                    os.replace(tmp_dest, dest)
+                    changed_ids[identity] = None
+                copied_ids.add(identity)
+            new_sources[src] = dict(info, id=identity)
+        except Exception as exc:  # noqa: BLE001 - report and continue
+            if was:
+                new_sources[src] = was
+            failed.append(f"{os.path.basename(src)} ({exc})")
+        finally:
+            if tmp_dest and os.path.exists(tmp_dest):
+                try:
+                    os.remove(tmp_dest)
+                except OSError:
+                    pass
+
+    changed = list(changed_ids)
+    unchanged = [identity for identity in unchanged_ids if identity not in changed_ids]
+    if failed:
+        for src, entry in prior.items():
+            new_sources.setdefault(src, entry)
+
+    current_ids = {v["id"] for v in new_sources.values()}
+    prior_ids = {v.get("id") for v in prior.values() if isinstance(v, dict)}
+    for identity in prior_ids - current_ids:
+        if not identity:
+            continue
+        gone = os.path.join(doc_set.corpus_dir, _msgid_key(str(identity)))
+        try:
+            if os.path.exists(gone):
+                os.remove(gone)
+        except OSError as exc:
+            failed.append(f"Could not remove staged message ({type(exc).__name__}).")
+            for src, entry in prior.items():
+                if isinstance(entry, dict) and entry.get("id") == identity:
+                    new_sources.setdefault(src, entry)
+            continue
+        changed.append(f"removed:{identity}")
+
+    if state.get("_sources") != new_sources:
+        state["_sources"] = new_sources
+        if not _save_state(doc_set.corpus_dir, state):
+            failed.append("Could not save mail refresh state; the next refresh will retry.")
     return changed, unchanged, failed
 
 
@@ -211,27 +404,43 @@ def main(argv: Optional[list[str]] = None) -> int:
             print(f"[docsync] No set named '{args.set_name}'.")
             return 1
 
+    from jarvisrag.iotools import Spinner  # lazy: only the CLI run needs it
+
     total_changed = 0
+    total_failed = 0
+    max_list = 20  # cap the per-file listing so a large mail delta doesn't flood the terminal
     for doc_set in sets:
-        changed, unchanged, failed = refresh_document_set(doc_set, force=args.force)
+        with Spinner(f"Refreshing {doc_set.name}"):
+            if doc_set.type == "mail":
+                changed, unchanged, failed = refresh_mail_set(doc_set, force=args.force)
+            else:
+                changed, unchanged, failed = refresh_document_set(doc_set, force=args.force)
         total_changed += len(changed)
+        total_failed += len(failed)
         print(
             f"[docsync] set '{doc_set.name}' ({doc_set.corpus_dir}): "
             f"{len(changed)} changed, {len(unchanged)} unchanged, {len(failed)} failed"
         )
-        for name in changed:
+        for name in changed[:max_list]:
             print(f"   CHANGED  {name}")
-        for name in failed:
+        if len(changed) > max_list:
+            print(f"   … and {len(changed) - max_list} more changed")
+        for name in failed[:max_list]:
             print(f"   FAILED   {name}")
+        if len(failed) > max_list:
+            print(f"   … and {len(failed) - max_list} more failed")
 
     if total_changed:
         print(
             f"[docsync] {total_changed} document(s) changed. Re-index to update Milvus "
             "(the manifest delta-sync re-embeds only the changed chunks)."
         )
-    else:
-        print("[docsync] No documents changed. The index is up to date.")
-    return 0
+    elif not total_failed:
+        print("[docsync] No source documents changed. Indexing is a separate step on Jarvis startup.")
+    if total_failed:
+        print("[docsync] Refresh incomplete; failed items will be retried on the next refresh.")
+    print("[docsync] Refresh complete.")
+    return 1 if total_failed else 0
 
 
 if __name__ == "__main__":

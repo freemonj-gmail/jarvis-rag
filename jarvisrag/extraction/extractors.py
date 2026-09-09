@@ -1123,6 +1123,90 @@ class MHTMLReader:
         return docs
 
 
+class EmlxReader:
+    """Parse an Apple Mail ``.emlx`` message into a single text Document.
+
+    ``.emlx`` framing is an ASCII decimal byte-count line, the raw RFC-822
+    message of exactly that many bytes, then an Apple metadata plist. Parse the
+    message span with the stdlib ``email`` parser (same approach as
+    ``MHTMLReader``), preferring the ``text/plain`` part and falling back to a
+    tag-stripped ``text/html`` part. From/To/Cc/Date/Subject headers are kept as
+    metadata so an answer can attribute a quote to a specific message."""
+
+    _TAG_RE = re.compile(r"<[^>]+>")
+
+    @staticmethod
+    def _message_bytes(raw: bytes) -> bytes:
+        newline = raw.find(b"\n")
+        if newline == -1:
+            return raw
+        try:
+            count = int(raw[:newline].strip())
+        except ValueError:
+            return raw  # not framed as expected; parse the whole payload
+        start = newline + 1
+        return raw[start:start + count]
+
+    @classmethod
+    def _body_text(cls, message) -> str:
+        plain = html = None
+        for part in message.walk():
+            ctype = part.get_content_type()
+            if ctype == "text/plain" and plain is None:
+                try:
+                    plain = part.get_content()
+                except Exception:
+                    plain = None
+            elif ctype == "text/html" and html is None:
+                try:
+                    html = part.get_content()
+                except Exception:
+                    html = None
+        if isinstance(plain, str) and plain.strip():
+            return plain
+        if isinstance(html, str) and html.strip():
+            return cls._TAG_RE.sub(" ", html)
+        return ""
+
+    def load_data(self, file_path, **kwargs):
+        import email
+        from email import policy
+
+        file_path_str = str(file_path)
+        file_name = os.path.basename(file_path_str)
+        try:
+            with open(file_path_str, "rb") as handle:
+                raw = handle.read()
+            message = email.message_from_bytes(self._message_bytes(raw), policy=policy.default)
+        except Exception as e:
+            logger.error(f"EmlxReader could not parse {file_name}: {e}")
+            return []
+
+        headers = {
+            "email_from": str(message.get("From", "") or ""),
+            "email_to": str(message.get("To", "") or ""),
+            "email_cc": str(message.get("Cc", "") or ""),
+            "email_date": str(message.get("Date", "") or ""),
+            "email_subject": str(message.get("Subject", "") or ""),
+        }
+        body = self._body_text(message)
+        header_block = "\n".join(
+            f"{label}: {headers[key]}"
+            for label, key in (
+                ("From", "email_from"), ("To", "email_to"), ("Cc", "email_cc"),
+                ("Date", "email_date"), ("Subject", "email_subject"),
+            )
+            if headers[key]
+        )
+        text = f"{header_block}\n\n{body}".strip()
+        if not text:
+            logger.info(f"EmlxReader found no readable content in {file_name}.")
+            return []
+        metadata = {"file_path": file_path_str, "file_name": file_name, "extracted_by": "emlx"}
+        metadata.update({k: v for k, v in headers.items() if v})
+        return [Document(text=text, metadata=metadata)]
+
+
 jpeg_extractor = DeferredExtractor(JpegExtractor)
 docling_reader = DoclingReader()
 mhtml_reader = MHTMLReader(docling_reader)
@@ -1137,6 +1221,7 @@ file_extractor = {
     ".htm": docling_reader,
     ".mhtml": mhtml_reader,
     ".mht": mhtml_reader,
+    ".emlx": EmlxReader(),
     ".jpeg": jpeg_extractor,
     ".jpg": jpeg_extractor,
     ".png": jpeg_extractor,

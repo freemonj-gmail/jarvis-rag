@@ -32,6 +32,7 @@ from jarvisrag.config import (
     debug_print,
     logger,
 )
+from jarvisrag.iotools import Spinner
 from jarvisrag.text.textproc import (
     _is_ocr_garbage_text,
     is_low_information_text,
@@ -721,17 +722,28 @@ def build_or_load_persistent_index(
     embed_model: Optional[Any] = None,
     sync_existing: bool = False,
     rebuild: bool = False,
+    *,
+    owned_corpus_dir: Optional[str] = None,
+    owned_extensions: tuple[str, ...] = (),
 ) -> tuple[VectorStoreIndex, StorageContext]:
-    print(f"[index] Preparing {len(documents)} source documents for indexing...")
-    for doc in documents:
-        ensure_document_metadata(doc)
+    if owned_corpus_dir is not None:
+        from jarvisrag.extraction.owned_index import build_owned_index
 
-    print("[index] Splitting large documents into chunks...")
-    split_documents = split_large_docs(documents)
-    print(f"[index] Filtering low-information chunks (from {len(split_documents)} chunks)...")
-    index_documents = filter_informative_documents(split_documents)
-    print(f"[index] Building manifest signature for {len(index_documents)} chunks...")
-    current_manifest = _build_index_manifest(index_documents, vector_store, embed_model)
+        return build_owned_index(
+            documents, vector_store, persist_dir, embed_model,
+            owned_corpus_dir, owned_extensions, rebuild=rebuild,
+        )
+    # These four steps are silent CPU loops over every document; on a large
+    # corpus they look like a hang, so surface live status + per-phase timing.
+    with Spinner(f"Preparing {len(documents)} documents") as spin:
+        for doc in documents:
+            ensure_document_metadata(doc)
+        spin.update("Splitting into chunks")
+        split_documents = split_large_docs(documents)
+        spin.update(f"Filtering low-information chunks (from {len(split_documents)})")
+        index_documents = filter_informative_documents(split_documents)
+        spin.update(f"Building manifest signature ({len(index_documents)} chunks)")
+        current_manifest = _build_index_manifest(index_documents, vector_store, embed_model)
 
     if not os.path.isdir(persist_dir):
         os.makedirs(persist_dir, exist_ok=True)
@@ -744,21 +756,22 @@ def build_or_load_persistent_index(
         storage_context = None
 
     if storage_context is None:
-        print("[index] Loading persistent storage context from disk...")
-        is_simple_vector_store = isinstance(vector_store, SimpleVectorStore)
-        try:
-            if is_simple_vector_store:
-                storage_context = StorageContext.from_defaults(persist_dir=persist_dir)
-            else:
+        # Reloading a large docstore from disk is silent; show live status.
+        with Spinner("Loading persistent storage"):
+            is_simple_vector_store = isinstance(vector_store, SimpleVectorStore)
+            try:
+                if is_simple_vector_store:
+                    storage_context = StorageContext.from_defaults(persist_dir=persist_dir)
+                else:
+                    storage_context = StorageContext.from_defaults(
+                        vector_store=vector_store,
+                        persist_dir=persist_dir,
+                    )
+            except (FileNotFoundError, AssertionError, ValueError, OSError) as exc:
+                print(f"[index] No usable persistent storage on disk ({type(exc).__name__}); starting fresh storage context.")
                 storage_context = StorageContext.from_defaults(
                     vector_store=vector_store,
-                    persist_dir=persist_dir,
                 )
-        except (FileNotFoundError, AssertionError, ValueError, OSError) as exc:
-            print(f"[index] No usable persistent storage on disk ({type(exc).__name__}); starting fresh storage context.")
-            storage_context = StorageContext.from_defaults(
-                vector_store=vector_store,
-            )
 
     print("[index] Comparing current document signature against persisted manifest...")
     persisted_manifest = _load_index_manifest(persist_dir)
@@ -911,25 +924,37 @@ def build_or_load_persistent_index(
                 continue
             print(f"Indexing batch {batch_number}/{total_batches} ({len(batch)} documents)...")
             if index is None:
-                # First batch establishes the index; embed docs one-by-one so a single
-                # bad doc (e.g. metadata-too-long) can't abort the whole rebuild.
                 # nodes=[] satisfies VectorStoreIndex's "one of nodes/objects/index_struct"
-                # requirement without forcing a from_documents call that has no per-doc guard.
+                # requirement without a from_documents call that has no per-batch guard.
                 index = VectorStoreIndex(
                     nodes=[],
                     storage_context=storage_context,
                     embed_model=embed_model,
                 )
-            for doc in batch:
-                try:
-                    index.insert(doc)
-                except Exception as exc:
-                    skipped_in_rebuild += 1
-                    meta = doc.metadata or {}
-                    logger.warning(
-                        f"Skipped chunk {doc.id_} from "
-                        f"{meta.get('file_name', meta.get('file_path', '?'))}: {exc}"
-                    )
+            try:
+                # Batched embed+insert (same path as delta-sync): the embedding model
+                # processes the whole batch per forward pass instead of one chunk at a
+                # time — dramatically faster on large first builds.
+                nodes = run_transformations(batch, index._transformations)
+                index.insert_nodes(nodes)
+                for doc in batch:
+                    index.docstore.set_document_hash(doc.id_, doc.hash)
+            except Exception as batch_exc:
+                # Fall back to per-doc so a single bad chunk can't drop the batch.
+                logger.warning(
+                    f"Batch insert failed ({batch_exc}); retrying "
+                    f"{len(batch)} chunk(s) individually"
+                )
+                for doc in batch:
+                    try:
+                        index.insert(doc)
+                    except Exception as exc:
+                        skipped_in_rebuild += 1
+                        meta = doc.metadata or {}
+                        logger.warning(
+                            f"Skipped chunk {doc.id_} from "
+                            f"{meta.get('file_name', meta.get('file_path', '?'))}: {exc}"
+                        )
 
         if index is None:
             index = VectorStoreIndex(
