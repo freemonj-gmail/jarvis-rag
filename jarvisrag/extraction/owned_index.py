@@ -157,6 +157,31 @@ def _embedding_blob(vector):
     return struct.pack(f"<{len(vector)}d", *vector)
 
 
+_BUCKET_BATCH = 8
+
+
+def _embed_length_bucketed(embed_model, nodes):
+    """Embed similar-length texts together so padding does not dominate a batch.
+
+    Returns embeddings in the caller's original node order."""
+    texts = [node.get_content(metadata_mode=MetadataMode.EMBED) for node in nodes]
+    order = sorted(range(len(texts)), key=lambda index: len(texts[index]))
+    previous = getattr(embed_model, "embed_batch_size", None)
+    if previous is not None:
+        embed_model.embed_batch_size = min(previous, _BUCKET_BATCH)
+    try:
+        packed = embed_model.get_text_embedding_batch([texts[index] for index in order])
+    finally:
+        if previous is not None:
+            embed_model.embed_batch_size = previous
+    if len(packed) != len(texts):
+        return packed
+    restored = [None] * len(texts)
+    for position, index in enumerate(order):
+        restored[index] = packed[position]
+    return restored
+
+
 def _stored_ids(vector_store):
     if isinstance(vector_store, SimpleVectorStore):
         return set(vector_store.data.embedding_dict)
@@ -241,9 +266,7 @@ def build_owned_index(documents, vector_store, persist_dir, embed_model, corpus_
                     else:
                         node.embedding = list(struct.unpack(f"<{len(row[2]) // 8}d", row[2]))
                 if need_embedding:
-                    embeddings = embed_model.get_text_embedding_batch([
-                        node.get_content(metadata_mode=MetadataMode.EMBED) for node in need_embedding
-                    ])
+                    embeddings = _embed_length_bucketed(embed_model, need_embedding)
                     if len(embeddings) != len(need_embedding):
                         raise ValueError("Embedding response is incomplete.")
                     with connection:

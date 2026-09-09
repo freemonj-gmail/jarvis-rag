@@ -151,6 +151,25 @@ class MailStartupTests(unittest.TestCase):
 
 
 class OwnedIndexTests(unittest.TestCase):
+    def test_length_bucketed_embedding_preserves_order_and_batches_by_length(self):
+        nodes = [TextNode(text="word " * length) for length in (300, 5, 120, 40, 900, 70, 8, 250, 15)]
+        seen_batches, seen_sizes = [], []
+
+        class Recorder(MockEmbedding):
+            def get_text_embedding_batch(self, texts, **kwargs):
+                seen_batches.append(list(texts))
+                seen_sizes.append(self.embed_batch_size)
+                return [[float(len(t)), 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0] for t in texts]
+
+        embedder = Recorder(embed_dim=8, embed_batch_size=32)
+        result = owned_index._embed_length_bucketed(embedder, nodes)
+        expected = [node.get_content(metadata_mode=MetadataMode.EMBED) for node in nodes]
+        self.assertEqual([vector[0] for vector in result], [float(len(t)) for t in expected])
+        self.assertEqual(sorted(seen_batches[0]), sorted(expected))
+        self.assertEqual(seen_batches[0], sorted(expected, key=len))
+        self.assertEqual(seen_sizes, [owned_index._BUCKET_BATCH])
+        self.assertEqual(embedder.embed_batch_size, 32)
+
     def setUp(self):
         self.work = tempfile.TemporaryDirectory(prefix="jarvis_owned_test_")
         self.addCleanup(self.work.cleanup)
