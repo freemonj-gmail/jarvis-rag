@@ -26,7 +26,8 @@
       "corpus_dir": "jarvis_storage/mail_corpus",
       "mail_root": "~/Library/Mail",
       "label": "Apple Mail (local, on-device)",
-      "match_any": ["email", "e-mail", "inbox", "mailbox"]
+      "match_any": ["email", "e-mail", "inbox", "mailbox"],
+      "exclude_folders": ["Trash", "Spam", "Junk", "Deleted Messages", "Bin"]
     }
   ]
 }

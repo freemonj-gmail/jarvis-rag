@@ -64,6 +64,10 @@ class DocSet:
     label: str = ""
     type: str = "remote"          # "remote" (URL documents) | "mail" (local Apple Mail store)
     mail_root: str = ""           # mail sets: path to the Apple Mail store (default ~/Library/Mail)
+    exclude_folders: list[str] = field(default_factory=list)  # mail sets: mailbox names to skip
+    # Account identifiers are machine-specific, so they come from the environment and are
+    # never committed in the recipe. Empty = index every account.
+    include_accounts: list[str] = field(default_factory=list)
 
 
 def load_document_sources(config_path: Optional[str] = None) -> list[DocSet]:
@@ -90,6 +94,7 @@ def load_document_sources(config_path: Optional[str] = None) -> list[DocSet]:
                 label=str(entry.get("label", "")),
                 type=str(entry.get("type", "remote")),
                 mail_root=str(entry.get("mail_root", "")),
+                exclude_folders=[str(t) for t in entry.get("exclude_folders", [])],
             ))
         except (KeyError, TypeError):
             continue
@@ -244,6 +249,42 @@ def _mail_identity(mail_root: str, src: str, msgid: Optional[str]) -> str:
     return msgid if msgid else "path:" + os.path.relpath(src, mail_root)
 
 
+def _normalized_mailbox_names(names: list[str]) -> set[str]:
+    return {n.strip().lower() for n in names if n and n.strip()}
+
+
+def _is_excluded_segment(segment: str, wanted: set[str]) -> bool:
+    """Apple Mail nests messages under per-mailbox ``.mbox`` bundles."""
+    return segment.lower().removesuffix(".mbox") in wanted
+
+
+def _excluded_mailbox(relative_path: str, wanted: set[str]) -> bool:
+    """True when any directory of ``relative_path`` is an excluded mailbox.
+
+    Compares whole path SEGMENTS so ``Trash`` never matches a user folder that
+    merely contains the word."""
+    if not wanted:
+        return False
+    segments = os.path.dirname(relative_path).split(os.sep)
+    return any(
+        _is_excluded_segment(segment, wanted)
+        for segment in segments if segment not in ("", ".", "..")
+    )
+
+
+def _configured_accounts(doc_set: "DocSet") -> set[str]:
+    """Accounts to index, from the set or ``JARVIS_MAIL_ACCOUNTS`` (empty = all)."""
+    configured = doc_set.include_accounts or os.environ.get("JARVIS_MAIL_ACCOUNTS", "").split(",")
+    return _normalized_mailbox_names(list(configured))
+
+
+def _included_account(relative_path: str, wanted: set[str]) -> bool:
+    """True when ``relative_path`` sits under one of the configured accounts."""
+    if not wanted:
+        return True
+    return any(segment.lower() in wanted for segment in relative_path.split(os.sep))
+
+
 def refresh_mail_set(doc_set: DocSet, force: bool = False) -> tuple[list[str], list[str], list[str]]:
     """Sync a local Apple Mail store into a DE-DUPLICATED corpus of ``.emlx``.
 
@@ -279,11 +320,22 @@ def refresh_mail_set(doc_set: DocSet, force: bool = False) -> tuple[list[str], l
     def scan_error(error):
         failed.append(f"Incomplete mail scan ({type(error).__name__}); refresh skipped.")
 
-    for root, _dirs, files in os.walk(mail_root, onerror=scan_error):
+    # A message kept only in a skipped account/mailbox loses its last source here, so the
+    # existing prune drops its staged copy; one also filed elsewhere keeps that path.
+    excluded_names = _normalized_mailbox_names(doc_set.exclude_folders)
+    account_names = _configured_accounts(doc_set)
+    for root, dirs, files in os.walk(mail_root, onerror=scan_error):
+        if excluded_names:
+            dirs[:] = [d for d in dirs if not _is_excluded_segment(d, excluded_names)]
         for fname in files:
             if not fname.lower().endswith(".emlx"):
                 continue
             src = os.path.join(root, fname)
+            relative = os.path.relpath(src, mail_root)
+            if not _included_account(relative, account_names):
+                continue
+            if _excluded_mailbox(relative, excluded_names):
+                continue
             try:
                 st = os.stat(src)
             except OSError as exc:

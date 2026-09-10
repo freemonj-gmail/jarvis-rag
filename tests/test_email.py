@@ -604,6 +604,128 @@ class RemoteRefreshTests(unittest.TestCase):
                 self.assertEqual(client.get.call_args.kwargs["headers"]["If-None-Match"], '"v1"')
 
 
+class MailExclusionTests(unittest.TestCase):
+    """Excluded mailboxes must drop only messages filed NOWHERE else."""
+
+    def setUp(self):
+        self.work = tempfile.TemporaryDirectory(prefix="jarvis_mail_exclude_")
+        self.addCleanup(self.work.cleanup)
+        self.mail_root = os.path.join(self.work.name, "mail")
+        self.corpus = os.path.join(self.work.name, "corpus")
+        account = os.path.join(self.mail_root, "V10", "acct")
+        self.inbox = os.path.join(account, "INBOX.mbox", "Data", "Messages")
+        self.trash = os.path.join(account, "Trash.mbox", "Data", "Messages")
+        self.spam = os.path.join(account, "Spam.mbox", "Data", "Messages")
+        # "Trashed Drafts" must survive: it merely CONTAINS an excluded word.
+        self.lookalike = os.path.join(account, "Trashed Drafts.mbox", "Data", "Messages")
+
+    def _write(self, folder, name, message_id):
+        _write_emlx(os.path.join(folder, name), "s@example.com", "Subject", "Body text.", message_id)
+
+    def _refresh(self, exclude):
+        doc_set = DocSet(name="mail", corpus_dir=self.corpus, type="mail",
+                         mail_root=self.mail_root, exclude_folders=exclude)
+        changed, unchanged, failed = refresh_mail_set(doc_set)
+        self.assertEqual(failed, [])
+        return changed, unchanged
+
+    def test_excludes_only_messages_with_no_other_copy(self):
+        self._write(self.inbox, "1.emlx", "<keep@example.com>")
+        self._write(self.trash, "1.emlx", "<keep@example.com>")   # same message, also in Trash
+        self._write(self.trash, "2.emlx", "<drop@example.com>")   # Trash only
+        self._write(self.spam, "3.emlx", "<spam@example.com>")    # Spam only
+        self._write(self.lookalike, "4.emlx", "<lookalike@example.com>")
+
+        self._refresh(["Trash", "Spam"])
+        staged = {os.path.basename(p) for p in _corpus_emlx(self.corpus)}
+        self.assertIn(docsync._msgid_key("<keep@example.com>"), staged)
+        self.assertIn(docsync._msgid_key("<lookalike@example.com>"), staged)
+        self.assertNotIn(docsync._msgid_key("<drop@example.com>"), staged)
+        self.assertNotIn(docsync._msgid_key("<spam@example.com>"), staged)
+        self.assertEqual(len(staged), 2)
+
+    def test_enabling_exclusion_prunes_already_staged_messages(self):
+        self._write(self.inbox, "1.emlx", "<keep@example.com>")
+        self._write(self.trash, "2.emlx", "<drop@example.com>")
+        self._refresh([])
+        self.assertEqual(len(_corpus_emlx(self.corpus)), 2)
+
+        changed, _ = self._refresh(["Trash"])
+        self.assertIn("removed:<drop@example.com>", changed)
+        staged = {os.path.basename(p) for p in _corpus_emlx(self.corpus)}
+        self.assertEqual(staged, {docsync._msgid_key("<keep@example.com>")})
+
+    def test_no_exclusion_configured_keeps_everything(self):
+        self._write(self.inbox, "1.emlx", "<keep@example.com>")
+        self._write(self.trash, "2.emlx", "<drop@example.com>")
+        self._refresh([])
+        self.assertEqual(len(_corpus_emlx(self.corpus)), 2)
+
+    def test_segment_matching_is_case_insensitive_and_ignores_mbox_suffix(self):
+        wanted = docsync._normalized_mailbox_names(["Trash", " spam "])
+        self.assertTrue(docsync._excluded_mailbox(os.path.join("acct", "TRASH.mbox", "m.emlx"), wanted))
+        self.assertTrue(docsync._excluded_mailbox(os.path.join("acct", "Spam", "m.emlx"), wanted))
+        self.assertFalse(docsync._excluded_mailbox(os.path.join("acct", "Trashed Drafts.mbox", "m.emlx"), wanted))
+        self.assertFalse(docsync._excluded_mailbox(os.path.join("acct", "Inbox.mbox", "m.emlx"), wanted))
+        # An empty configuration must never exclude anything.
+        self.assertFalse(docsync._excluded_mailbox(os.path.join("Trash.mbox", "m.emlx"), set()))
+
+
+class MailAccountScopeTests(unittest.TestCase):
+    """Account scope is env-driven so no machine-specific id is ever committed."""
+
+    def setUp(self):
+        self.work = tempfile.TemporaryDirectory(prefix="jarvis_mail_account_")
+        self.addCleanup(self.work.cleanup)
+        self.mail_root = os.path.join(self.work.name, "mail")
+        self.corpus = os.path.join(self.work.name, "corpus")
+        self.keep = os.path.join(self.mail_root, "V10", "ACCT-KEEP", "INBOX.mbox", "Data", "Messages")
+        self.other = os.path.join(self.mail_root, "V10", "ACCT-OTHER", "INBOX.mbox", "Data", "Messages")
+        _write_emlx(os.path.join(self.keep, "1.emlx"), "s@example.com", "S", "Body.", "<keep@example.com>")
+        _write_emlx(os.path.join(self.other, "2.emlx"), "s@example.com", "S", "Body.", "<other@example.com>")
+        # One message filed in BOTH accounts must survive scoping.
+        _write_emlx(os.path.join(self.keep, "3.emlx"), "s@example.com", "S", "Body.", "<both@example.com>")
+        _write_emlx(os.path.join(self.other, "3.emlx"), "s@example.com", "S", "Body.", "<both@example.com>")
+
+    def _staged(self):
+        return {os.path.basename(p) for p in _corpus_emlx(self.corpus)}
+
+    def _refresh(self, accounts):
+        doc_set = DocSet(name="mail", corpus_dir=self.corpus, type="mail",
+                         mail_root=self.mail_root, include_accounts=accounts)
+        changed, unchanged, failed = refresh_mail_set(doc_set)
+        self.assertEqual(failed, [])
+        return changed
+
+    def test_scoping_to_one_account_drops_only_the_others(self):
+        self._refresh(["ACCT-KEEP"])
+        self.assertEqual(self._staged(), {
+            docsync._msgid_key("<keep@example.com>"),
+            docsync._msgid_key("<both@example.com>"),
+        })
+
+    def test_unset_scope_indexes_every_account(self):
+        with patch.dict(os.environ, {"JARVIS_MAIL_ACCOUNTS": ""}, clear=False):
+            self._refresh([])
+        self.assertEqual(len(self._staged()), 3)
+
+    def test_environment_supplies_the_account_when_the_set_is_empty(self):
+        with patch.dict(os.environ, {"JARVIS_MAIL_ACCOUNTS": "acct-keep"}, clear=False):
+            self._refresh([])
+        self.assertEqual(self._staged(), {
+            docsync._msgid_key("<keep@example.com>"),
+            docsync._msgid_key("<both@example.com>"),
+        })
+
+    def test_narrowing_scope_prunes_previously_staged_accounts(self):
+        with patch.dict(os.environ, {"JARVIS_MAIL_ACCOUNTS": ""}, clear=False):
+            self._refresh([])
+        self.assertEqual(len(self._staged()), 3)
+        changed = self._refresh(["ACCT-KEEP"])
+        self.assertIn("removed:<other@example.com>", changed)
+        self.assertNotIn(docsync._msgid_key("<other@example.com>"), self._staged())
+
+
 def _write_emlx(path: str, sender: str, subject: str, body: str, message_id: str | None = None) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     header = (

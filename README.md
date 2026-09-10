@@ -330,6 +330,7 @@ development, not day-to-day use.
 | `JARVIS_SYNC_EXISTING_INDEX` | `0` | Reconcile the persistent index against the current corpus on load |
 | `JARVIS_DISABLE_EXTRACTION_CACHE` | `0` | Bypass the per-file extraction cache (always re-extract) |
 | `JARVIS_DOCUMENT_SOURCES` | `document_sources.json` | Path to the docsync / domain-corpus recipe |
+| `JARVIS_MAIL_ACCOUNTS` | _(unset — all accounts)_ | Comma-separated Apple Mail account directory names to index; kept out of the committed recipe because the identifier is machine-specific |
 | `MILVUS_HOST` / `MILVUS_PORT` / `MILVUS_COLLECTION` | `127.0.0.1` / `19530` / `jarvis_context` | Milvus connection + collection (used when the backend is `milvus`) |
 | `HF_TOKEN` | _(unset)_ | Hugging Face token for authenticated embedding-model downloads |
 
@@ -564,6 +565,14 @@ Sets with `type: "mail"` use the same `make docs-refresh` command to copy local
 Apple Mail `.emlx` files into the configured corpus. Refresh does not build the
 index. Only the copy operation needs access to the live Mail directory; it does
 not open Mail's database or write back to Mail.
+
+Two filters narrow what is staged. `exclude_folders` on the set skips mailboxes by
+name (matched on whole path segments, so `Trash` never matches `Trashed Drafts`),
+and `JARVIS_MAIL_ACCOUNTS` limits staging to named accounts. Both drop a message
+only when *every* copy of it is out of scope, so mail filed in both an excluded and
+an included location is kept. Leaving `JARVIS_MAIL_ACCOUNTS` unset indexes every
+account. Narrowing either filter prunes the now-out-of-scope staged copies on the
+next refresh; the originals in Mail are never touched.
 
 Run refresh before indexing, not concurrently. Startup automatically builds or
 resumes the mail domain index from the staged corpus. Unchanged messages reuse
