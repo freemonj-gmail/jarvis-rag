@@ -397,7 +397,8 @@ def refresh_mail_set(doc_set: DocSet, force: bool = False) -> tuple[list[str], l
         except Exception as exc:  # noqa: BLE001 - report and continue
             if was:
                 new_sources[src] = was
-            failed.append(f"{os.path.basename(src)} ({exc})")
+            # Class only: the exception text can embed message content.
+            failed.append(f"{os.path.basename(src)} ({type(exc).__name__})")
         finally:
             if tmp_dest and os.path.exists(tmp_dest):
                 try:

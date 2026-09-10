@@ -479,7 +479,8 @@ def _build_domain_retrievers(embed_model, llm) -> list:
         try:
             docs = _load_corpus_documents(doc_set.corpus_dir)
         except Exception as exc:
-            print(f"[jarvis] Domain corpus '{doc_set.name}': load failed ({exc}); skipping.")
+            # Class only: the exception text can embed the document that failed.
+            print(f"[jarvis] Domain corpus '{doc_set.name}': load failed ({type(exc).__name__}); skipping.")
             continue
         if not docs:
             continue
@@ -490,7 +491,7 @@ def _build_domain_retrievers(embed_model, llm) -> list:
                 **({"owned_corpus_dir": doc_set.corpus_dir} if doc_set.type == "mail" else {}),
             )
         except Exception as exc:
-            print(f"[jarvis] Domain corpus '{doc_set.name}': index build failed ({exc}); skipping.")
+            print(f"[jarvis] Domain corpus '{doc_set.name}': index build failed ({type(exc).__name__}); skipping.")
         if domain_index is None:
             continue
         retriever = build_hybrid_retriever(
