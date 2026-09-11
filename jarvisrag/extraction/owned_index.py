@@ -12,8 +12,11 @@ import hashlib
 import json
 import math
 import os
+import resource
 import sqlite3
 import struct
+import sys
+import time
 from collections import defaultdict
 from contextlib import closing, contextmanager
 from pathlib import Path
@@ -53,6 +56,9 @@ def _ledger(persist_dir, owner):
             os.chmod(database, 0o600)
             connection.execute("PRAGMA journal_mode=WAL")
             connection.execute("PRAGMA synchronous=FULL")
+            # The 2 MB default cache thrashes a multi-GB ledger once the WAL grows.
+            connection.execute("PRAGMA cache_size=-131072")
+            connection.execute("PRAGMA wal_autocheckpoint=2000")
             connection.executescript("""
                 CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS sources (path TEXT PRIMARY KEY, fingerprint TEXT NOT NULL);
@@ -62,6 +68,11 @@ def _ledger(persist_dir, owner):
                 );
                 CREATE INDEX IF NOT EXISTS children_path ON children(path, ordinal);
             """)
+            # Ledgers written before float32 storage have no dims column; a NULL
+            # dims marks a legacy float64 blob so existing work stays readable.
+            if "dims" not in {row[1] for row in connection.execute("PRAGMA table_info(children)")}:
+                with connection:
+                    connection.execute("ALTER TABLE children ADD COLUMN dims INTEGER")
             row = connection.execute("SELECT value FROM config WHERE key='owner'").fetchone()
             if row and row[0] != owner:
                 raise ValueError("Checkpoint belongs to a different corpus or vector store.")
@@ -136,7 +147,8 @@ def _prepare_cache(connection, grouped, signature, rebuild=False):
             with connection:
                 connection.execute("DELETE FROM children WHERE path=?", (path,))
                 connection.executemany(
-                    "INSERT INTO children VALUES (?, ?, ?, ?, NULL)",
+                    "INSERT INTO children (id, path, ordinal, payload, embedding, dims)"
+                    " VALUES (?, ?, ?, ?, NULL, NULL)",
                     [(node.node_id, path, ordinal, node.to_json()) for ordinal, node in enumerate(nodes)],
                 )
                 connection.execute("INSERT OR REPLACE INTO sources VALUES (?, ?)", (path, fingerprint))
@@ -154,10 +166,44 @@ def _prepare_cache(connection, grouped, signature, rebuild=False):
 def _embedding_blob(vector):
     if not vector or not all(math.isfinite(value) for value in vector):
         raise ValueError("Cannot checkpoint an empty or non-finite embedding.")
-    return struct.pack(f"<{len(vector)}d", *vector)
+    return struct.pack(f"<{len(vector)}f", *vector)
+
+
+def _embedding_values(blob, dims):
+    """Read a checkpointed vector; a NULL ``dims`` means a legacy float64 blob."""
+    if dims:
+        return list(struct.unpack(f"<{dims}f", blob))
+    return list(struct.unpack(f"<{len(blob) // 8}d", blob))
 
 
 _BUCKET_BATCH = 8
+_READ_PAGE = 512
+_FLUSH_EVERY = 50_000
+_PROGRESS_SECONDS = 60
+
+
+def _resident_bytes():
+    usage = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    return usage if sys.platform == "darwin" else usage * 1024
+
+
+def _report_progress(installed, total, started, persist_dir):
+    elapsed = max(time.monotonic() - started, 1e-6)
+    rate = installed / elapsed
+    eta = f"{(total - installed) / rate / 3600:.1f}h" if rate else "unknown"
+    ledger = os.path.join(persist_dir, "owned_index.sqlite3")
+    sizes = []
+    for suffix, label in (("", "db"), ("-wal", "wal")):
+        try:
+            sizes.append(f"{label} {os.path.getsize(ledger + suffix) / 1024 ** 3:.2f}G")
+        except OSError:
+            pass
+    print(
+        f"[index] {installed}/{total} child vectors ({installed / total:.1%}) · "
+        f"{rate:.1f}/s · eta {eta} · rss {_resident_bytes() / 1024 ** 3:.2f}G · "
+        + " · ".join(sizes),
+        flush=True,
+    )
 
 
 def _embed_length_bucketed(embed_model, nodes):
@@ -254,33 +300,53 @@ def build_owned_index(documents, vector_store, persist_dir, embed_model, corpus_
         if previous_auto_flush is not None:
             vector_store.auto_flush = False
         try:
-            cursor = connection.execute("SELECT id, payload, embedding FROM children ORDER BY path, ordinal")
-            installed = 0
-            while rows := cursor.fetchmany(64):
-                missing = [row for row in rows if row[0] in pending]
-                nodes = [TextNode.from_json(row[1]) for row in missing]
+            # Page by key rather than holding one cursor open across the whole
+            # run: an open read transaction blocks WAL checkpointing, so the WAL
+            # grew unboundedly and every read then walked it.
+            installed, flushed, last_path, last_ordinal = 0, 0, "", -1
+            started = last_report = time.monotonic()
+            while True:
+                rows = connection.execute(
+                    "SELECT id, payload, embedding, dims, path, ordinal FROM children"
+                    " WHERE path > ? OR (path = ? AND ordinal > ?)"
+                    " ORDER BY path, ordinal LIMIT ?",
+                    (last_path, last_path, last_ordinal, _READ_PAGE),
+                ).fetchall()
+                if not rows:
+                    break
+                last_path, last_ordinal = rows[-1][4], rows[-1][5]
+                page_nodes = [TextNode.from_json(row[1]) for row in rows]
+                missing = [(node, row) for node, row in zip(page_nodes, rows) if row[0] in pending]
                 need_embedding = []
-                for node, row in zip(nodes, missing):
+                for node, row in missing:
                     if row[2] is None:
                         need_embedding.append(node)
                     else:
-                        node.embedding = list(struct.unpack(f"<{len(row[2]) // 8}d", row[2]))
+                        node.embedding = _embedding_values(row[2], row[3])
                 if need_embedding:
                     embeddings = _embed_length_bucketed(embed_model, need_embedding)
                     if len(embeddings) != len(need_embedding):
                         raise ValueError("Embedding response is incomplete.")
                     with connection:
                         for node, embedding in zip(need_embedding, embeddings):
-                            connection.execute("UPDATE children SET embedding=? WHERE id=?", (_embedding_blob(embedding), node.node_id))
+                            connection.execute(
+                                "UPDATE children SET embedding=?, dims=? WHERE id=?",
+                                (_embedding_blob(embedding), len(embedding), node.node_id),
+                            )
                             node.embedding = embedding
-                if nodes:
-                    index.insert_nodes(nodes, upsert=True)
-                    installed += len(nodes)
-                    print(f"[index] Checkpointed {installed}/{total} pending child vectors.")
-                for _, payload, _ in rows:
-                    node = TextNode.from_json(payload)
-                    storage.docstore.add_documents([node], allow_update=True)
+                if missing:
+                    index.insert_nodes([node for node, _ in missing], upsert=True)
+                    installed += len(missing)
+                    if installed - flushed >= _FLUSH_EVERY:
+                        indexing._flush_vector_store(vector_store)
+                        flushed = installed
+                for node in page_nodes:
+                    node.embedding = None  # keep vectors out of the persisted docstore
                     index.index_struct.add_node(node, text_id=node.node_id)
+                storage.docstore.add_documents(page_nodes, allow_update=True)
+                if total and time.monotonic() - last_report >= _PROGRESS_SECONDS:
+                    _report_progress(installed, total, started, persist_dir)
+                    last_report = time.monotonic()
             if installed:
                 indexing._flush_vector_store(vector_store)
             verified = _stored_ids(vector_store)

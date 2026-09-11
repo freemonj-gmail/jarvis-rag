@@ -11,6 +11,8 @@ import io
 import json
 import os
 import shutil
+import sqlite3
+import struct
 import sys
 import tempfile
 import unittest
@@ -33,6 +35,18 @@ from llama_index.core.vector_stores.simple import SimpleVectorStore
 from llama_index.core.vector_stores.types import VectorStoreQuery
 from jarvisrag.extraction import indexing, owned_index
 from scripts.bench_mail_embedding import AlignedTokenizer, copy_sample, embedding_order, measure_pipeline, padded_tokens, revise_sample_message
+
+# An exported JARVIS_MAIL_ACCOUNTS scopes the walk to one real account, which
+# would reject every synthetic fixture and trip the empty-scan guard instead.
+_ACCOUNT_SCOPE = patch.dict(os.environ, {"JARVIS_MAIL_ACCOUNTS": ""})
+
+
+def setUpModule():
+    _ACCOUNT_SCOPE.start()
+
+
+def tearDownModule():
+    _ACCOUNT_SCOPE.stop()
 
 
 class RetentionTests(unittest.TestCase):
@@ -217,6 +231,38 @@ class OwnedIndexTests(unittest.TestCase):
 
         def forbid_text_embedding(texts, **kwargs):
             self.assertEqual(texts, [], "Cached vectors must not be re-embedded.")
+            return []
+
+        with patch.object(MockEmbedding, "get_text_embedding_batch", side_effect=forbid_text_embedding):
+            index, _ = self.build(documents)
+        self.assertEqual(len(index.docstore.docs), 1)
+
+    def test_vectors_round_trip_and_legacy_float64_blobs_still_load(self):
+        vector = [0.5, -0.25, 0.125, 2.0]
+        current = owned_index._embedding_blob(vector)
+        legacy = struct.pack(f"<{len(vector)}d", *vector)
+        self.assertEqual(len(current), len(vector) * 4)
+        self.assertEqual(owned_index._embedding_values(current, len(vector)), vector)
+        self.assertEqual(owned_index._embedding_values(legacy, None), vector)
+
+    def test_checkpoints_written_before_float32_are_reused_not_reembedded(self):
+        documents = [self.document("one.txt", "The committee approved the project schedule after the final review.")]
+        with patch.object(SimpleVectorStore, "add", side_effect=RuntimeError("synthetic interruption")):
+            with self.assertRaises(RuntimeError):
+                self.build(documents)
+        with contextlib.closing(sqlite3.connect(os.path.join(self.persist, "owned_index.sqlite3"))) as ledger:
+            stored = ledger.execute("SELECT id, embedding, dims FROM children").fetchall()
+            self.assertTrue(stored)
+            with ledger:
+                for identity, blob, dims in stored:
+                    values = owned_index._embedding_values(blob, dims)
+                    ledger.execute(
+                        "UPDATE children SET embedding=?, dims=NULL WHERE id=?",
+                        (struct.pack(f"<{len(values)}d", *values), identity),
+                    )
+
+        def forbid_text_embedding(texts, **kwargs):
+            self.assertEqual(texts, [], "Legacy vectors must not be re-embedded.")
             return []
 
         with patch.object(MockEmbedding, "get_text_embedding_batch", side_effect=forbid_text_embedding):
