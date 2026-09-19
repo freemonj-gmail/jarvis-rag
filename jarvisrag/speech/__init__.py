@@ -37,6 +37,7 @@ from jarvisrag.iotools import suppress_external_output, suppress_external_stderr
 # Jarvis.py grows.
 _CITATION_FILE_EXT = (
     r"pdf|docx?|xlsx?|pptx?|csv|txt|rtf"          # documents
+    r"|mht(?:ml)?|html?|emlx?"                    # web archives + mail messages
     r"|png|jpe?g|tiff?|bmp|gif|webp|heic"          # images
 )
 _INLINE_CITATION_RE = re.compile(

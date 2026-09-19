@@ -883,6 +883,112 @@ class MailFlowTests(unittest.TestCase):
         run_tests()
 
 
+class MailCitationTests(unittest.TestCase):
+    """A domain-routed answer must cite the message, not its sha1 filename."""
+
+    def _node(self, **metadata):
+        return TextNode(text="body", metadata=metadata)
+
+    def test_email_evidence_cites_subject_sender_and_date(self):
+        from jarvisrag.answer.answer import _domain_reference_lines
+
+        node = self._node(
+            file_name="3f8a1c9e2b7d4a6f8c0e1d2b3a4c5d6e7f8a9b0c.emlx",
+            email_subject="Quarterly budget review",
+            email_from="Alex Example <alex@example.com>",
+            email_date="Tue, 3 Sep 2026 09:14:00 -0400",
+        )
+        lines = ["- 3f8a1c9e2b7d4a6f8c0e1d2b3a4c5d6e7f8a9b0c.emlx: the budget was approved"]
+        references, superseded = _domain_reference_lines(lines, [node])
+        self.assertEqual(
+            references,
+            ['Email: "Quarterly budget review" from Alex Example <alex@example.com> '
+             "(Tue, 3 Sep 2026 09:14:00 -0400)"],
+        )
+        self.assertNotIn("3f8a1c9e", references[0])
+        self.assertIn("3f8a1c9e2b7d4a6f8c0e1d2b3a4c5d6e7f8a9b0c.emlx", superseded)
+
+    def test_non_email_domain_evidence_keeps_its_file_label(self):
+        from jarvisrag.answer.answer import _domain_reference_lines
+
+        node = self._node(file_name="OPM_C050.pdf")
+        lines = ["- OPM_C050.pdf, page 40: components of the basic annuity"]
+        self.assertEqual(
+            _domain_reference_lines(lines, [node]), (["OPM_C050.pdf, page 40"], set())
+        )
+
+    def test_a_message_without_a_subject_is_still_never_cited_by_filename(self):
+        from jarvisrag.answer.answer import _domain_reference_lines
+
+        node = self._node(file_name="abc123.emlx", email_subject="", email_from="a@example.com")
+        references, superseded = _domain_reference_lines(["- abc123.emlx: body"], [node])
+        self.assertEqual(references, ["Email (no subject) from a@example.com"])
+        self.assertIn("abc123.emlx", superseded)
+
+    def test_only_delivered_evidence_is_cited(self):
+        from jarvisrag.answer import answer as answer_module
+
+        nodes = [self._node(file_name=f"m{i}.emlx", email_subject=f"Subject {i}") for i in range(20)]
+        lines = [f"- m{i}.emlx: body {i}" for i in range(20)]
+        with patch.object(answer_module, "_retrieve_query_supported_evidence", return_value=(lines, nodes)):
+            delivered, references, superseded = answer_module._retrieve_domain_evidence(
+                "what did the email say", [{"name": "mail", "retriever": object()}]
+            )
+        cap = answer_module._DOMAIN_EVIDENCE_LINES
+        self.assertEqual(len(delivered), cap)
+        self.assertEqual(len(references), cap)
+        self.assertEqual(len(superseded), cap)
+        self.assertIn('Email: "Subject 0"', references)
+        self.assertNotIn(f'Email: "Subject {cap}"', references)
+
+    def test_references_survive_when_the_model_cites_nothing_in_prose(self):
+        from jarvisrag.answer.answer import _format_response_for_display
+
+        rendered = _format_response_for_display(
+            "The budget was approved.", None, ['Email: "Quarterly budget review"']
+        )
+        self.assertIn("References:", rendered)
+        self.assertIn('Email: "Quarterly budget review"', rendered)
+
+    def test_domain_lookup_failure_yields_no_evidence_and_no_references(self):
+        from jarvisrag.answer.answer import _retrieve_domain_evidence
+
+        self.assertEqual(_retrieve_domain_evidence("question", None), ([], [], set()))
+
+    def test_message_filenames_are_never_spoken_or_printed(self):
+        """A sha1(Message-ID).emlx name must not survive into the spoken or the
+        printed answer, and must not reappear as its own References entry once a
+        Subject/From/Date reference has replaced it."""
+        from jarvisrag.answer.answer import _format_response_for_display
+        from jarvisrag.speech import _strip_inline_citations, _strip_source_filenames_for_speech
+
+        name = "3f8a1c9e2b7d4a6f8c0e1d2b3a4c5d6e7f8a9b0c.emlx"
+        prose = f"The budget was approved in {name}, and a follow-up was sent ({name})."
+
+        spoken = _strip_source_filenames_for_speech(_strip_inline_citations(prose))
+        self.assertNotIn(".emlx", spoken)
+        self.assertNotIn("3f8a1c9e", spoken)
+        self.assertIn("budget was approved", spoken)
+
+        rendered = _format_response_for_display(
+            prose, None, ['Email: "Quarterly budget review"'], {name.lower()}
+        )
+        self.assertNotIn(".emlx", rendered)
+        self.assertIn('Email: "Quarterly budget review"', rendered)
+
+    def test_every_ingested_extension_is_citation_suppressed(self):
+        """The spoken/printed citation regex must cover the whole ingest list;
+        mail (.emlx) and web archives (.html/.mhtml) were previously missed."""
+        import re as _re
+        from jarvisrag.answer.bootstrap import DOCUMENT_EXTENSIONS, IMAGE_EXTENSIONS
+        from jarvisrag.speech import _CITATION_FILE_EXT
+
+        pattern = _re.compile(rf"^(?:{_CITATION_FILE_EXT})$", _re.IGNORECASE)
+        for ext in list(DOCUMENT_EXTENSIONS) + list(IMAGE_EXTENSIONS):
+            with self.subTest(ext=ext):
+                self.assertTrue(pattern.match(ext.lstrip(".")), f"{ext} not citation-suppressed")
+
+
 def verify_live_milvus():
     """Explicit local-service validation using only a uniquely named disposable collection."""
     from jarvisrag.iotools import _is_port_open

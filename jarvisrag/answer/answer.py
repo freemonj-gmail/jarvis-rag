@@ -1249,6 +1249,7 @@ def _format_response_for_display(
     response_text: str,
     excluded_files: list[str] | None = None,
     ensure_references: list[str] | None = None,
+    drop_references: set[str] | None = None,
 ) -> str:
     """Render the answer followed by a 'References' block that lists each unique
     source (file + page) named in the answer.
@@ -1266,6 +1267,10 @@ def _format_response_for_display(
     excluded_refs = _excluded_reference_lines(excluded_files)
     body = response_text.strip() if response_text else ""
     references = _extract_source_references(body) if body else []
+    if drop_references:
+        references = [
+            ref for ref in references if _ref_basename(ref).lower() not in drop_references
+        ]
     references = _ensure_reference_lines(references, ensure_references)
     display_body = _strip_citations_for_display(body) if body else ""
     all_refs = references + excluded_refs
@@ -1610,7 +1615,73 @@ def _corpus_relevance(query: str, index: object) -> float:
     return max((float(getattr(n, "score", 0.0) or 0.0) for n in nodes), default=0.0)
 
 
-def _retrieve_domain_evidence(query: str, domains: list | None) -> list[str]:
+_DOMAIN_EVIDENCE_LABEL_RE = re.compile(r"^-\s*(.+?):\s")
+_EVIDENCE_PAGE_SUFFIX_RE = re.compile(r",\s*page\s*\d+\s*$", re.IGNORECASE)
+
+
+def _email_reference_line(metadata: dict) -> str:
+    """Cite a message the way a person can actually find it again.
+
+    A staged message's filename is sha1(Message-ID), which identifies nothing to
+    a reader, so ANY message metadata is preferred over it: Subject when present,
+    otherwise sender and/or date, otherwise a bare marker. Returns "" only when
+    the node carries no message metadata at all — i.e. it is not a message, and
+    its own filename is the meaningful citation.
+    """
+    if not any(str(key).startswith("email_") for key in metadata):
+        return ""
+    subject = str(metadata.get("email_subject") or "").strip()
+    sender = str(metadata.get("email_from") or "").strip()
+    date = str(metadata.get("email_date") or "").strip()
+    reference = f'Email: "{subject}"' if subject else "Email (no subject)"
+    if sender:
+        reference += f" from {sender}"
+    if date:
+        reference += f" ({date})"
+    return reference
+
+
+def _domain_reference_lines(
+    evidence_lines: list[str], source_nodes: list | None
+) -> tuple[list[str], set[str]]:
+    """Guaranteed References for the domain evidence actually sent to the model.
+
+    A domain-routed answer skips the launch-folder reference injection, so without
+    this the References fall back to whatever filename the model types in prose —
+    and a staged mail filename is sha1(Message-ID), which it will never reproduce.
+    Source choice is driven by the node's own metadata, not by corpus name: a
+    message cites Subject/From/Date, anything else keeps its file label. Returns
+    the references plus the filenames they REPLACE, so the opaque original is not
+    also listed when the model happens to name it in prose."""
+    if not evidence_lines:
+        return [], set()
+    by_name: dict[str, dict] = {}
+    for node in source_nodes or []:
+        metadata = getattr(getattr(node, "node", node), "metadata", None) or {}
+        name = os.path.basename(str(metadata.get("file_name") or metadata.get("file_path") or ""))
+        if name and name not in by_name:
+            by_name[name] = metadata
+    references: list[str] = []
+    superseded: set[str] = set()
+    for line in evidence_lines:
+        match = _DOMAIN_EVIDENCE_LABEL_RE.match(line)
+        if not match:
+            continue
+        label = match.group(1).strip()
+        name = _EVIDENCE_PAGE_SUFFIX_RE.sub("", label).strip()
+        reference = _email_reference_line(by_name.get(name) or {})
+        if reference:
+            superseded.add(name.lower())
+        else:
+            reference = label
+        if reference not in references:
+            references.append(reference)
+    return references, superseded
+
+
+def _retrieve_domain_evidence(
+    query: str, domains: list | None
+) -> tuple[list[str], list[str], set[str]]:
     """Retrieve evidence from the already-selected domain corpora.
 
     Additive + fail-safe: no domains or any error yields []. Domain evidence
@@ -1618,20 +1689,26 @@ def _retrieve_domain_evidence(query: str, domains: list | None) -> list[str]:
     like local evidence, and is merged at high precedence. Each domain index is
     SEPARATE from the main index, and its own relevance gate decides whether it
     contributes — so a sticky (prior-topic) domain that no longer applies simply
-    returns nothing and the turn falls back to normal retrieval."""
+    returns nothing and the turn falls back to normal retrieval. Returns the
+    evidence lines, the References they must be citeable by, and the filenames
+    those references replace."""
     if not domains:
-        return []
+        return [], [], set()
     cap = _DOMAIN_EVIDENCE_LINES
     lines: list[str] = []
+    nodes: list = []
     for domain in domains:
         if len(lines) >= cap:
             break
         try:
-            evidence, _nodes = _retrieve_query_supported_evidence(query, domain["retriever"])
+            evidence, source_nodes = _retrieve_query_supported_evidence(query, domain["retriever"])
             lines.extend(evidence)
+            nodes.extend(source_nodes or [])
         except Exception as exc:  # noqa: BLE001 - never let a domain lookup break a turn
             debug_print(f"[domain] {domain.get('name')} retrieval failed ({exc}); skipping.")
-    return lines[:cap]
+    delivered = lines[:cap]
+    references, superseded = _domain_reference_lines(delivered, nodes)
+    return delivered, references, superseded
 
 
 def handle_query(
@@ -1772,10 +1849,14 @@ def handle_query(
         domain_routed = False
         routed_domain_names: list = []
         domain_evidence: list[str] = []
+        domain_refs: list[str] = []
+        domain_superseded: set[str] = set()
         if keyword_domains:
             domain_routed = True
             routed_domain_names = [d.get("name") for d in keyword_domains]
-            domain_evidence = _retrieve_domain_evidence(effective_user_query, keyword_domains)
+            domain_evidence, domain_refs, domain_superseded = _retrieve_domain_evidence(
+                effective_user_query, keyword_domains
+            )
         elif active_domains:
             domain_rel = max(
                 (_corpus_relevance(effective_user_query, d.get("index")) for d in active_domains),
@@ -1786,7 +1867,9 @@ def handle_query(
             if domain_rel > main_rel:
                 domain_routed = True
                 routed_domain_names = [d.get("name") for d in active_domains]
-                domain_evidence = _retrieve_domain_evidence(effective_user_query, active_domains)
+                domain_evidence, domain_refs, domain_superseded = _retrieve_domain_evidence(
+                    effective_user_query, active_domains
+                )
         evidence_lines, source_nodes = _retrieve_query_supported_evidence(
             effective_user_query,
             runtime.doc_retriever,
@@ -1827,8 +1910,9 @@ def handle_query(
         # representable in References even if the LLM cites them descriptively or
         # their filename contains spaces (which the prose citation regex mangles).
         # Domain-routed answers come from the domain/MCP sources, not the launch
-        # folder, so drop the home-folder References and excluded-file notes.
-        home_evidence_refs = [] if domain_routed else _home_files_in_evidence(
+        # folder, so they cite their OWN evidence instead (a staged mail filename
+        # is sha1(Message-ID), which the model can never reproduce in prose).
+        home_evidence_refs = domain_refs if domain_routed else _home_files_in_evidence(
             evidence_lines, runtime.home_indexed_files
         )
         excluded_for_display = None if domain_routed else runtime.home_excluded_files
@@ -1837,7 +1921,7 @@ def handle_query(
             response_text = _author_from_evidence(effective_user_query, evidence_lines, runtime.llm)
             if response_text:
                 debug_print("[debug] Used authoring/composition path (single pass, no review loop).")
-                print(f"Jarvis: {_format_response_for_display(response_text, excluded_for_display, home_evidence_refs)}\n")
+                print(f"Jarvis: {_format_response_for_display(response_text, excluded_for_display, home_evidence_refs, domain_superseded)}\n")
                 tts.speak(_spoken_response_text(response_text))
                 return {
                     "user_query": user_query,
@@ -1944,7 +2028,7 @@ def handle_query(
         else:
             debug_print("[debug] Returning reviewed answer.")
 
-        print(f"Jarvis: {_format_response_for_display(response_text, excluded_for_display, home_evidence_refs)}\n")
+        print(f"Jarvis: {_format_response_for_display(response_text, excluded_for_display, home_evidence_refs, domain_superseded)}\n")
         tts.speak(_spoken_response_text(response_text))
         last_turn = {
             "user_query": user_query,
