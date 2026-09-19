@@ -444,6 +444,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
     parser.add_argument("--config", default=None, help="path to the source recipe (default document_sources.json)")
     parser.add_argument("--set", dest="set_name", default=None, help="only refresh the named set")
+    parser.add_argument(
+        "--type", dest="set_type", default=None,
+        help="only refresh sets of this type ('remote' covers every downloaded corpus and needs no "
+             "Full Disk Access; 'mail' syncs the local Apple Mail store and does)",
+    )
     parser.add_argument("--force", action="store_true", help="re-download regardless of cached hash/etag")
     args = parser.parse_args(argv)
 
@@ -455,6 +460,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         sets = [s for s in sets if s.name == args.set_name]
         if not sets:
             print(f"[docsync] No set named '{args.set_name}'.")
+            return 1
+    if args.set_type:
+        sets = [s for s in sets if s.type == args.set_type]
+        if not sets:
+            print(f"[docsync] No sets of type '{args.set_type}'.")
             return 1
 
     from jarvisrag.iotools import Spinner  # lazy: only the CLI run needs it

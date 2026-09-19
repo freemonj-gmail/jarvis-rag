@@ -514,7 +514,7 @@ any MCP request and acts per `JARVIS_MCP_PII_GUARD`:
 ## Domain corpora (routed sub-indexes)
 
 Some subjects deserve their own **authoritative reference corpus** kept apart from
-your everyday documents — e.g. a set of federal-benefits handbooks (OPM/SSA) that
+your everyday documents — e.g. a set of federal-benefits handbooks (OPM/SSA/TSP) that
 should answer retirement questions without diluting résumé or contract retrieval.
 Jarvis supports this with **routed domain sub-indexes**, declared as data in
 `document_sources.json` and **on by default** (no flag).
@@ -549,22 +549,35 @@ refreshed with a small **document-sync** step, driven by the same
 `document_sources.json` recipe:
 
 ```bash
-make docs-refresh
+make docs-refresh                         # every set
+make docs-refresh ARGS="--type remote"    # only web-downloaded corpora
+make docs-refresh ARGS="--set mail"       # a single named set
 ```
+
+`--type` selects sets by their `type` field, so `--type remote` covers every
+downloaded corpus — including any added later — without naming them one by one.
+That split matters on macOS: only a `type: "mail"` set reads the protected
+`~/Library/Mail` and therefore needs Full Disk Access granted to the terminal,
+while `--type remote` needs no special permission. Refreshing the two from
+different terminals is expected. `--force` re-downloads regardless of the cached
+hash/ETag, and `--config` points at an alternate recipe.
 
 It downloads each declared document into its `corpus_dir`, compares the new bytes
 against the on-disk copy by SHA-256, and **rewrites only when the content changed**
-(atomic replace). Where the server supports it, a conditional `ETag` /
-`Last-Modified` request avoids re-downloading unchanged files entirely; a small
-state sidecar tracks those validators. Because a rewrite happens only on real
-change, the domain index's delta-sync then re-embeds just the documents that moved.
+(atomic replace). Requests carry browser-like headers because several publishers
+(including opm.gov, ssa.gov, and tsp.gov) reject a bare user agent outright. Where
+the server supports it, a conditional `ETag` / `Last-Modified` request avoids
+re-downloading unchanged files entirely; a small state sidecar tracks those
+validators. Because a rewrite happens only on real change, the domain index's
+delta-sync then re-embeds just the documents that moved.
 
 ### Local mail refresh and benchmarking
 
 Sets with `type: "mail"` use the same `make docs-refresh` command to copy local
-Apple Mail `.emlx` files into the configured corpus. Refresh does not build the
-index. Only the copy operation needs access to the live Mail directory; it does
-not open Mail's database or write back to Mail.
+Apple Mail `.emlx` files into the configured corpus (`ARGS="--type mail"` limits a
+run to them). Refresh does not build the index. Only the copy operation needs
+access to the live Mail directory; it does not open Mail's database or write back
+to Mail.
 
 Two filters narrow what is staged. `exclude_folders` on the set skips mailboxes by
 name (matched on whole path segments, so `Trash` never matches `Trashed Drafts`),
