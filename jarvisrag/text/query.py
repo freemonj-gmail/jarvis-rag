@@ -187,6 +187,13 @@ def _looks_like_follow_up(user_query: str, last_turn: dict[str, object]) -> bool
     lowered = " ".join(user_query.lower().split())
     if not lowered:
         return False
+    # The assistant ended the previous turn by ASKING for a missing detail, so
+    # this turn is its answer by construction -- however terse. Phrasing
+    # heuristics cannot see this: a bare "2026" or "the Roth one" has no pronoun
+    # and no refinement marker, and would otherwise restart as a fresh question,
+    # stranding the clarification.
+    if last_turn.get("awaiting_clarification"):
+        return True
     follow_up_markers = (
         "that", "it", "its", "same", "previous", "earlier", "answer", "evidence",
         "relevant evidence", "file", "filename", "entitled", "document", "pdf",

@@ -267,6 +267,45 @@ def _is_port_open(host: str, port: str, timeout: float = 2.0) -> bool:
         return False
 
 
+def _drain_buffered_lines(max_lines: int = 2000) -> list[str]:
+    """Return lines already buffered on stdin, without blocking.
+
+    A pasted block reaches the terminal as one burst, so the remainder is
+    readable immediately; a typed line leaves nothing behind. ``select`` with a
+    zero timeout distinguishes the two without ever waiting on the user.
+
+    Returns [] on any platform or stream that cannot be polled, and for
+    non-TTY stdin, so piped and scripted input keeps its exact prior behavior.
+    """
+    try:
+        if not sys.stdin.isatty():
+            return []
+    except Exception:
+        return []
+
+    try:
+        import select
+    except Exception:
+        return []
+
+    extra: list[str] = []
+    while len(extra) < max_lines:
+        try:
+            ready, _, _ = select.select([sys.stdin], [], [], 0)
+        except Exception:
+            break
+        if not ready:
+            break
+        try:
+            line = sys.stdin.readline()
+        except Exception:
+            break
+        if not line:
+            break
+        extra.append(line.rstrip("\n"))
+    return extra
+
+
 def read_user_query(
     prompt: str = "You: ",
     *,
@@ -292,6 +331,14 @@ def read_user_query(
 
     EOF (Ctrl-D) at the top-level prompt returns ``"exit"`` so the REPL can quit
     cleanly instead of raising ``EOFError``.
+
+    - Bare paste (no markers): a multi-line paste arrives as ONE burst, so the
+      lines after the first are already sitting in the terminal buffer when
+      ``input()`` returns. Without draining them each would be consumed as its
+      OWN query, turning one paste into N full RAG turns with no way to reach the
+      prompt to quit. They are drained and joined into a single query instead.
+      Interactive only: when stdin is not a TTY (pipes, tests, scripted input)
+      the line-at-a-time contract is preserved exactly.
     """
     try:
         first_line = input(prompt)
@@ -299,6 +346,13 @@ def read_user_query(
         return "exit"
 
     if first_line.strip() != open_marker:
+        pending = _drain_buffered_lines()
+        if pending:
+            print(
+                f"[jarvis] Captured a {len(pending) + 1}-line paste as ONE question "
+                f"(use {open_marker} ... {close_marker} to do this explicitly)."
+            )
+            return "\n".join([first_line, *pending])
         return first_line
 
     lines: list[str] = []

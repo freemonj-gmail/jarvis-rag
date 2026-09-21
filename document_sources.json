@@ -4,9 +4,9 @@
     {
       "name": "fedbenefits",
       "corpus_dir": "jarvis_storage/fedbenefits_corpus",
-      "_note": "US federal retirement-benefit rules (OPM CSRS/FERS Handbook + SSA pubs + TSP booklets/fact sheets). Volatile: updated on policy/administration changes. Complements the eCFR MCP connector (which serves live Title-5 CFR text) with plain-language computation guidance. tsp.gov returns 403 to a bare user agent, which the shared browser headers already handle.",
+      "_note": "US federal retirement-benefit rules (OPM CSRS/FERS Handbook + SSA pubs + TSP booklets/fact sheets + the IRS annual retirement COLA notice). Volatile: updated on policy/administration changes. Complements the eCFR MCP connector (which serves live Title-5 CFR text) with plain-language computation guidance. tsp.gov returns 403 to a bare user agent, which the shared browser headers already handle. The IRS COLA notice carries the YEAR-SPECIFIC dollar limits (elective deferral, catch-up, IRA) that the TSP fact sheets deliberately omit so they do not go stale and that the Internal Revenue Code states only as a cost-of-living adjustment — without it no source in this set answers 'what is the limit this year'. It is republished annually under a new notice number, so this URL needs a yearly bump; the companion IRS limits PAGE (.html) is the self-updating hedge — the IRS revises it in place each year at a stable URL, so a plain refresh picks up new figures without editing this recipe. Keep BOTH: the notice is the citable authority, the page is the one that stays current on its own. Employer-plan rules here are NOT federal-only even though the TSP booklets describe them in TSP terms: the SECURE 2.0 section 603 Roth catch-up requirement amends IRC 414(v)(7) and governs every applicable employer plan (401(k), 403(b), governmental 457(b), TSP). Notice 2023-62 is carried as the plan-agnostic statement of that rule so an answer is not framed as TSP-specific when the user means a private 401(k).",
       "label": "Federal retirement benefits (OPM/SSA)",
-      "match_any": ["fers", "csrs", "thrift savings", "tsp", "opm", "federal annuity", "federal employees retirement", "basic annuity", "social security", "survivor annuity", "retiree annuity supplement", "earnings test", "full retirement age", "spousal benefit", "survivor benefit", "when to claim"],
+      "match_any": ["fers", "csrs", "thrift savings", "tsp", "opm", "federal annuity", "federal employees retirement", "basic annuity", "social security", "survivor annuity", "retiree annuity supplement", "earnings test", "full retirement age", "spousal benefit", "survivor benefit", "when to claim", "contribution limit", "elective deferral", "catch-up contribution", "catch up contribution", "roth ira", "roth tsp"],
       "documents": [
         { "name": "OPM_C050_Computation_General_Formula.pdf", "url": "https://www.opm.gov/retirement-center/publications-forms/csrsfers-handbook/c050.pdf" },
         { "name": "OPM_C051_Retiree_Annuity_Supplement.pdf", "url": "https://www.opm.gov/retirement-center/publications-forms/csrsfers-handbook/c051.pdf" },
@@ -37,7 +37,10 @@
         { "name": "TSP_FS05_Rollovers_From_TSP.pdf", "url": "https://www.tsp.gov/publications/tspfs05.pdf" },
         { "name": "TSP_FS07_Annual_Limit_On_Elective_Deferrals.pdf", "url": "https://www.tsp.gov/publications/tspfs07.pdf" },
         { "name": "TSP_FS12_Catch_Up_Contributions.pdf", "url": "https://www.tsp.gov/publications/tspfs12.pdf" },
-        { "name": "TSP_FS22_TSP_And_IRAs.pdf", "url": "https://www.tsp.gov/publications/tspfs22.pdf" }
+        { "name": "TSP_FS22_TSP_And_IRAs.pdf", "url": "https://www.tsp.gov/publications/tspfs22.pdf" },
+        { "name": "IRS_Notice_2025-67_Retirement_Plan_COLA_2026.pdf", "url": "https://www.irs.gov/pub/irs-drop/n-25-67.pdf" },
+        { "name": "IRS_401k_And_Profit_Sharing_Contribution_Limits.html", "url": "https://www.irs.gov/retirement-plans/plan-participant-employee/retirement-topics-401k-and-profit-sharing-plan-contribution-limits" },
+        { "name": "IRS_Notice_2023-62_SECURE_2.0_Sec_603_Roth_Catch_Up.pdf", "url": "https://www.irs.gov/pub/irs-drop/n-23-62.pdf" }
       ]
     },
     {
