@@ -928,13 +928,17 @@ class MailCitationTests(unittest.TestCase):
     def test_only_delivered_evidence_is_cited(self):
         from jarvisrag.answer import answer as answer_module
 
-        nodes = [self._node(file_name=f"m{i}.emlx", email_subject=f"Subject {i}") for i in range(20)]
-        lines = [f"- m{i}.emlx: body {i}" for i in range(20)]
-        with patch.object(answer_module, "_retrieve_query_supported_evidence", return_value=(lines, nodes)):
+        # The domain cap now follows JARVIS_MAX_EVIDENCE_LINES (default 30) so it
+        # never sits tighter than the retriever's own output. Pin a small cap here
+        # so truncation is exercised deterministically regardless of the default.
+        cap = 5
+        nodes = [self._node(file_name=f"m{i}.emlx", email_subject=f"Subject {i}") for i in range(cap + 8)]
+        lines = [f"- m{i}.emlx: body {i}" for i in range(cap + 8)]
+        with patch.dict(os.environ, {"JARVIS_MAX_EVIDENCE_LINES": str(cap)}), \
+                patch.object(answer_module, "_retrieve_query_supported_evidence", return_value=(lines, nodes)):
             delivered, references, superseded = answer_module._retrieve_domain_evidence(
                 "what did the email say", [{"name": "mail", "retriever": object()}]
             )
-        cap = answer_module._DOMAIN_EVIDENCE_LINES
         self.assertEqual(len(delivered), cap)
         self.assertEqual(len(references), cap)
         self.assertEqual(len(superseded), cap)
@@ -1076,6 +1080,90 @@ def verify_live_milvus():
                 print("Disposable email validation collection removed.")
             finally:
                 store._client.close()
+
+class AnswerBudgetTests(unittest.TestCase):
+    """The per-turn wall-clock budget must bound the LLM fallback chain: once the
+    budget is spent, no further distillation (a slow model call) is STARTED, yet a
+    non-empty answer still comes back from the fast pure-Python extractive
+    fallbacks. This is the guard against the stacked-generation hang where a slow
+    synthesis returned empty and the fallback chain then launched more multi-minute
+    model calls with no time bound.
+    """
+
+    def _run_with_empty_synthesis(self, budget):
+        from jarvisrag.answer import answer as answer_module
+
+        evidence = ["- doc.pdf: The 2026 elective deferral limit is $24,500."]
+        distill_calls = {"n": 0}
+
+        def fake_distill(*_a, **_k):
+            distill_calls["n"] += 1
+            return "DISTILLED ANSWER"
+
+        with patch.dict(os.environ, {"JARVIS_ANSWER_TIME_BUDGET_SECONDS": str(budget)}), \
+                patch.object(answer_module, "_synthesize_evidence_answer", return_value=""), \
+                patch.object(answer_module, "_extractive_reasoning_answer_from_evidence", return_value=""), \
+                patch.object(answer_module, "_extractive_summary_answer_from_evidence", return_value=""), \
+                patch.object(answer_module, "_distill_answer_from_evidence", side_effect=fake_distill), \
+                patch.object(answer_module, "_forced_extractive_summary_from_evidence", return_value="FORCED SUMMARY"):
+            answer, ok, _reason = answer_module._answer_with_review_loop("what is the limit", evidence, object())
+        return answer, ok, distill_calls["n"]
+
+    def test_spent_budget_skips_the_slow_distillation_call(self):
+        answer, ok, distills = self._run_with_empty_synthesis(budget=0)
+        self.assertEqual(distills, 0)  # no slow LLM call started once the budget is gone
+        self.assertTrue(ok)
+        self.assertEqual(answer, "FORCED SUMMARY")  # fast fallback still yields an answer
+
+    def test_available_budget_still_uses_distillation(self):
+        answer, ok, distills = self._run_with_empty_synthesis(budget=1000)
+        self.assertEqual(distills, 1)  # with budget remaining, the distill IS attempted
+        self.assertEqual(answer, "DISTILLED ANSWER")
+
+class EvidenceBudgetTests(unittest.TestCase):
+    """The global evidence ceiling must bound the diluting per-source pile WITHOUT
+    ever truncating the authoritative (MCP + domain) tiers -- so a value the domain
+    retriever ranked deep in its own fully-retained list can never be cut here.
+    Pure, domain-agnostic list assembly.
+    """
+
+    def _lines(self, tag, n):
+        return [f"- {tag}{i}.pdf: {tag} evidence {i}" for i in range(n)]
+
+    def test_domain_is_never_truncated_even_when_ranked_deep(self):
+        from jarvisrag.answer.answer import _budget_combined_evidence
+
+        mcp = self._lines("mcp", 1)
+        domain = self._lines("dom", 30)  # answer sits at domain position 21 (index 20)
+        main = self._lines("main", 30)
+        out = _budget_combined_evidence(mcp, domain, main, budget=40, main_reserve=6)
+        # every domain line survives, in order, right after MCP
+        self.assertEqual(out[: len(mcp) + len(domain)], mcp + domain)
+        self.assertIn("- dom20.pdf: dom evidence 20", out)  # the deep linking chunk
+        self.assertLessEqual(len(out), 40)
+
+    def test_main_is_reserved_when_a_domain_routed(self):
+        from jarvisrag.answer.answer import _budget_combined_evidence
+
+        out = _budget_combined_evidence(self._lines("mcp", 1), self._lines("dom", 30),
+                                        self._lines("main", 30), budget=40, main_reserve=6)
+        main_kept = [l for l in out if l.startswith("- main")]
+        self.assertEqual(len(main_kept), 6)  # main capped to the reserve, not flooding
+
+    def test_authoritative_over_budget_is_kept_and_main_dropped(self):
+        from jarvisrag.answer.answer import _budget_combined_evidence
+
+        # MCP(12) + domain(30) = 42 authoritative lines > budget 40
+        out = _budget_combined_evidence(self._lines("mcp", 12), self._lines("dom", 30),
+                                        self._lines("main", 30), budget=40, main_reserve=6)
+        self.assertEqual(len(out), 42)  # authoritative never sacrificed
+        self.assertFalse([l for l in out if l.startswith("- main")])  # main dropped to fit
+
+    def test_no_domain_leaves_main_untouched(self):
+        from jarvisrag.answer.answer import _budget_combined_evidence
+
+        out = _budget_combined_evidence([], [], self._lines("main", 30), budget=40, main_reserve=6)
+        self.assertEqual(len(out), 30)  # single-corpus path unchanged, no reserve applied
 
 
 if __name__ == "__main__":

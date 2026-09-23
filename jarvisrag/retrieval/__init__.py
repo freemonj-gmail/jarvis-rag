@@ -120,6 +120,13 @@ def _source_nodes_to_query_evidence_lines(
     require_value = _query_requests_values(user_query)
     enumerate_full = _query_requests_enumeration(user_query)
     enum_max_chars = int(os.environ.get("JARVIS_ENUM_CHUNK_CHARS", "8000"))
+    # Budget for the query-focused snippet on the ordinary retrieval path. The
+    # historical 2000 was a KEYHOLE: a 15-line domain answer delivered ~2KB per
+    # document into a 128K-token window (~5% used), and the sentence carrying a
+    # figure could be trimmed out even though its chunk was selected and cited.
+    # Overridable like its siblings above so the budget can be measured, not
+    # guessed. Enumeration and source-hint paths keep their own larger budgets.
+    query_snippet_chars = int(os.environ.get("JARVIS_QUERY_SNIPPET_CHARS", "6000"))
     hint_basenames = {os.path.basename(h).lower() for h in (source_hints or []) if h}
     node_relevance = node_relevance or {}
     home_root = (os.path.abspath(home_corpus_dir).lower() + os.sep) if home_corpus_dir else None
@@ -208,7 +215,7 @@ def _source_nodes_to_query_evidence_lines(
             if len(node_text) > enum_max_chars:
                 snippet += "..."
         else:
-            snippet = _query_focused_snippet(node_text, terms, anchor_terms, require_value)
+            snippet = _query_focused_snippet(node_text, terms, anchor_terms, require_value, max_chars=query_snippet_chars)
             if not _query_evidence_is_supported(snippet, terms, anchor_terms, require_value):
                 continue
 
