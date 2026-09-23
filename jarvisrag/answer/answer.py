@@ -1206,6 +1206,49 @@ def _answer_hedges_about_missing_detail(response_text: str) -> bool:
     return any(marker in text for marker in _HEDGE_MARKERS)
 
 
+# General quantity/value intent -- a number that can change from year to year.
+# Domain-neutral (no tax-specific words) so the period clarification generalizes
+# to any corpus: prices, rates, thresholds, limits, fees, etc.
+_QUANTITY_INTENT_RE = re.compile(
+    r"\b(limit|limits|rate|rates|amount|amounts|maximum|minimum|threshold|thresholds"
+    r"|cap|caps|how much|how many|price|prices|cost|costs|fee|fees)\b|[$€£%]",
+    re.I,
+)
+_YEAR_RE = re.compile(r"\b(?:19|20)\d{2}\b")
+
+
+def _period_clarification_from_evidence(user_query: str, evidence_lines: list[str]) -> str:
+    """Deterministically ask WHICH year when a quantity question names none but
+    the retrieved evidence spans several years.
+
+    A value that varies by year (a limit, rate, threshold, price, ...) cannot be
+    pinned down if the question fixes no period and the evidence carries two or
+    more distinct years -- and this session proved the local models HEDGE instead
+    of guessing. So ask the user for the year rather than infer it. Deterministic
+    and DOMAIN-AGNOSTIC: it keys only on 'a quantity question + multiple years in
+    the evidence', never on any specific topic, value, or corpus. Returns '' when
+    not applicable, so the caller falls through to the general LLM triage.
+    """
+    q = user_query or ""
+    if _YEAR_RE.search(q):
+        return ""  # the query already fixes a period
+    if not _QUANTITY_INTENT_RE.search(q):
+        return ""  # period only matters for a quantity that varies over time
+    years = {
+        y
+        for line in evidence_lines
+        for y in _YEAR_RE.findall(str(line))
+        if 1990 <= int(y) <= 2100
+    }
+    if len(years) < 2:
+        return ""
+    shown = ", ".join(sorted(years)[-4:])
+    return (
+        "Which year are you asking about? The retrieved evidence covers multiple "
+        f"years ({shown}) and the amounts differ by year."
+    )
+
+
 def _clarifying_question_from_evidence(
     user_query: str,
     evidence_lines: list[str],
@@ -1227,6 +1270,12 @@ def _clarifying_question_from_evidence(
     """
     if not (user_query or "").strip():
         return ""
+    # Deterministic fast-path: a quantity question with no year, over evidence
+    # that spans several years, is period-ambiguous. Ask which year directly
+    # rather than relying on the triage model, which tends to decline. Agnostic.
+    period_question = _period_clarification_from_evidence(user_query, evidence_lines or [])
+    if period_question:
+        return period_question
     # Triage only needs enough evidence to see WHAT dimension varies, not the
     # full text; a live MCP result can be tens of thousands of characters.
     budget = int(os.environ.get("JARVIS_CLARIFY_EVIDENCE_CHARS", "1500"))
@@ -2122,12 +2171,20 @@ def handle_query(
         # question, a disabled layer, or any fetch failure yields [].
         # Literal full-text back-ends (e.g. eCFR) need salient keywords, not a
         # raw question, so pass a compact set reusing the existing query analysis.
-        mcp_terms = _query_terms(effective_user_query)
-        mcp_anchors = _query_anchor_terms(effective_user_query, mcp_terms)
-        mcp_keywords = " ".join((mcp_anchors + _query_topic_terms(mcp_terms, mcp_anchors))[:4])
-        mcp_evidence = fetch_mcp_evidence(
-            effective_user_query, runtime.mcp_registry, search_terms=mcp_keywords
-        )
+        # On a clarification answer the prior turn's evidence -- including any MCP
+        # lines -- is already carried forward by _evidence_lines_for_turn, so skip
+        # the fresh MCP round-trip: it only adds latency and can TIME OUT on the
+        # follow-up (observed: a 20s taxmcp timeout) for no new information.
+        if is_follow_up and last_turn.get("awaiting_clarification"):
+            debug_print("[debug] Clarification answer: skipping MCP re-fetch; prior evidence is reused.")
+            mcp_evidence: list[str] = []
+        else:
+            mcp_terms = _query_terms(effective_user_query)
+            mcp_anchors = _query_anchor_terms(effective_user_query, mcp_terms)
+            mcp_keywords = " ".join((mcp_anchors + _query_topic_terms(mcp_terms, mcp_anchors))[:4])
+            mcp_evidence = fetch_mcp_evidence(
+                effective_user_query, runtime.mcp_registry, search_terms=mcp_keywords
+            )
         # Combine the three tiers under ONE global ceiling. MCP is prepended so it
         # outranks the local corpus and the model's general knowledge; domain is
         # next; the general main index fills the remainder. The authoritative

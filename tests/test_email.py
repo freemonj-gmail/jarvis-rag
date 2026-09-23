@@ -1165,6 +1165,60 @@ class EvidenceBudgetTests(unittest.TestCase):
         out = _budget_combined_evidence([], [], self._lines("main", 30), budget=40, main_reserve=6)
         self.assertEqual(len(out), 30)  # single-corpus path unchanged, no reserve applied
 
+class PeriodClarificationTests(unittest.TestCase):
+    """Deterministic year clarification: a quantity question with no year, over
+    evidence spanning multiple years, must ask WHICH year -- agnostically (keyed
+    only on quantity-intent + multiple years, never on a topic/value/corpus).
+    """
+
+    def _ev(self, *years):
+        return [f"- src{y}.pdf: the limit for {y} is a value" for y in years]
+
+    def test_asks_year_when_quantity_query_lacks_year_and_evidence_spans_years(self):
+        from jarvisrag.answer.answer import _period_clarification_from_evidence
+
+        q = _period_clarification_from_evidence(
+            "what is the contribution limit for people over 50", self._ev(2024, 2025, 2026)
+        )
+        self.assertTrue(q.endswith("?") or "?" in q)
+        self.assertIn("2026", q)
+        self.assertIn("2024", q)
+
+    def test_silent_when_query_already_names_a_year(self):
+        from jarvisrag.answer.answer import _period_clarification_from_evidence
+
+        self.assertEqual(
+            _period_clarification_from_evidence(
+                "what is the 2026 contribution limit", self._ev(2024, 2025, 2026)
+            ),
+            "",
+        )
+
+    def test_silent_when_evidence_spans_one_year(self):
+        from jarvisrag.answer.answer import _period_clarification_from_evidence
+
+        self.assertEqual(
+            _period_clarification_from_evidence("what is the limit", self._ev(2026)), ""
+        )
+
+    def test_silent_for_non_quantity_question(self):
+        from jarvisrag.answer.answer import _period_clarification_from_evidence
+
+        self.assertEqual(
+            _period_clarification_from_evidence(
+                "who is eligible to participate", self._ev(2024, 2025, 2026)
+            ),
+            "",
+        )
+
+    def test_currency_symbol_counts_as_quantity_intent(self):
+        from jarvisrag.answer.answer import _period_clarification_from_evidence
+
+        q = _period_clarification_from_evidence(
+            "is the $8,000 the same for everyone", self._ev(2025, 2026)
+        )
+        self.assertIn("year", q.lower())
+
 
 if __name__ == "__main__":
     unittest.main()
