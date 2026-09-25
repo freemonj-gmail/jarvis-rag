@@ -194,6 +194,14 @@ def _looks_like_follow_up(user_query: str, last_turn: dict[str, object]) -> bool
     # stranding the clarification.
     if last_turn.get("awaiting_clarification"):
         return True
+    # A CONTENTLESS turn -- only a bare year/number with no topic word (no run of
+    # 3+ letters) -- cannot stand as its own question, so it must be refining the
+    # prior turn (e.g. a lone "2026" typed after a limits answer). Treating it as
+    # a fresh query strands it: retrieval on just "2026" pulls scattered
+    # same-year chunks and synthesis runs away. Agnostic: keys only on the
+    # absence of any alphabetic topic word, never on a specific value or topic.
+    if not re.search(r"[A-Za-z]{3,}", user_query or ""):
+        return True
     follow_up_markers = (
         "that", "it", "its", "same", "previous", "earlier", "answer", "evidence",
         "relevant evidence", "file", "filename", "entitled", "document", "pdf",

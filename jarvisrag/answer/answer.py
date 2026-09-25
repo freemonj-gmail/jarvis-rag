@@ -594,10 +594,24 @@ def _extractive_reasoning_answer_from_evidence(user_query: str, evidence_lines: 
     )
 
 
+def _fallback_summary_budget() -> tuple[int, int]:
+    """Concise budget for the last-resort evidence-preview fallbacks.
+
+    When synthesis fails/empties, these previews must NOT become a wall of raw
+    snippets (a full-length dump was the "answer is entirely too long" failure).
+    Bound to a few short snippets; env-overridable per deployment. Universal UX
+    improvement, so it defaults on rather than behind a feature flag."""
+    items = int(os.environ.get("JARVIS_FALLBACK_SUMMARY_ITEMS", "3"))
+    chars = int(os.environ.get("JARVIS_FALLBACK_SUMMARY_CHARS", "400"))
+    return max(1, items), max(120, chars)
+
+
 def _extractive_summary_answer_from_evidence(user_query: str, evidence_lines: list[str], max_items: int = 5) -> str:
     if not evidence_lines or _query_requests_values(user_query) or _query_requests_reasoning(user_query):
         return ""
 
+    budget_items, budget_chars = _fallback_summary_budget()
+    max_items = min(max_items, budget_items)
     latest_turn = _latest_user_turn(user_query)
     if _is_refinement_turn(user_query):
         lines = [f"Refining that for your latest question ({latest_turn}), here is what the indexed evidence supports:"]
@@ -606,8 +620,8 @@ def _extractive_summary_answer_from_evidence(user_query: str, evidence_lines: li
     for evidence_line in evidence_lines[:max_items]:
         source_label = _source_label_from_evidence_line(evidence_line)
         evidence_body = _evidence_body_from_evidence_line(evidence_line)
-        snippet = " ".join(evidence_body.split())[:1600].rstrip()
-        if len(evidence_body) > 1600:
+        snippet = " ".join(evidence_body.split())[:budget_chars].rstrip()
+        if len(evidence_body) > budget_chars:
             snippet += "..."
         if snippet:
             lines.append(f"- {snippet} ({source_label})")
@@ -628,12 +642,14 @@ def _forced_extractive_summary_from_evidence(user_query: str, evidence_lines: li
     """
     if not evidence_lines:
         return ""
+    budget_items, budget_chars = _fallback_summary_budget()
+    max_items = min(max_items, budget_items)
     lines = ["Here is the closest grounded evidence I found in the indexed documents:"]
     for evidence_line in evidence_lines[:max_items]:
         source_label = _source_label_from_evidence_line(evidence_line)
         evidence_body = _evidence_body_from_evidence_line(evidence_line)
-        snippet = " ".join(evidence_body.split())[:1600].rstrip()
-        if len(evidence_body) > 1600:
+        snippet = " ".join(evidence_body.split())[:budget_chars].rstrip()
+        if len(evidence_body) > budget_chars:
             snippet += "..."
         if snippet:
             lines.append(f"- {snippet} ({source_label})")

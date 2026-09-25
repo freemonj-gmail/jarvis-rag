@@ -1220,5 +1220,34 @@ class PeriodClarificationTests(unittest.TestCase):
         self.assertIn("year", q.lower())
 
 
+class FallbackConcisionTests(unittest.TestCase):
+    """The last-resort evidence-preview fallbacks must stay CONCISE: an empty
+    synthesis must never emit a wall of raw snippets (the 'answer entirely too
+    long' failure). Bounded to a few short snippets, env-overridable."""
+
+    def _long_lines(self, n):
+        return [f"- Doc{i}.pdf: " + ("word " * 800) for i in range(n)]
+
+    def test_forced_summary_is_capped_in_items_and_length(self):
+        from jarvisrag.answer.answer import _forced_extractive_summary_from_evidence
+
+        out = _forced_extractive_summary_from_evidence("what is the limit", self._long_lines(10))
+        self.assertLessEqual(out.count("\n- "), 3)          # at most 3 snippet bullets
+        self.assertLess(len(out), 2000)                     # nowhere near the old ~8KB dump
+
+    def test_summary_respects_env_budget(self):
+        from jarvisrag.answer.answer import _forced_extractive_summary_from_evidence
+        import os
+
+        os.environ["JARVIS_FALLBACK_SUMMARY_ITEMS"] = "2"
+        os.environ["JARVIS_FALLBACK_SUMMARY_CHARS"] = "150"
+        try:
+            out = _forced_extractive_summary_from_evidence("what is the limit", self._long_lines(10))
+            self.assertLessEqual(out.count("\n- "), 2)
+        finally:
+            del os.environ["JARVIS_FALLBACK_SUMMARY_ITEMS"]
+            del os.environ["JARVIS_FALLBACK_SUMMARY_CHARS"]
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -334,6 +334,18 @@ def run_tests():
     )
     # Naming the SAME prior subject with a marker stays a follow-up.
     assert _looks_like_follow_up("What about Jordan's salary there?", prior_turn)
+    # A CONTENTLESS turn (bare year/number, no topic word) refines the prior turn
+    # rather than restarting as a fresh query -- a lone "2026" after an answer
+    # must carry the prior question forward, not retrieve scattered year chunks.
+    assert _looks_like_follow_up("2026", prior_turn)
+    assert _looks_like_follow_up("$8,000", prior_turn)
+    # ...but a topic word (even a short acronym) stays a fresh question.
+    assert not _looks_like_follow_up("TSP", prior_turn)
+    # No prior turn -> a bare number is still not a follow-up.
+    assert not _looks_like_follow_up("2026", {})
+    # The contentless follow-up merges the prior question into the effective query.
+    _eff_num, _is_fu_num, _h_num = _effective_query_for_turn("2026", prior_turn)
+    assert _is_fu_num and "current employer" in _eff_num and _eff_num.strip().endswith("2026")
     print("- conversational follow-up detection OK")
 
     # Display formatting: the full answer (values intact) is kept, and a
