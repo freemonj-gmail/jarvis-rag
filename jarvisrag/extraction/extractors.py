@@ -7,6 +7,7 @@ per-file (path, mtime, size) extraction caching.
 """
 
 import hashlib
+import html as html_lib
 import json
 import os
 import re
@@ -1134,6 +1135,30 @@ class EmlxReader:
     metadata so an answer can attribute a quote to a specific message."""
 
     _TAG_RE = re.compile(r"<[^>]+>")
+    # <style>/<script> (and CSS/JS text between the tags) must be removed
+    # wholesale: stripping only the tags would leave the rule/code text as body
+    # content. DOTALL so a block spanning newlines is matched; the backreference
+    # pairs each opening tag with its own closing tag.
+    _STYLE_SCRIPT_RE = re.compile(
+        r"<(style|script)\b[^>]*>.*?</\1\s*>", re.IGNORECASE | re.DOTALL
+    )
+    # HTML comments can also wrap content (e.g. conditional comments in mail).
+    _COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
+    # Zero-width / BOM characters that survive entity decoding and add no meaning.
+    _ZERO_WIDTH_RE = re.compile(r"[\ufeff\u200b\u200c\u200d\u2060]")
+    _WHITESPACE_RE = re.compile(r"\s+")
+
+    @classmethod
+    def _html_to_text(cls, html: str) -> str:
+        """Reduce an HTML email body to readable text: drop <style>/<script>
+        blocks (and their contents) and comments, strip remaining tags, decode
+        entities, remove zero-width characters, and collapse whitespace."""
+        without_blocks = cls._STYLE_SCRIPT_RE.sub(" ", html)
+        without_comments = cls._COMMENT_RE.sub(" ", without_blocks)
+        without_tags = cls._TAG_RE.sub(" ", without_comments)
+        decoded = html_lib.unescape(without_tags)
+        decoded = cls._ZERO_WIDTH_RE.sub("", decoded)
+        return cls._WHITESPACE_RE.sub(" ", decoded).strip()
 
     @staticmethod
     def _message_bytes(raw: bytes) -> bytes:
@@ -1165,7 +1190,7 @@ class EmlxReader:
         if isinstance(plain, str) and plain.strip():
             return plain
         if isinstance(html, str) and html.strip():
-            return cls._TAG_RE.sub(" ", html)
+            return cls._html_to_text(html)
         return ""
 
     def load_data(self, file_path, **kwargs):
@@ -1255,6 +1280,24 @@ def has_files_with_extensions(directory, extensions):
 # v6: document-level OCR validator + escalation on whole-page failure.
 # v7: HTML (.html/.htm via Docling) + MHTML (.mhtml/.mht) extraction support.
 EXTRACTION_CACHE_VERSION = 7
+
+
+# Bump when EMAIL (.emlx) extraction OUTPUT changes without a global
+# EXTRACTION_CACHE_VERSION bump, so ONLY email caches invalidate (a global bump
+# would needlessly re-OCR every PDF/image). v1: HTML body cleaning -- strip
+# <style>/<script> and their contents, decode entities, drop zero-width chars,
+# collapse whitespace.
+EMAIL_EXTRACTION_VERSION = 1
+_EMAIL_EXTENSIONS = (".emlx",)
+
+
+def _extractor_signature(file_path: str) -> str:
+    """A per-file extractor signature that varies only for file types whose
+    reader output can change independently of the global cache version. Empty
+    for every other file so unrelated caches are never invalidated."""
+    if file_path.lower().endswith(_EMAIL_EXTENSIONS):
+        return f"emlx{EMAIL_EXTRACTION_VERSION}"
+    return ""
 
 
 def _extraction_cache_path(cache_dir: str, file_path: str) -> str:
@@ -1385,6 +1428,7 @@ def load_documents_with_cache(
             continue
         mtime_ns = getattr(stat, "st_mtime_ns", int(stat.st_mtime * 1_000_000_000))
         size = stat.st_size
+        extractor_sig = _extractor_signature(file_path)
         cache_path = _extraction_cache_path(cache_dir, file_path)
         cached: Optional[Dict[str, Any]] = None
         if os.path.isfile(cache_path):
@@ -1398,6 +1442,7 @@ def load_documents_with_cache(
             cached
             and cached.get("version") == EXTRACTION_CACHE_VERSION
             and cached.get("extraction_mode") == mode_sig
+            and (not extractor_sig or cached.get("extractor_sig") == extractor_sig)
             and cached.get("mtime_ns") == mtime_ns
             and cached.get("size") == size
             and cached.get("file_path") == os.path.abspath(file_path)
@@ -1417,6 +1462,8 @@ def load_documents_with_cache(
                     reasons.append(f"version({cached.get('version')}!={EXTRACTION_CACHE_VERSION})")
                 if cached.get("extraction_mode") != mode_sig:
                     reasons.append(f"mode({cached.get('extraction_mode')}!={mode_sig})")
+                if extractor_sig and cached.get("extractor_sig") != extractor_sig:
+                    reasons.append(f"extractor({cached.get('extractor_sig')}!={extractor_sig})")
                 if cached.get("mtime_ns") != mtime_ns:
                     reasons.append(f"mtime({cached.get('mtime_ns')}!={mtime_ns})")
                 if cached.get("size") != size:
@@ -1443,6 +1490,7 @@ def load_documents_with_cache(
         payload = {
             "version": EXTRACTION_CACHE_VERSION,
             "extraction_mode": mode_sig,
+            "extractor_sig": extractor_sig,
             "file_path": os.path.abspath(file_path),
             "mtime_ns": mtime_ns,
             "size": size,

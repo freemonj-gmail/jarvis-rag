@@ -771,6 +771,31 @@ _EMPLOYMENT_GROUNDING_RULE = (
 )
 
 
+_SYNTHESIS_ANSWER_SHAPE_RULE = (
+    "ANSWER SHAPE (keep generation bounded):\n"
+    "- Answer the question directly, then STOP. Open with the specific fact(s) asked for.\n"
+    "- State each relevant value, name, date, or line item ONCE, with its source label. Do not repeat "
+    "yourself, do not restate the evidence verbatim, and do not append filler or meta-commentary.\n"
+    "- Include every fact the question asks for, but nothing beyond it; when the question names specific "
+    "fields or items, report those rather than summarizing the whole document.\n"
+    "- Prefer a short, complete answer over a long one; once the question is fully answered, end.\n"
+)
+
+
+def _synthesis_answer_shape_directive() -> str:
+    """Optional bounded-output directive for synthesis.
+
+    Measured to stop the runaway generation that otherwise runs to the request
+    timeout and returns EMPTY (the '10-minute Synthesizing' -> raw-evidence-dump
+    failure): it shapes OUTPUT LENGTH only, never topic or domain, so it stays
+    corpus/domain-agnostic. Gated by ``JARVIS_SYNTHESIS_SCOPE_FOCUS`` as a
+    validate-then-promote / rollback control (default on, set "0" to disable).
+    """
+    if os.environ.get("JARVIS_SYNTHESIS_SCOPE_FOCUS", "1") == "0":
+        return ""
+    return _SYNTHESIS_ANSWER_SHAPE_RULE + "\n"
+
+
 def _synthesize_evidence_answer(
     user_query: str,
     evidence_lines: list[str],
@@ -833,6 +858,7 @@ def _synthesize_evidence_answer(
         _reasoning_guidance(user_query)
         + "\n\n"
         + grounding_contract
+        + _synthesis_answer_shape_directive()
         + refinement_block
         + f"Question: {user_query}\n\n"
         f"Latest user turn to answer: {_latest_user_turn(user_query)}\n\n"

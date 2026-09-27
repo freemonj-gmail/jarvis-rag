@@ -1249,5 +1249,105 @@ class FallbackConcisionTests(unittest.TestCase):
             del os.environ["JARVIS_FALLBACK_SUMMARY_CHARS"]
 
 
+class EmlxHtmlCleaningTests(unittest.TestCase):
+    """An HTML-only email body must reduce to readable text: no <style>/<script>
+    rule/code text, entities decoded, zero-width chars gone, whitespace
+    collapsed -- while the From/To/Date/Subject metadata is preserved. Regression
+    for the case where CSS ('a:hover { ... }') leaked into the answer."""
+
+    _HTML = (
+        "<html><head>"
+        "<style>a:hover { border-style: none; text-decoration: underline rgb(57,60,65); }</style>"
+        "<script>var t = 1; document.write(\"x\");</script>"
+        "</head><body>\ufeff"
+        "Your RMA is <b>ABC-0000EXAMPLE</b>. Return label&nbsp;tracking: 1Z999&amp;AA."
+        "<!-- tracking pixel --></body></html>"
+    )
+
+    def test_html_to_text_strips_style_script_and_decodes(self):
+        out = EmlxReader._html_to_text(self._HTML)
+        self.assertIn("Your RMA is ABC-0000EXAMPLE", out)
+        self.assertIn("1Z999&AA", out)          # &amp; decoded to &
+        self.assertIn("tracking:", out)
+        self.assertNotIn("a:hover", out)         # CSS rule text gone
+        self.assertNotIn("text-decoration", out)
+        self.assertNotIn("document.write", out)  # script code gone
+        self.assertNotIn("<", out)               # no residual tags
+        self.assertNotIn("\ufeff", out)          # BOM/zero-width removed
+        self.assertNotIn("&nbsp;", out)          # entity decoded, not literal
+        self.assertNotIn("  ", out)              # whitespace collapsed
+
+    def _write_html_emlx(self, path: str, html: str) -> None:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        msg = (
+            "From: sender@example.com\n"
+            "To: me@example.com\n"
+            "Subject: Your Order Update\n"
+            "Date: Mon, 1 Jan 2026 10:00:00 -0500\n"
+            "Content-Type: text/html; charset=utf-8\n"
+            "\n"
+            f"{html}\n"
+        ).encode("utf-8")
+        framed = str(len(msg)).encode("ascii") + b"\n" + msg + b'<?xml version="1.0"?><plist></plist>'
+        with open(path, "wb") as handle:
+            handle.write(framed)
+
+    def test_load_data_cleans_html_body_and_keeps_headers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = os.path.join(directory, "staged", "label.emlx")
+            self._write_html_emlx(source, self._HTML)
+            docs = EmlxReader().load_data(source)
+            self.assertEqual(len(docs), 1)
+            doc = docs[0]
+            self.assertIn("ABC-0000EXAMPLE", doc.text)
+            self.assertNotIn("a:hover", doc.text)
+            self.assertNotIn("text-decoration", doc.text)
+            # Header metadata preserved for citation.
+            self.assertEqual(doc.metadata.get("email_subject"), "Your Order Update")
+            self.assertEqual(doc.metadata.get("email_from"), "sender@example.com")
+
+
+class SynthesisBoundedOutputTests(unittest.TestCase):
+    """The synthesis prompt carries a bounded-output directive by default (the
+    fix for the runaway 'Synthesizing 10m00s' -> empty -> raw-dump), and
+    JARVIS_SYNTHESIS_SCOPE_FOCUS=0 removes it for rollback."""
+
+    class _CapturingLLM:
+        def __init__(self):
+            self.additional_kwargs = {}
+            self.captured = ""
+
+        def chat(self, messages):
+            self.captured = messages[0].content
+            resp = Mock()
+            resp.message = Mock()
+            resp.message.content = "A grounded answer."
+            return resp
+
+    def _run(self):
+        from jarvisrag.answer.answer import _synthesize_evidence_answer
+        llm = self._CapturingLLM()
+        out = _synthesize_evidence_answer(
+            "What is the RMA number?",
+            ["- Email.emlx: RMA is ECR-1 (Email.emlx)"],
+            llm,
+        )
+        return out, llm.captured
+
+    def test_directive_present_by_default(self):
+        os.environ.pop("JARVIS_SYNTHESIS_SCOPE_FOCUS", None)
+        out, prompt = self._run()
+        self.assertEqual(out, "A grounded answer.")
+        self.assertIn("ANSWER SHAPE", prompt)
+
+    def test_directive_removed_when_disabled(self):
+        os.environ["JARVIS_SYNTHESIS_SCOPE_FOCUS"] = "0"
+        try:
+            _, prompt = self._run()
+            self.assertNotIn("ANSWER SHAPE", prompt)
+        finally:
+            del os.environ["JARVIS_SYNTHESIS_SCOPE_FOCUS"]
+
+
 if __name__ == "__main__":
     unittest.main()
