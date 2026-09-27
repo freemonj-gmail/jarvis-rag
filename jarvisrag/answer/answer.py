@@ -2032,6 +2032,75 @@ def _budget_combined_evidence(
     return authoritative + main_lines[:remaining]
 
 
+def _cascade_domain_answer(
+    query: str,
+    unconsulted_domains: list,
+    mcp_evidence: list[str],
+    llm,
+) -> dict | None:
+    """Second-pass answer over domain corpora NOT consulted on the first pass.
+
+    Runs ONLY when the primary (home/main + keyword-routed) answer came back
+    dismissive/empty: it broadens the search to the remaining domains -- e.g. the
+    large personal mail index, which is gated behind explicit intent so it never
+    dilutes an ordinary query -- and re-synthesizes. DOMAIN-AGNOSTIC and keyed on
+    answer WEAKNESS, not any topic keyword: it consults whatever was left
+    un-consulted this turn. Fail-safe: no domains, no supported evidence, or a
+    still-dismissive/failed re-synthesis yields None, so the caller simply
+    proceeds to its normal fallback chain.
+
+    The re-synthesis deliberately uses ONLY the un-consulted domain evidence
+    (plus any authoritative MCP lines) and NOT the home/main evidence: that
+    evidence already failed to answer on the first pass, and re-mixing it drags
+    the second pass back into the same wrong framing (measured: a confusable
+    same-entity home chunk -- e.g. a product PURCHASE receipt -- caused the mail
+    RETURN answer, correct in isolation, to come back dismissive).
+
+    Each un-consulted domain is likewise answered IN ISOLATION rather than pooled:
+    pooled retrieval fills one shared evidence cap in domain order, so an
+    unrelated corpus that happens to come first can occupy every slot and the
+    relevant corpus is never retrieved at all (measured: 30/30 lines from an
+    unrelated reference corpus, 0 from the mail index that held the answer at
+    rank 0). Domains are tried in descending query relevance so the likeliest
+    source is synthesized first; relevance only ORDERS the attempts and never
+    excludes a domain, and the first supported, non-dismissive answer wins.
+
+    Returns a dict (response_text, review_reason, evidence_lines, refs,
+    superseded, domain_names) on a supported, non-dismissive answer; otherwise
+    None.
+    """
+    if not unconsulted_domains:
+        return None
+    ordered = sorted(
+        unconsulted_domains,
+        key=lambda d: _corpus_relevance(query, d.get("index")),
+        reverse=True,
+    )
+    for domain in ordered:
+        casc_evidence, casc_refs, casc_superseded = _retrieve_domain_evidence(query, [domain])
+        if not casc_evidence:
+            continue
+        combined = _budget_combined_evidence(
+            mcp_evidence,
+            casc_evidence,
+            [],
+            budget=int(os.environ.get("JARVIS_SYNTHESIS_EVIDENCE_BUDGET", str(_DEFAULT_SYNTHESIS_EVIDENCE_BUDGET))),
+            main_reserve=int(os.environ.get("JARVIS_MAIN_INDEX_RESERVE", str(_DEFAULT_MAIN_INDEX_RESERVE))),
+        )
+        text, passed, reason = _answer_with_review_loop(query, combined, llm)
+        if passed and text and not _response_is_dismissive(text):
+            return {
+                "response_text": text,
+                "review_reason": reason,
+                "evidence_lines": combined,
+                "refs": casc_refs,
+                "superseded": casc_superseded,
+                "domain_names": [domain.get("name")],
+            }
+        debug_print(f"[debug] Domain cascade: '{domain.get('name')}' did not answer; trying next.")
+    return None
+
+
 def handle_query(
     user_query: str,
     runtime: QueryRuntime,
@@ -2340,6 +2409,50 @@ def handle_query(
             review_passed = False
             review_reason = review_reason or "reviewed answer indicated no information in evidence"
             response_text = ""
+
+        # Failure-triggered domain cascade (G1): the primary answer (home/main +
+        # any keyword-routed domain) did not actually answer -- either it was
+        # demoted as dismissive, OR it PASSED review while still hedging that the
+        # asked-for detail is absent (a verbose non-answer that clears the short
+        # dismissive-length guard). Both mean "the consulted corpora lack it", so
+        # broaden to domains NOT consulted this turn -- e.g. the large personal
+        # mail index, kept behind explicit intent so it does not dilute ordinary
+        # queries. Fires ONLY on this failure signal (a genuine answer is never
+        # diluted) and stays domain-agnostic: it consults whatever is un-consulted,
+        # keyed on answer weakness, not any topic keyword. State is mutated ONLY on
+        # a successful adoption, so a hedged-but-passing answer is preserved when
+        # the cascade finds nothing. Bounded + fail-safe; JARVIS_DOMAIN_CASCADE=0
+        # rolls it back.
+        primary_unanswered = (not review_passed) or (
+            review_passed
+            and len(evidence_lines) >= _HEDGE_MIN_EVIDENCE_LINES
+            and _answer_hedges_about_missing_detail(response_text)
+        )
+        if (
+            primary_unanswered
+            and os.environ.get("JARVIS_DOMAIN_CASCADE", "1") != "0"
+            and domain_retrievers
+            and not (is_follow_up and last_turn.get("awaiting_clarification"))
+        ):
+            unconsulted = [
+                d for d in domain_retrievers if d.get("name") not in routed_domain_names
+            ]
+            cascade = _cascade_domain_answer(
+                effective_user_query, unconsulted, mcp_evidence, runtime.llm
+            )
+            if cascade:
+                debug_print(
+                    f"[debug] Domain cascade answered from {cascade['domain_names']}; adopting it."
+                )
+                response_text = cascade["response_text"]
+                review_passed = True
+                review_reason = cascade["review_reason"]
+                evidence_lines = cascade["evidence_lines"]
+                home_evidence_refs = cascade["refs"]
+                excluded_for_display = None
+                domain_superseded = cascade["superseded"]
+                routed_domain_names = routed_domain_names + cascade["domain_names"]
+                answer_was_dismissive = False
 
         if not review_passed:
             debug_print(f"[debug] Initial answer did not pass review: {review_reason}")

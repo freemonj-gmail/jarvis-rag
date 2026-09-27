@@ -1349,5 +1349,133 @@ class SynthesisBoundedOutputTests(unittest.TestCase):
             del os.environ["JARVIS_SYNTHESIS_SCOPE_FOCUS"]
 
 
+class DomainCascadeTests(unittest.TestCase):
+    """The failure-triggered domain cascade (_cascade_domain_answer) consults
+    domains left un-consulted this turn ONLY when the primary answer failed, and
+    adopts the re-synthesis only when it is supported and non-dismissive. Keyed on
+    answer weakness, not topic keywords, so it stays domain-agnostic."""
+
+    @staticmethod
+    def _domains():
+        return [{"name": "mail", "retriever": object(), "match_any": ["email"]}]
+
+    def test_no_unconsulted_domains_returns_none(self):
+        from jarvisrag.answer.answer import _cascade_domain_answer
+        self.assertIsNone(_cascade_domain_answer("q", [], [], llm=Mock()))
+
+    def test_no_domain_evidence_returns_none(self):
+        import jarvisrag.answer.answer as ans
+        with patch.object(ans, "_retrieve_domain_evidence", return_value=([], [], set())):
+            self.assertIsNone(
+                ans._cascade_domain_answer("q", self._domains(), [], llm=Mock())
+            )
+
+    def test_supported_answer_is_adopted(self):
+        import jarvisrag.answer.answer as ans
+        with patch.object(
+            ans,
+            "_retrieve_domain_evidence",
+            return_value=(["- Email.emlx: RMA is ECR-1 (Email.emlx)"], ["Email.emlx"], set()),
+        ), patch.object(
+            ans, "_answer_with_review_loop", return_value=("The RMA number is ECR-1.", True, "ok")
+        ):
+            out = ans._cascade_domain_answer("q", self._domains(), [], llm=Mock())
+        self.assertIsNotNone(out)
+        self.assertEqual(out["response_text"], "The RMA number is ECR-1.")
+        self.assertEqual(out["refs"], ["Email.emlx"])
+        self.assertEqual(out["domain_names"], ["mail"])
+        self.assertTrue(out["evidence_lines"])
+
+    def test_dismissive_resynthesis_returns_none(self):
+        import jarvisrag.answer.answer as ans
+        with patch.object(
+            ans,
+            "_retrieve_domain_evidence",
+            return_value=(["- Email.emlx: unrelated text (Email.emlx)"], ["Email.emlx"], set()),
+        ), patch.object(
+            ans,
+            "_answer_with_review_loop",
+            return_value=("The evidence does not contain an RMA number.", True, "ok"),
+        ):
+            self.assertIsNone(
+                ans._cascade_domain_answer("q", self._domains(), [], llm=Mock())
+            )
+
+    def test_failed_review_returns_none(self):
+        import jarvisrag.answer.answer as ans
+        with patch.object(
+            ans,
+            "_retrieve_domain_evidence",
+            return_value=(["- Email.emlx: x (Email.emlx)"], ["Email.emlx"], set()),
+        ), patch.object(ans, "_answer_with_review_loop", return_value=("", False, "no")):
+            self.assertIsNone(
+                ans._cascade_domain_answer("q", self._domains(), [], llm=Mock())
+            )
+
+    @staticmethod
+    def _two_domains():
+        return [
+            {"name": "reference", "retriever": object(), "index": "ref-index"},
+            {"name": "mail", "retriever": object(), "index": "mail-index"},
+        ]
+
+    @staticmethod
+    def _per_domain_evidence(query, domains):
+        name = domains[0]["name"]
+        return ([f"- {name}.doc: {name} text ({name}.doc)"], [f"{name}.doc"], set())
+
+    def test_each_domain_is_retrieved_in_isolation(self):
+        # Pooled retrieval let one corpus fill the shared cap and starve the
+        # next; every retrieval call must carry exactly one domain.
+        import jarvisrag.answer.answer as ans
+        calls = []
+
+        def record(query, domains):
+            calls.append([d["name"] for d in domains])
+            return self._per_domain_evidence(query, domains)
+
+        with patch.object(ans, "_retrieve_domain_evidence", side_effect=record), patch.object(
+            ans, "_answer_with_review_loop", return_value=("The evidence does not contain it.", True, "ok")
+        ):
+            ans._cascade_domain_answer("q", self._two_domains(), [], llm=Mock())
+        self.assertEqual(sorted(calls), [["mail"], ["reference"]])
+
+    def test_falls_through_to_domain_that_answers(self):
+        import jarvisrag.answer.answer as ans
+
+        def answer(query, evidence, llm):
+            if any("mail" in line for line in evidence):
+                return ("The RMA number is ECR-1.", True, "ok")
+            return ("The evidence does not contain an RMA number.", True, "ok")
+
+        with patch.object(
+            ans, "_retrieve_domain_evidence", side_effect=self._per_domain_evidence
+        ), patch.object(ans, "_answer_with_review_loop", side_effect=answer), patch.object(
+            ans, "_corpus_relevance", side_effect=lambda q, idx: {"ref-index": 0.9, "mail-index": 0.1}[idx]
+        ):
+            out = ans._cascade_domain_answer("q", self._two_domains(), [], llm=Mock())
+        self.assertIsNotNone(out)
+        self.assertEqual(out["domain_names"], ["mail"])
+        self.assertEqual(out["refs"], ["mail.doc"])
+        self.assertFalse(any("reference" in line for line in out["evidence_lines"]))
+
+    def test_most_relevant_domain_is_tried_first(self):
+        import jarvisrag.answer.answer as ans
+        order = []
+
+        def record(query, domains):
+            order.append(domains[0]["name"])
+            return self._per_domain_evidence(query, domains)
+
+        with patch.object(ans, "_retrieve_domain_evidence", side_effect=record), patch.object(
+            ans, "_answer_with_review_loop", return_value=("The RMA number is ECR-1.", True, "ok")
+        ), patch.object(
+            ans, "_corpus_relevance", side_effect=lambda q, idx: {"ref-index": 0.2, "mail-index": 0.7}[idx]
+        ):
+            out = ans._cascade_domain_answer("q", self._two_domains(), [], llm=Mock())
+        self.assertEqual(order, ["mail"])  # first domain answered; the other is never paid for
+        self.assertEqual(out["domain_names"], ["mail"])
+
+
 if __name__ == "__main__":
     unittest.main()
