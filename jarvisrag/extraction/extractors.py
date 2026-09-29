@@ -1232,6 +1232,74 @@ class EmlxReader:
         return [Document(text=text, metadata=metadata)]
 
 
+def staged_email_attachments(staged_path: str) -> list[tuple[str, str]]:
+    """Resolve a staged email's attachments to local files, on demand.
+
+    The staged ``.emlx`` is the pointer: its MIME headers list each attachment
+    (``Content-Disposition: attachment``; inline logos and tracking pixels are
+    skipped) even when Apple Mail stored the bytes outside the message. External
+    files come from the attachment mirror that mail refresh keeps beside the
+    corpus; an attachment embedded in the message itself is written into that
+    mirror the first time it is needed. Nothing is extracted or indexed here.
+    Returns ``(attachment name, local path)`` pairs; unreadable input yields []."""
+    import email
+    from email import policy
+
+    from jarvisrag.docsync import mail_attachment_dir
+
+    stem = os.path.basename(staged_path).split(".", 1)[0]
+    mirror = os.path.join(mail_attachment_dir(os.path.dirname(os.path.abspath(staged_path))), stem)
+    try:
+        with open(staged_path, "rb") as handle:
+            message = email.message_from_bytes(
+                EmlxReader._message_bytes(handle.read()), policy=policy.default
+            )
+    except Exception:  # noqa: BLE001 - a bad pointer just yields no attachments
+        return []
+
+    mirrored: dict[str, str] = {}
+    if os.path.isdir(mirror):
+        for root, _dirs, files in os.walk(mirror):
+            for fname in files:
+                if not fname.startswith(".") and not fname.endswith(".mirror-tmp"):
+                    mirrored.setdefault(fname.lower(), os.path.join(root, fname))
+
+    found: list[tuple[str, str]] = []
+    used: set[str] = set()
+    for part in message.walk():
+        if part.is_multipart() or part.get_content_disposition() != "attachment":
+            continue
+        name = os.path.basename(str(part.get_filename() or "").replace("\\", "/")).strip()
+        if not name:
+            continue
+        try:
+            payload = part.get_payload(decode=True) or b""
+        except Exception:  # noqa: BLE001
+            payload = b""
+        path = None
+        if payload:
+            path = os.path.join(mirror, "embedded", name)
+            try:
+                if not (os.path.exists(path) and os.path.getsize(path) == len(payload)):
+                    os.makedirs(os.path.dirname(path), exist_ok=True)
+                    with open(path, "wb") as out:
+                        out.write(payload)
+            except OSError:
+                path = None
+        else:
+            path = mirrored.get(name.lower())
+        if path and path not in used:
+            used.add(path)
+            found.append((name, path))
+    # Apple Mail may store a file under a slightly different name than the MIME
+    # header; keep any mirrored file that no header matched rather than lose it.
+    for path in mirrored.values():
+        if path not in used:
+            used.add(path)
+            found.append((os.path.basename(path), path))
+    return found
+
+
 jpeg_extractor = DeferredExtractor(JpegExtractor)
 docling_reader = DoclingReader()
 mhtml_reader = MHTMLReader(docling_reader)

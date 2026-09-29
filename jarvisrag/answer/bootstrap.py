@@ -503,6 +503,7 @@ def _build_domain_retrievers(embed_model, llm) -> list:
             "index": domain_index,
             "match_any": doc_set.match_any,
             "label": doc_set.label or doc_set.name,
+            "corpus_dir": os.path.abspath(doc_set.corpus_dir),
         })
         print(f"[jarvis] Domain corpus '{doc_set.name}' loaded ({len(docs)} docs); routes on {doc_set.match_any}.")
     return domains

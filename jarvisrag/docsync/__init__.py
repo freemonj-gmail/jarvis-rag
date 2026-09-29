@@ -219,6 +219,104 @@ def _msgid_key(identity: str) -> str:
     return hashlib.sha1(identity.encode("utf-8", "surrogatepass")).hexdigest()[:24] + ".emlx"
 
 
+def mail_attachment_dir(corpus_dir: str) -> str:
+    """Where a mail corpus keeps its attachment mirror.
+
+    A SIBLING of ``corpus_dir``, never inside it: the domain loader reads the
+    corpus recursively, so a nested directory would be ingested into the index.
+    Attachments are dereferenced at answer time only; nothing here is embedded."""
+    return os.path.normpath(corpus_dir) + "_attachments"
+
+
+def _clone_or_copy(src: str, dst: str) -> None:
+    """Copy ``src`` to ``dst``, as an APFS clone when possible.
+
+    A clone shares the source's storage blocks, so mirroring Apple Mail's
+    attachment files costs almost no extra disk on the same volume. Falls back
+    to a regular copy on any other filesystem or platform."""
+    tmp = dst + ".mirror-tmp"
+    if os.path.exists(tmp):
+        os.remove(tmp)
+    cloned = False
+    try:
+        import ctypes
+        import ctypes.util
+        import sys
+
+        if sys.platform == "darwin":
+            libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
+            cloned = libc.clonefile(os.fsencode(src), os.fsencode(tmp), 0) == 0
+    except Exception:  # noqa: BLE001 - any clone failure falls back to a copy
+        cloned = False
+    if not cloned:
+        shutil.copy2(src, tmp)
+    os.replace(tmp, dst)
+
+
+def _mirror_message_attachments(src: str, dest_dir: str) -> bool:
+    """Mirror one Apple Mail message's externally stored attachment files.
+
+    Apple Mail keeps a message's attachments OUTSIDE its ``.emlx`` (leaving only
+    the MIME headers), under ``<...>/Attachments/<message number>/<part>/<file>``
+    beside the ``Messages`` directory. Mirroring them here lets a Jarvis process
+    WITHOUT Full Disk Access open an attachment later, on demand. Files already
+    mirrored at the same size are skipped. Returns True when the message has an
+    attachment directory."""
+    stem = os.path.basename(src).split(".", 1)[0]
+    source_dir = os.path.join(os.path.dirname(os.path.dirname(src)), "Attachments", stem)
+    if not os.path.isdir(source_dir):
+        return False
+    for root, _dirs, files in os.walk(source_dir):
+        for fname in files:
+            if fname.startswith("."):
+                continue
+            source_file = os.path.join(root, fname)
+            target = os.path.join(dest_dir, os.path.relpath(source_file, source_dir))
+            try:
+                if os.path.exists(target) and os.path.getsize(target) == os.path.getsize(source_file):
+                    continue
+                os.makedirs(os.path.dirname(target), exist_ok=True)
+                _clone_or_copy(source_file, target)
+            except OSError:
+                continue  # one unreadable attachment must not stop the refresh
+    return True
+
+
+def _sync_attachment_mirror(
+    doc_set: "DocSet", sources: dict, changed_ids: set, force: bool, prune: bool
+) -> None:
+    """Keep the attachment mirror aligned with the staged messages.
+
+    Each LOGICAL message (one staged ``.emlx``) is mirrored once, from the first
+    source copy that has an attachment directory; a changed message is
+    re-mirrored. Mirrors whose message is no longer staged are removed, but only
+    after a complete scan so an interrupted refresh never deletes attachments.
+    Nothing here is extracted or embedded."""
+    mirror_root = mail_attachment_dir(doc_set.corpus_dir)
+    staged: set[str] = set()
+    done: set[str] = set()
+    for src, entry in sources.items():
+        identity = entry.get("id") if isinstance(entry, dict) else None
+        if not identity:
+            continue
+        stem = _msgid_key(str(identity))[: -len(".emlx")]
+        staged.add(stem)
+        if stem in done:
+            continue
+        target = os.path.join(mirror_root, stem)
+        if not force and identity not in changed_ids and os.path.isdir(target):
+            done.add(stem)
+            continue
+        if _mirror_message_attachments(src, target):
+            done.add(stem)
+    if not prune or not os.path.isdir(mirror_root):
+        return
+    with os.scandir(mirror_root) as entries:
+        stale = [entry.path for entry in entries if entry.is_dir() and entry.name not in staged]
+    for path in stale:
+        shutil.rmtree(path, ignore_errors=True)
+
+
 def _emlx_message_id(src: str) -> Optional[str]:
     """Best-effort RFC Message-ID from an ``.emlx`` file (stdlib only).
 
@@ -428,6 +526,8 @@ def refresh_mail_set(doc_set: DocSet, force: bool = False) -> tuple[list[str], l
                     new_sources.setdefault(src, entry)
             continue
         changed.append(f"removed:{identity}")
+
+    _sync_attachment_mirror(doc_set, new_sources, set(changed_ids), force, prune=not failed)
 
     if state.get("_sources") != new_sources:
         state["_sources"] = new_sources

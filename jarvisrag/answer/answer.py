@@ -10,6 +10,7 @@ entry point. This is the orchestration layer that sits on top of
 ``jarvis_speech`` (display/TTS).
 """
 
+import hashlib
 import os
 import re
 import time
@@ -780,20 +781,10 @@ _SYNTHESIS_ANSWER_SHAPE_RULE = (
     "fields or items, report those rather than summarizing the whole document.\n"
     "- Prefer a short, complete answer over a long one; once the question is fully answered, end.\n"
 )
-
-
-def _synthesis_answer_shape_directive() -> str:
-    """Optional bounded-output directive for synthesis.
-
-    Measured to stop the runaway generation that otherwise runs to the request
-    timeout and returns EMPTY (the '10-minute Synthesizing' -> raw-evidence-dump
-    failure): it shapes OUTPUT LENGTH only, never topic or domain, so it stays
-    corpus/domain-agnostic. Gated by ``JARVIS_SYNTHESIS_SCOPE_FOCUS`` as a
-    validate-then-promote / rollback control (default on, set "0" to disable).
-    """
-    if os.environ.get("JARVIS_SYNTHESIS_SCOPE_FOCUS", "1") == "0":
-        return ""
-    return _SYNTHESIS_ANSWER_SHAPE_RULE + "\n"
+# Bounded-output directive for synthesis. Measured to stop the runaway generation
+# that otherwise ran to the request timeout and returned EMPTY (the "10-minute
+# Synthesizing" -> raw-evidence-dump failure). It shapes OUTPUT LENGTH only, never
+# topic or domain, so it stays corpus/domain-agnostic.
 
 
 def _synthesize_evidence_answer(
@@ -858,7 +849,8 @@ def _synthesize_evidence_answer(
         _reasoning_guidance(user_query)
         + "\n\n"
         + grounding_contract
-        + _synthesis_answer_shape_directive()
+        + _SYNTHESIS_ANSWER_SHAPE_RULE
+        + "\n"
         + refinement_block
         + f"Question: {user_query}\n\n"
         f"Latest user turn to answer: {_latest_user_turn(user_query)}\n\n"
@@ -2032,6 +2024,141 @@ def _budget_combined_evidence(
     return authoritative + main_lines[:remaining]
 
 
+# Per-turn bounds on runtime attachment reading: evidence emails opened,
+# attachments read, and the largest file extracted.
+_ATTACHMENT_MAX_EMAILS = 3
+_ATTACHMENT_MAX_FILES = 5
+_ATTACHMENT_MAX_BYTES = 25_000_000
+
+
+def _evidence_email_paths(evidence_lines: list[str], domains: list) -> list[tuple[str, str]]:
+    """(evidence label, staged path) for each distinct email in evidence order.
+
+    Evidence is already relevance-ranked, so the first emails are the likeliest
+    carriers of an answer that sits in an attachment. Only labels that resolve to
+    a file inside one of ``domains``' corpus directories count, so launch-folder
+    and reference-corpus lines are ignored."""
+    from jarvisrag.extraction.extractors import _EMAIL_EXTENSIONS
+
+    corpus_dirs = [d.get("corpus_dir") for d in domains or [] if d.get("corpus_dir")]
+    found: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for line in evidence_lines:
+        match = _DOMAIN_EVIDENCE_LABEL_RE.match(str(line))
+        if not match:
+            continue
+        label = _EVIDENCE_PAGE_SUFFIX_RE.sub("", match.group(1).strip()).strip()
+        if label in seen or not label.lower().endswith(_EMAIL_EXTENSIONS):
+            continue
+        seen.add(label)
+        for corpus_dir in corpus_dirs:
+            path = os.path.join(corpus_dir, label)
+            if os.path.isfile(path):
+                found.append((label, path))
+                break
+    return found
+
+
+def _attachment_evidence_lines(query: str, evidence_lines: list[str], domains: list) -> list[str]:
+    """Dereference the attachments of the top evidence emails into evidence lines.
+
+    The runtime half of the attachment pointer design: attachment content is
+    NEVER embedded in the vector index. For the emails an answer is being built
+    from, the attachments of the first few are opened, extracted with the same
+    readers and extraction cache as the rest of the corpus, trimmed to the
+    query-relevant passage, and labelled with their parent email so they cite as
+    that email. A passage is kept only if it passes the same query-support gate
+    retrieval applies to every chunk, so an unrelated attachment never dilutes
+    the evidence. Bounded per turn by email count, file count, and file size."""
+    from jarvisrag.answer.bootstrap import EXTRACTION_CACHE_DIR, file_extractor
+    from jarvisrag.extraction.extractors import (
+        _EMAIL_EXTENSIONS,
+        load_documents_with_cache,
+        staged_email_attachments,
+    )
+
+    snippet_chars = int(os.environ.get("JARVIS_QUERY_SNIPPET_CHARS", "6000"))
+    terms = _query_terms(query)
+    anchors = _query_anchor_terms(query, terms)
+    require_value = _query_requests_values(query)
+
+    selected: list[tuple[str, str, str, str]] = []
+    # The same file is often attached to several emails (a forwarded label, a
+    # resent invoice). Read each distinct content once, from its highest-ranked
+    # email, so a duplicate neither repeats evidence nor uses up a slot.
+    seen_content: set[str] = set()
+    emails_used = 0
+    for label, staged in _evidence_email_paths(evidence_lines, domains):
+        if emails_used >= _ATTACHMENT_MAX_EMAILS or len(selected) >= _ATTACHMENT_MAX_FILES:
+            break
+        readable = []
+        for name, path in staged_email_attachments(staged):
+            ext = os.path.splitext(path)[1].lower()
+            try:
+                size = os.path.getsize(path)
+            except OSError:
+                continue
+            if ext not in file_extractor or ext in _EMAIL_EXTENSIONS or size > _ATTACHMENT_MAX_BYTES:
+                continue
+            try:
+                with open(path, "rb") as handle:
+                    digest = hashlib.sha256(handle.read()).hexdigest()
+            except OSError:
+                continue
+            if digest in seen_content:
+                continue
+            seen_content.add(digest)
+            readable.append((label, name, path, ext))
+        if readable:
+            emails_used += 1
+            selected.extend(readable[: _ATTACHMENT_MAX_FILES - len(selected)])
+    if not selected:
+        return []
+
+    lines: list[str] = []
+    with Spinner("Reading attachments"):
+        for label, name, path, ext in selected:
+            try:
+                docs = load_documents_with_cache(
+                    input_dir=os.path.dirname(path),
+                    required_exts=[ext],
+                    file_extractor=file_extractor,
+                    cache_dir=EXTRACTION_CACHE_DIR,
+                    recursive=False,
+                )
+            except Exception as exc:  # noqa: BLE001 - one bad attachment never breaks a turn
+                debug_print(f"[debug] Attachment extraction failed ({type(exc).__name__}); skipping.")
+                continue
+            target = os.path.normcase(os.path.abspath(path))
+            text = "\n".join(
+                str(doc.text or "")
+                for doc in docs
+                if os.path.normcase(os.path.abspath(str(doc.metadata.get("file_path") or ""))) == target
+            ).strip()
+            if not text or is_low_information_text(text):
+                continue
+            snippet = _query_focused_snippet(text, terms, anchors, require_value, max_chars=snippet_chars)
+            if _query_evidence_is_supported(snippet, terms, anchors, require_value):
+                lines.append(f"- {label}: [Attachment: {name}] {snippet}")
+    debug_print(f"[debug] Attachments: read {len(selected)}, kept {len(lines)} query-supported passage(s).")
+    return lines
+
+
+def _with_attachment_evidence(query: str, domain_lines: list[str], domains: list) -> list[str]:
+    """Domain evidence with the top emails' relevant attachment passages added.
+
+    Runs BEFORE synthesis, not as a retry triggered by the answer's wording: a
+    retry keyed on hedge phrases missed an answer that said a detail "is not
+    provided", so the attachment holding it was never opened. Adding the
+    query-supported attachment passages up front keeps it to ONE synthesis. The
+    passages lead because they were opened specifically for this question. A
+    no-op when no evidence email has a readable, relevant attachment."""
+    if not domain_lines:
+        return domain_lines
+    attachment_lines = _attachment_evidence_lines(query, domain_lines, domains)
+    return attachment_lines + list(domain_lines) if attachment_lines else domain_lines
+
+
 def _cascade_domain_answer(
     query: str,
     unconsulted_domains: list,
@@ -2080,6 +2207,7 @@ def _cascade_domain_answer(
         casc_evidence, casc_refs, casc_superseded = _retrieve_domain_evidence(query, [domain])
         if not casc_evidence:
             continue
+        casc_evidence = _with_attachment_evidence(query, casc_evidence, [domain])
         combined = _budget_combined_evidence(
             mcp_evidence,
             casc_evidence,
@@ -2251,6 +2379,7 @@ def handle_query(
             domain_evidence, domain_refs, domain_superseded = _retrieve_domain_evidence(
                 effective_user_query, keyword_domains
             )
+            domain_evidence = _with_attachment_evidence(effective_user_query, domain_evidence, keyword_domains)
         elif active_domains:
             domain_rel = max(
                 (_corpus_relevance(effective_user_query, d.get("index")) for d in active_domains),
@@ -2264,6 +2393,7 @@ def handle_query(
                 domain_evidence, domain_refs, domain_superseded = _retrieve_domain_evidence(
                     effective_user_query, active_domains
                 )
+                domain_evidence = _with_attachment_evidence(effective_user_query, domain_evidence, active_domains)
         main_evidence, source_nodes = _retrieve_query_supported_evidence(
             effective_user_query,
             runtime.doc_retriever,
@@ -2421,8 +2551,7 @@ def handle_query(
         # diluted) and stays domain-agnostic: it consults whatever is un-consulted,
         # keyed on answer weakness, not any topic keyword. State is mutated ONLY on
         # a successful adoption, so a hedged-but-passing answer is preserved when
-        # the cascade finds nothing. Bounded + fail-safe; JARVIS_DOMAIN_CASCADE=0
-        # rolls it back.
+        # the cascade finds nothing.
         primary_unanswered = (not review_passed) or (
             review_passed
             and len(evidence_lines) >= _HEDGE_MIN_EVIDENCE_LINES
@@ -2430,7 +2559,6 @@ def handle_query(
         )
         if (
             primary_unanswered
-            and os.environ.get("JARVIS_DOMAIN_CASCADE", "1") != "0"
             and domain_retrievers
             and not (is_follow_up and last_turn.get("awaiting_clarification"))
         ):

@@ -1308,9 +1308,8 @@ class EmlxHtmlCleaningTests(unittest.TestCase):
 
 
 class SynthesisBoundedOutputTests(unittest.TestCase):
-    """The synthesis prompt carries a bounded-output directive by default (the
-    fix for the runaway 'Synthesizing 10m00s' -> empty -> raw-dump), and
-    JARVIS_SYNTHESIS_SCOPE_FOCUS=0 removes it for rollback."""
+    """The synthesis prompt always carries the bounded-output directive (the fix
+    for the runaway 'Synthesizing 10m00s' -> empty -> raw-dump)."""
 
     class _CapturingLLM:
         def __init__(self):
@@ -1334,19 +1333,10 @@ class SynthesisBoundedOutputTests(unittest.TestCase):
         )
         return out, llm.captured
 
-    def test_directive_present_by_default(self):
-        os.environ.pop("JARVIS_SYNTHESIS_SCOPE_FOCUS", None)
+    def test_directive_is_always_present(self):
         out, prompt = self._run()
         self.assertEqual(out, "A grounded answer.")
         self.assertIn("ANSWER SHAPE", prompt)
-
-    def test_directive_removed_when_disabled(self):
-        os.environ["JARVIS_SYNTHESIS_SCOPE_FOCUS"] = "0"
-        try:
-            _, prompt = self._run()
-            self.assertNotIn("ANSWER SHAPE", prompt)
-        finally:
-            del os.environ["JARVIS_SYNTHESIS_SCOPE_FOCUS"]
 
 
 class DomainCascadeTests(unittest.TestCase):
@@ -1475,6 +1465,150 @@ class DomainCascadeTests(unittest.TestCase):
             out = ans._cascade_domain_answer("q", self._two_domains(), [], llm=Mock())
         self.assertEqual(order, ["mail"])  # first domain answered; the other is never paid for
         self.assertEqual(out["domain_names"], ["mail"])
+
+    def test_attachment_passages_join_evidence_before_one_synthesis(self):
+        # Attachments are read BEFORE synthesis, not by a retry keyed on the
+        # answer's hedge wording (which missed "is not provided").
+        import jarvisrag.answer.answer as ans
+        seen = []
+
+        def synth(query, evidence, llm):
+            seen.append(list(evidence))
+            return ("The tracking code is ZX-1.", True, "ok")
+
+        attachment = "- mail.doc: [Attachment: label.pdf] TRACKING #: ZX-1"
+        with patch.object(
+            ans, "_retrieve_domain_evidence", side_effect=self._per_domain_evidence
+        ), patch.object(ans, "_attachment_evidence_lines", return_value=[attachment]), patch.object(
+            ans, "_answer_with_review_loop", side_effect=synth
+        ):
+            out = ans._cascade_domain_answer("q", self._domains(), [], llm=Mock())
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(seen[0][0], attachment)
+        self.assertEqual(out["response_text"], "The tracking code is ZX-1.")
+
+
+def _write_attachment_emlx(path: str, message_id: str, parts: list[tuple[str, str, bytes, str]]) -> None:
+    """Multipart .emlx like Apple Mail writes. Each part is (filename, content
+    type, payload, disposition); an empty payload models an attachment Apple
+    Mail stored outside the message."""
+    import base64
+
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    boundary = "BOUNDARY"
+    body = [f"--{boundary}\nContent-Type: text/plain; charset=utf-8\n\nSee attached.\n"]
+    for filename, ctype, payload, disposition in parts:
+        cid = "Content-ID: <logo@example.com>\n" if disposition == "inline" else ""
+        body.append(
+            f"--{boundary}\nContent-Type: {ctype}; name=\"{filename}\"\n"
+            f"Content-Disposition: {disposition}; filename=\"{filename}\"\n"
+            f"Content-Transfer-Encoding: base64\n{cid}\n"
+            f"{base64.b64encode(payload).decode('ascii')}\n"
+        )
+    msg = (
+        "From: sender@example.com\nTo: me@example.com\nSubject: Documents\n"
+        f"Message-ID: {message_id}\nDate: Mon, 1 Jan 2026 10:00:00 -0500\n"
+        f"Content-Type: multipart/mixed; boundary=\"{boundary}\"\n\n"
+        + "".join(body) + f"--{boundary}--\n"
+    ).encode("utf-8")
+    with open(path, "wb") as handle:
+        handle.write(str(len(msg)).encode("ascii") + b"\n" + msg + b'<?xml version="1.0"?><plist></plist>')
+
+
+class EmailAttachmentPointerTests(unittest.TestCase):
+    """Attachments are never indexed. Mail refresh mirrors Apple Mail's external
+    attachment files beside the corpus, the staged .emlx's MIME headers act as
+    the pointer, and an attachment is extracted only when an answer needs it."""
+
+    def setUp(self):
+        self.work = tempfile.TemporaryDirectory(prefix="jarvis_attach_")
+        self.addCleanup(self.work.cleanup)
+        self.mail_root = os.path.join(self.work.name, "mail")
+        self.corpus = os.path.join(self.work.name, "corpus")
+        data = os.path.join(self.mail_root, "Account", "INBOX.mbox", "Data", "1")
+        self.source = os.path.join(data, "Messages", "7.partial.emlx")
+        self.external = os.path.join(data, "Attachments", "7", "2", "notes.txt")
+        _write_attachment_emlx(self.source, "<att@example.com>", [
+            ("notes.txt", "text/plain", b"", "attachment"),
+            ("memo.txt", "text/plain", b"Embedded memo text.", "attachment"),
+            ("logo.png", "image/png", b"\x89PNG", "inline"),
+        ])
+        os.makedirs(os.path.dirname(self.external), exist_ok=True)
+        with open(self.external, "w", encoding="utf-8") as handle:
+            handle.write("The tracking code for the shipment is ZX-1.")
+        self.doc_set = DocSet(name="mail", corpus_dir=self.corpus, type="mail", mail_root=self.mail_root)
+        self.assertEqual(refresh_mail_set(self.doc_set)[2], [])
+        self.staged = os.path.join(self.corpus, docsync._msgid_key("<att@example.com>"))
+        self.stem = os.path.basename(self.staged)[: -len(".emlx")]
+        self.mirror = os.path.join(docsync.mail_attachment_dir(self.corpus), self.stem)
+
+    def test_refresh_mirrors_external_attachment_beside_corpus(self):
+        mirrored = os.path.join(self.mirror, "2", "notes.txt")
+        with open(mirrored, encoding="utf-8") as handle:
+            self.assertIn("ZX-1", handle.read())
+        self.assertFalse(os.path.abspath(self.mirror).startswith(os.path.abspath(self.corpus) + os.sep))
+        self.assertEqual(glob.glob(os.path.join(self.corpus, "**", "notes.txt"), recursive=True), [])
+
+    def test_refresh_prunes_mirror_when_message_leaves(self):
+        shutil.rmtree(os.path.join(self.mail_root, "Account"))
+        _write_emlx(os.path.join(self.mail_root, "Inbox", "other.emlx"), "sender@example.com", "Other", "Text.", "<other@example.com>")
+        self.assertEqual(refresh_mail_set(self.doc_set)[2], [])
+        self.assertFalse(os.path.exists(self.mirror))
+
+    def test_pointer_resolves_external_and_embedded_but_skips_inline(self):
+        from jarvisrag.extraction.extractors import staged_email_attachments
+
+        found = dict(staged_email_attachments(self.staged))
+        self.assertEqual(sorted(found), ["memo.txt", "notes.txt"])
+        self.assertTrue(all(os.path.isfile(path) for path in found.values()))
+        with open(found["memo.txt"], encoding="utf-8") as handle:
+            self.assertEqual(handle.read(), "Embedded memo text.")
+
+    def test_attachment_text_is_dereferenced_on_demand_and_cites_its_email(self):
+        import jarvisrag.answer.answer as ans
+        import jarvisrag.answer.bootstrap as boot
+
+        cache = os.path.join(self.work.name, "cache")
+        domain = {"name": "mail", "corpus_dir": os.path.abspath(self.corpus)}
+        evidence = [f"- {self.stem}.emlx: See attached.", "- other.pdf: unrelated text"]
+        with patch.object(boot, "EXTRACTION_CACHE_DIR", cache), contextlib.redirect_stdout(io.StringIO()):
+            lines = ans._attachment_evidence_lines("What is the tracking code?", evidence, [domain])
+        self.assertTrue(any("[Attachment: notes.txt]" in line and "ZX-1" in line for line in lines))
+        self.assertTrue(all(line.startswith(f"- {self.stem}.emlx: ") for line in lines))
+        self.assertTrue(os.listdir(cache))  # extraction went to the on-disk cache, not the index
+
+    def test_emails_outside_the_domain_corpus_are_ignored(self):
+        import jarvisrag.answer.answer as ans
+
+        other = {"name": "mail", "corpus_dir": os.path.join(self.work.name, "elsewhere")}
+        self.assertEqual(ans._evidence_email_paths([f"- {self.stem}.emlx: text"], [other]), [])
+
+    def test_identical_attachment_on_two_emails_is_read_once(self):
+        import jarvisrag.answer.answer as ans
+        import jarvisrag.answer.bootstrap as boot
+
+        twin_stem = "f" * 24
+        shutil.copyfile(self.staged, os.path.join(self.corpus, f"{twin_stem}.emlx"))
+        shutil.copytree(self.mirror, os.path.join(docsync.mail_attachment_dir(self.corpus), twin_stem))
+        domain = {"name": "mail", "corpus_dir": os.path.abspath(self.corpus)}
+        evidence = [f"- {self.stem}.emlx: See attached.", f"- {twin_stem}.emlx: See attached."]
+        with patch.object(boot, "EXTRACTION_CACHE_DIR", os.path.join(self.work.name, "cache")), \
+                contextlib.redirect_stdout(io.StringIO()):
+            lines = ans._attachment_evidence_lines("What is the tracking code?", evidence, [domain])
+        tracking = [line for line in lines if "[Attachment: notes.txt]" in line]
+        self.assertEqual(len(tracking), 1)
+        self.assertTrue(tracking[0].startswith(f"- {self.stem}.emlx: "))  # kept from the higher-ranked email
+
+    def test_unrelated_attachment_is_not_added_to_evidence(self):
+        import jarvisrag.answer.answer as ans
+        import jarvisrag.answer.bootstrap as boot
+
+        domain = {"name": "mail", "corpus_dir": os.path.abspath(self.corpus)}
+        evidence = [f"- {self.stem}.emlx: See attached."]
+        with patch.object(boot, "EXTRACTION_CACHE_DIR", os.path.join(self.work.name, "cache")), \
+                contextlib.redirect_stdout(io.StringIO()):
+            lines = ans._attachment_evidence_lines("Which city hosts the annual gardening festival?", evidence, [domain])
+        self.assertEqual(lines, [])
 
 
 if __name__ == "__main__":

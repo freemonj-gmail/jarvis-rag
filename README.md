@@ -526,9 +526,12 @@ How it works:
   retriever indexes the whole docstore and has no metadata-filter support, so a
   single shared collection could not keep domain text from leaking into — or
   crowding — ordinary queries. A separate index is the only clean isolation.
-- **Gated by routing terms.** A domain is consulted **only** when the query
-  matches one of its `match_any` terms (e.g. `fers`, `tsp`, `federal annuity`).
-  Non-matching queries never touch it, so general retrieval is unchanged.
+- **Gated by routing terms.** A domain is consulted when the query matches one of
+  its `match_any` terms (e.g. `fers`, `tsp`, `federal annuity`). Otherwise it is
+  searched only as a fallback: when the first answer fails, or reports the asked-for
+  detail as absent, each unconsulted domain is tried on its own (most relevant
+  first) and the first supported answer is kept. Answers that already succeed
+  never touch a non-matching domain.
 - **Merged like MCP evidence.** When a domain matches, its evidence is prepended
   as high-precedence context (after any MCP evidence, before local evidence).
 - **Clean references.** For a domain-routed query, the normal home-corpus
@@ -586,6 +589,17 @@ only when *every* copy of it is out of scope, so mail filed in both an excluded 
 an included location is kept. Leaving `JARVIS_MAIL_ACCOUNTS` unset indexes every
 account. Narrowing either filter prunes the now-out-of-scope staged copies on the
 next refresh; the originals in Mail are never touched.
+
+Attachments are never indexed. Apple Mail stores most attachment files outside
+the message, so refresh also mirrors each staged message's attachment files into
+a sibling `<corpus_dir>_attachments/` directory, as APFS clones where possible, so
+the mirror takes almost no extra disk. The staged message's MIME headers act as
+the pointer. When an answer is built from mail, the attachments of the top few
+evidence emails are extracted with the normal readers and cached on disk. A
+passage joins the evidence only if it passes the same relevance check as every
+retrieved chunk, and it cites its parent email. Reading attachments needs no Full
+Disk Access at answer time. Attachments Mail never downloaded to this Mac cannot
+be read.
 
 Run refresh before indexing, not concurrently. Startup automatically builds or
 resumes the mail domain index from the staged corpus. Unchanged messages reuse
