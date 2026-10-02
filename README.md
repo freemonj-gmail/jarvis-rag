@@ -48,6 +48,13 @@ names, dates, dollar amounts, IDs, defined terms — where pure embedding search
 underperform. BM25 closes that lexical recall gap, while the dense path keeps
 semantic matching. Everything runs **100% locally** (no OpenAI / external calls).
 
+The dense path searches Milvus **exactly** (a `FLAT` index that compares the query
+against every stored vector), not approximately. On a ~330k-vector mail corpus an
+approximate HNSW index returned only about two-thirds of the true top 32 for
+natural-language questions, while exact search costs roughly 0.2 s per search
+there. Collections created with the older HNSW index switch to `FLAT` in place on
+first open; stored vectors are kept, nothing is re-embedded.
+
 **It is a merge, not an either-or.** Both retrievers always run. RRF scores each
 chunk by `sum(1 / (k + rank))` across the lists it appears in, so:
 
@@ -60,7 +67,7 @@ chunk by `sum(1 / (k + rank))` across the lists it appears in, so:
 flowchart LR
     Q[user query] --> EXP[multi-query expansion]
     EXP --> B[BM25 sparse<br/>lexical top-k]
-    EXP --> M[Milvus dense<br/>vector top-k]
+    EXP --> M[Milvus dense<br/>exact vector top-k]
     B --> RRF[Reciprocal Rank Fusion<br/>sum 1/k+rank across both lists]
     M --> RRF
     RRF --> U[fused pool<br/>BM25-only + dense-only + shared]

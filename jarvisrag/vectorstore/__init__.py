@@ -65,6 +65,25 @@ def _metadata_filters_to_milvus_expr(filters: Optional[MetadataFilters]) -> Opti
     return f" {condition} ".join(expr_pieces)
 
 
+# Exact search over every stored vector. Measured on the mail corpus (~330k
+# bge-m3 vectors): HNSW (M=16, ef=64) returned only ~68% of the true top-32 for
+# natural-language questions, while FLAT is exact at ~190 ms per search.
+_EXACT_INDEX_TYPE = "FLAT"
+
+
+def _exact_index_params() -> Any:
+    from pymilvus.milvus_client.index import IndexParams
+
+    idx = IndexParams()
+    idx.add_index(
+        field_name="embedding",
+        index_type=_EXACT_INDEX_TYPE,
+        index_name="embedding_flat",
+        metric_type="IP",
+    )
+    return idx
+
+
 class MilvusVectorStore(BasePydanticVectorStore):
     stores_text: bool = False
     is_embedding_query: bool = True
@@ -161,35 +180,34 @@ class MilvusVectorStore(BasePydanticVectorStore):
                 raise
 
             # ---------------------------------------------
-            # ONLY CREATE INDEX IF ONE DOES NOT EXIST
+            # ENSURE THE EXACT (FLAT) INDEX; REPLACE AN OLDER ANN INDEX IN PLACE
             # ---------------------------------------------
             try:
                 existing_indexes = self._client.list_indexes(self.collection_name)
+                existing_types = {
+                    name: str(self._client.describe_index(self.collection_name, name).get("index_type", "")).upper()
+                    for name in existing_indexes
+                }
+
+                if any(index_type != _EXACT_INDEX_TYPE for index_type in existing_types.values()):
+                    print(
+                        f"[jarvis] Switching Milvus collection '{self.collection_name}' to exact "
+                        f"vector search (was {', '.join(sorted(set(existing_types.values())))}); "
+                        "stored vectors are kept."
+                    )
+                    self._client.release_collection(self.collection_name)
+                    for name, index_type in existing_types.items():
+                        if index_type != _EXACT_INDEX_TYPE:
+                            self._client.drop_index(self.collection_name, name)
+                            existing_indexes = [n for n in existing_indexes if n != name]
 
                 if not existing_indexes:
-
-                    from pymilvus.milvus_client.index import IndexParams
-
-                    idx = IndexParams()
-
-                    idx.add_index(
-                        field_name="embedding",
-                        index_type="HNSW",
-                        index_name="embedding_hnsw",
-                        metric_type="IP",
-                        params={
-                            "M": 16,
-                            "efConstruction": 100,
-                        },
-                    )
-
                     self._client.create_index(
                         collection_name=self.collection_name,
-                        index_params=idx,
+                        index_params=_exact_index_params(),
                     )
-
                     logger.info(
-                        f"Created HNSW index on collection {self.collection_name}"
+                        f"Created {_EXACT_INDEX_TYPE} index on collection {self.collection_name}"
                     )
 
             except Exception as e:
@@ -265,24 +283,9 @@ class MilvusVectorStore(BasePydanticVectorStore):
         # -------------------------------------------------
         # CREATE INDEX
         # -------------------------------------------------
-        from pymilvus.milvus_client.index import IndexParams
-
-        idx = IndexParams()
-
-        idx.add_index(
-            field_name="embedding",
-            index_type="HNSW",
-            index_name="embedding_hnsw",
-            metric_type="IP",
-            params={
-                "M": 16,
-                "efConstruction": 100,
-            },
-        )
-
         self._client.create_index(
             collection_name=self.collection_name,
-            index_params=idx,
+            index_params=_exact_index_params(),
         )
 
         self._client.load_collection(self.collection_name)
@@ -518,6 +521,9 @@ class MilvusVectorStore(BasePydanticVectorStore):
         self._connect()
         if self._client is None or not self._client.has_collection(self.collection_name):
             raise RuntimeError("Milvus collection does not exist or client is not initialized.")
+        if self._collection is None:
+            # A warm start never calls add(), so the exact-index check runs on first search.
+            self._ensure_collection(dim=self.dim or 0)
 
         query_embedding = normalize_vector(query.query_embedding)
         if self.dim is not None and len(query_embedding) != self.dim:
@@ -527,10 +533,7 @@ class MilvusVectorStore(BasePydanticVectorStore):
             )
         expr = _metadata_filters_to_milvus_expr(query.filters)
 
-        search_params = {
-            "metric_type": "IP",
-            "params": {"ef": 64},
-        }
+        search_params = {"metric_type": "IP"}
         # Prefer client.search and retry once for transient QueryNode/channel issues.
         top_ids: List[str] = []
         top_similarities: List[float] = []

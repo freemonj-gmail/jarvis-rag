@@ -85,6 +85,51 @@ class RetentionTests(unittest.TestCase):
         store.delete_nodes(["synthetic-child"])
 
 
+class ExactVectorSearchTests(unittest.TestCase):
+    def _existing_store(self, index_type):
+        store = create_milvus_vector_store(dim=8)
+        store._client = Mock()
+        store._client.has_collection.return_value = True
+        store._client.describe_collection.return_value = {"fields": [{"name": "embedding", "params": {"dim": 8}}]}
+        store._client.list_indexes.return_value = [f"embedding_{index_type.lower()}"]
+        store._client.describe_index.return_value = {"index_type": index_type}
+        return store
+
+    def test_existing_ann_index_is_replaced_by_exact_index_in_place(self):
+        store = self._existing_store("HNSW")
+        with contextlib.redirect_stdout(io.StringIO()):
+            store._ensure_collection(8)
+        store._client.release_collection.assert_called_once()
+        store._client.drop_index.assert_called_once_with(store.collection_name, "embedding_hnsw")
+        params = store._client.create_index.call_args.kwargs["index_params"]
+        self.assertEqual([p.index_type for p in params], ["FLAT"])
+        store._client.load_collection.assert_called()
+        store._client.drop_collection.assert_not_called()
+        store._client.delete.assert_not_called()
+
+    def test_existing_exact_index_is_left_alone(self):
+        store = self._existing_store("FLAT")
+        store._ensure_collection(8)
+        store._client.drop_index.assert_not_called()
+        store._client.create_index.assert_not_called()
+
+    def test_search_is_exact(self):
+        store = self._existing_store("FLAT")
+        store._client.search.return_value = [[{"node_id": "synthetic", "distance": 0.9}]]
+        result = store.query(VectorStoreQuery(query_embedding=[1.0] * 8, similarity_top_k=32))
+        self.assertEqual(result.ids, ["synthetic"])
+        self.assertEqual(store._client.search.call_args.kwargs["search_params"], {"metric_type": "IP"})
+
+    def test_first_search_on_a_warm_start_replaces_an_ann_index(self):
+        store = self._existing_store("HNSW")
+        store._client.search.return_value = [[{"node_id": "synthetic", "distance": 0.9}]]
+        with contextlib.redirect_stdout(io.StringIO()):
+            store.query(VectorStoreQuery(query_embedding=[1.0] * 8, similarity_top_k=32))
+            store.query(VectorStoreQuery(query_embedding=[1.0] * 8, similarity_top_k=32))
+        store._client.drop_index.assert_called_once_with(store.collection_name, "embedding_hnsw")
+        self.assertEqual(store._client.create_index.call_count, 1)
+
+
 class MailStartupTests(unittest.TestCase):
     def test_unbuilt_mail_index_never_starts_a_long_build_on_launch(self):
         from jarvisrag.answer import bootstrap
