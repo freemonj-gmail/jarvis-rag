@@ -1341,9 +1341,10 @@ class SynthesisBoundedOutputTests(unittest.TestCase):
 
 class DomainCascadeTests(unittest.TestCase):
     """The failure-triggered domain cascade (_cascade_domain_answer) consults
-    domains left un-consulted this turn ONLY when the primary answer failed, and
-    adopts the re-synthesis only when it is supported and non-dismissive. Keyed on
-    answer weakness, not topic keywords, so it stays domain-agnostic."""
+    domains left un-consulted this turn ONLY when the primary answer did not fully
+    answer, and adopts a re-synthesis only when it is supported and supplies at
+    least part of what was asked. Keyed on answer completeness, not topic
+    keywords, so it stays domain-agnostic."""
 
     @staticmethod
     def _domains():
@@ -1486,6 +1487,187 @@ class DomainCascadeTests(unittest.TestCase):
         self.assertEqual(len(seen), 1)
         self.assertEqual(seen[0][0], attachment)
         self.assertEqual(out["response_text"], "The tracking code is ZX-1.")
+
+    def test_complete_answer_from_later_domain_beats_earlier_partial(self):
+        import jarvisrag.answer.answer as ans
+        order = []
+
+        def answer(query, evidence, llm):
+            name = "mail" if any("mail" in line for line in evidence) else "reference"
+            order.append(name)
+            return (f"{name} answer", True, "ok")
+
+        with patch.object(
+            ans, "_retrieve_domain_evidence", side_effect=self._per_domain_evidence
+        ), patch.object(ans, "_answer_with_review_loop", side_effect=answer), patch.object(
+            ans, "_corpus_relevance", side_effect=lambda q, idx: {"ref-index": 0.9, "mail-index": 0.1}[idx]
+        ), patch.object(
+            ans,
+            "_answer_completeness",
+            side_effect=lambda q, text, llm: ans.ANSWER_PARTIAL if text.startswith("reference") else ans.ANSWER_COMPLETE,
+        ):
+            out = ans._cascade_domain_answer("q", self._two_domains(), [], llm=Mock())
+        self.assertEqual(order, ["reference", "mail"])
+        self.assertEqual(out["domain_names"], ["mail"])
+        self.assertEqual(out["completeness"], ans.ANSWER_COMPLETE)
+
+    def test_first_partial_is_kept_when_no_domain_answers_fully(self):
+        import jarvisrag.answer.answer as ans
+        with patch.object(
+            ans, "_retrieve_domain_evidence", side_effect=self._per_domain_evidence
+        ), patch.object(
+            ans, "_answer_with_review_loop", side_effect=lambda q, ev, llm: (f"{ev[0][2:8]} answer", True, "ok")
+        ), patch.object(
+            ans, "_corpus_relevance", side_effect=lambda q, idx: {"ref-index": 0.9, "mail-index": 0.1}[idx]
+        ), patch.object(ans, "_answer_completeness", return_value=ans.ANSWER_PARTIAL):
+            out = ans._cascade_domain_answer("q", self._two_domains(), [], llm=Mock())
+        self.assertEqual(out["domain_names"], ["reference"])
+        self.assertEqual(out["completeness"], ans.ANSWER_PARTIAL)
+
+    def test_long_non_answer_is_not_adopted_whatever_its_wording(self):
+        # Longer than the dismissive-length guard and free of hedge markers, so
+        # only the meaning-based verdict can reject it.
+        import jarvisrag.answer.answer as ans
+        non_answer = (
+            "These records cover retirement plan contribution limits, survivor annuities and "
+            "earnings tests for several years; a lamp return and its tracking number are "
+            "nowhere among them, so that part of your question is outside this material entirely."
+        )
+        self.assertFalse(ans._response_is_dismissive(non_answer))
+        self.assertFalse(ans._answer_hedges_about_missing_detail(non_answer))
+        with patch.object(
+            ans, "_retrieve_domain_evidence", side_effect=self._per_domain_evidence
+        ), patch.object(
+            ans, "_answer_with_review_loop", return_value=(non_answer, True, "ok")
+        ), patch.object(ans, "_answer_completeness", return_value=ans.ANSWER_UNANSWERED):
+            self.assertIsNone(ans._cascade_domain_answer("q", self._domains(), [], llm=Mock()))
+
+
+class AnswerCompletenessTests(unittest.TestCase):
+    """_answer_completeness judges whether an answer supplies what was asked by
+    meaning, so a non-answer is caught however it is worded."""
+
+    class _VerdictLLM:
+        def __init__(self, reply=None, error=None):
+            self.reply, self.error, self.prompts = reply, error, []
+
+        def chat(self, messages):
+            self.prompts.append(messages[0].content)
+            if self.error:
+                raise self.error
+            resp = Mock()
+            resp.message = Mock()
+            resp.message.content = self.reply
+            return resp
+
+    # Hedges in wordings the phrase list never contained.
+    _PARAPHRASED = "Your blender order number is BX-1042. The delivery date isn't listed in these records."
+
+    def _verdict(self, reply, answer=_PARAPHRASED, error=None):
+        from jarvisrag.answer.answer import _answer_completeness
+        llm = self._VerdictLLM(reply, error)
+        return _answer_completeness("What is the order number and delivery date?", answer, llm), llm
+
+    def test_unanswered_is_not_mistaken_for_answered(self):
+        from jarvisrag.answer.answer import ANSWER_UNANSWERED
+        self.assertEqual(self._verdict("UNANSWERED")[0], ANSWER_UNANSWERED)
+
+    def test_partial_and_answered_verdicts(self):
+        from jarvisrag.answer.answer import ANSWER_COMPLETE, ANSWER_PARTIAL
+        self.assertEqual(self._verdict("PARTIAL")[0], ANSWER_PARTIAL)
+        self.assertEqual(self._verdict(" answered.\n")[0], ANSWER_COMPLETE)
+
+    def test_prompt_carries_question_and_answer(self):
+        _, llm = self._verdict("PARTIAL")
+        self.assertIn("What is the order number and delivery date?", llm.prompts[0])
+        self.assertIn(self._PARAPHRASED, llm.prompts[0])
+
+    def test_empty_or_dismissive_answer_needs_no_model_call(self):
+        from jarvisrag.answer.answer import ANSWER_UNANSWERED
+        for answer in ("", "I could not find that."):
+            verdict, llm = self._verdict("ANSWERED", answer=answer)
+            self.assertEqual(verdict, ANSWER_UNANSWERED)
+            self.assertEqual(llm.prompts, [])
+
+    def test_unavailable_model_falls_back_to_phrase_markers(self):
+        from jarvisrag.answer.answer import ANSWER_COMPLETE, ANSWER_PARTIAL
+        hedged = "The order number is BX-1042, but the evidence does not state a delivery date."
+        self.assertEqual(self._verdict(None, answer=hedged, error=RuntimeError("down"))[0], ANSWER_PARTIAL)
+        self.assertEqual(self._verdict("maybe", answer="The order number is BX-1042.")[0], ANSWER_COMPLETE)
+
+
+class CascadeTriggerTests(unittest.TestCase):
+    """handle_query cascades when the primary answer passed review but did not
+    supply what was asked -- judged by meaning, not by hedge phrases."""
+
+    _EVIDENCE = [
+        "- receipt.pdf: Lamp purchased June 2 for $45 (receipt.pdf)",
+        "- receipt.pdf: Shipped from the Ohio warehouse (receipt.pdf)",
+        "- receipt.pdf: Return label follows in a separate message (receipt.pdf)",
+    ]
+    # Passes review, is too long for the dismissive guard, and uses no hedge marker.
+    _PRIMARY = (
+        "The lamp was purchased on June 2 for $45 and shipped from the Ohio warehouse. A return "
+        "label is mentioned as arriving in a separate message, which isn't among these records, "
+        "so the tracking number for the return isn't something I can see here."
+    )
+
+    def _run(self, completeness, cascade_result=None):
+        import jarvisrag.answer.answer as ans
+        runtime = ans.QueryRuntime(
+            all_docs=[],
+            llm=Mock(),
+            doc_retriever=object(),
+            domain_retrievers=[{"name": "mail", "retriever": object(), "match_any": ["email"]}],
+        )
+        cascade = Mock(return_value=cascade_result)
+        judge = Mock(return_value=completeness)
+        with patch.object(
+            ans, "_retrieve_query_supported_evidence", return_value=(list(self._EVIDENCE), [])
+        ), patch.object(ans, "fetch_mcp_evidence", return_value=[]), patch.object(
+            ans, "_extractive_value_answer_from_evidence", return_value=""
+        ), patch.object(
+            ans, "_extractive_value_answer_from_documents", return_value=""
+        ), patch.object(
+            ans, "_answer_with_review_loop", return_value=(self._PRIMARY, True, "ok")
+        ), patch.object(ans, "_answer_completeness", judge), patch.object(
+            ans, "_cascade_domain_answer", cascade
+        ), patch.object(
+            ans, "_clarifying_question_from_evidence", return_value=""
+        ), contextlib.redirect_stdout(io.StringIO()):
+            turn = ans.handle_query("What is the tracking number for the lamp return?", runtime)
+        return turn, cascade, judge
+
+    def test_paraphrased_partial_answer_cascades_and_adopts(self):
+        import jarvisrag.answer.answer as ans
+        adopted = {
+            "response_text": "The return tracking number is ZX-1.",
+            "review_reason": "ok",
+            "evidence_lines": ["- mail.emlx: tracking ZX-1 (mail.emlx)"],
+            "refs": ["mail.emlx"],
+            "superseded": set(),
+            "domain_names": ["mail"],
+            "completeness": ans.ANSWER_COMPLETE,
+        }
+        turn, cascade, judge = self._run(ans.ANSWER_PARTIAL, adopted)
+        cascade.assert_called_once()
+        self.assertEqual([d["name"] for d in cascade.call_args.args[1]], ["mail"])
+        self.assertEqual(turn["response_text"], "The return tracking number is ZX-1.")
+        self.assertEqual(judge.call_count, 1)  # cascade's verdict is reused, not recomputed
+
+    def test_complete_answer_never_cascades(self):
+        import jarvisrag.answer.answer as ans
+        turn, cascade, judge = self._run(ans.ANSWER_COMPLETE)
+        cascade.assert_not_called()
+        self.assertEqual(turn["response_text"], self._PRIMARY)
+        self.assertEqual(judge.call_count, 1)
+
+    def test_partial_answer_is_kept_when_cascade_finds_nothing(self):
+        import jarvisrag.answer.answer as ans
+        turn, cascade, judge = self._run(ans.ANSWER_PARTIAL, None)
+        cascade.assert_called_once()
+        self.assertEqual(turn["response_text"], self._PRIMARY)
+        self.assertEqual(judge.call_count, 1)  # the clarification check reuses the verdict
 
 
 def _write_attachment_emlx(path: str, message_id: str, parts: list[tuple[str, str, bytes, str]]) -> None:

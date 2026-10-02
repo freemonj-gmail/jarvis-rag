@@ -70,6 +70,10 @@ def _build_llm() -> Ollama:
         request_timeout=600,
         temperature=0.2,
         additional_kwargs={"num_predict": 256},
+        # Ollama 0.35 turned thinking on by default for gemma4; the hidden trace
+        # consumes the short verdict budgets (review PASS/FAIL, triage) and the
+        # empty reply is read as a pass. Answers were validated without it.
+        thinking=False,
     )
     # Loaded context window. The model's own max is 262144 (256K). The largest
     # possible prompt here is bounded by the evidence caps (30 lines x 8000 chars

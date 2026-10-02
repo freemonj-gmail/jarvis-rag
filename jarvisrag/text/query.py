@@ -141,6 +141,25 @@ _FOLLOW_UP_PRONOUN_RE = re.compile(
     r"\b(he|him|his|she|her|hers|they|them|their|theirs|there|this|those|these)\b"
 )
 
+# Phrases that refer back to the previous turn. Whole-word matched like the
+# pronouns above: plain substring matching found "it" inside "limit", "with",
+# "credit", "benefit", so unrelated new questions were merged into the prior one.
+# An optional plural keeps "files"/"documents"/"answers" matching.
+_FOLLOW_UP_MARKER_RE = re.compile(
+    r"\b(?:"
+    + "|".join(
+        re.escape(marker)
+        for marker in (
+            "that", "it", "its", "same", "previous", "earlier", "answer", "evidence",
+            "relevant evidence", "file", "filename", "entitled", "document", "pdf",
+            "you said", "you missed", "look at", "use the", "in the evidence",
+            "clarify", "dig deeper", "drill down", "instead", "narrow", "refine",
+            "tell me more", "what about", "what does that mean",
+        )
+    )
+    + r")s?\b"
+)
+
 
 # Lowercased words that are never, on their own, a "new subject" proper noun:
 # question/lead words, conjunctions, articles, and the anaphoric pronouns. Used
@@ -202,17 +221,10 @@ def _looks_like_follow_up(user_query: str, last_turn: dict[str, object]) -> bool
     # absence of any alphabetic topic word, never on a specific value or topic.
     if not re.search(r"[A-Za-z]{3,}", user_query or ""):
         return True
-    follow_up_markers = (
-        "that", "it", "its", "same", "previous", "earlier", "answer", "evidence",
-        "relevant evidence", "file", "filename", "entitled", "document", "pdf",
-        "you said", "you missed", "look at", "use the", "in the evidence",
-        "clarify", "dig deeper", "drill down", "instead", "narrow", "refine",
-        "tell me more", "what about", "what does that mean",
-    )
     has_source_hint = bool(_extract_source_hints(user_query))
     wants_refinement = _query_requests_reasoning(user_query) or _query_requests_refinement(user_query)
     has_pronoun = bool(_FOLLOW_UP_PRONOUN_RE.search(lowered))
-    has_marker = any(marker in lowered for marker in follow_up_markers)
+    has_marker = bool(_FOLLOW_UP_MARKER_RE.search(lowered))
 
     # An explicit source reference ("the answer is in X.pdf") is a deliberate
     # continuation and always stays a follow-up.

@@ -528,10 +528,12 @@ How it works:
   crowding — ordinary queries. A separate index is the only clean isolation.
 - **Gated by routing terms.** A domain is consulted when the query matches one of
   its `match_any` terms (e.g. `fers`, `tsp`, `federal annuity`). Otherwise it is
-  searched only as a fallback: when the first answer fails, or reports the asked-for
-  detail as absent, each unconsulted domain is tried on its own (most relevant
-  first) and the first supported answer is kept. Answers that already succeed
-  never touch a non-matching domain.
+  searched only as a fallback: when the first answer fails, or does not supply
+  everything the question asked for (judged by the model on meaning, however the
+  answer words it), each unconsulted domain is tried on its own (most relevant
+  first). A domain that answers fully wins; otherwise the first one that answers
+  at least part of the question is kept. Answers that already succeed never touch
+  a non-matching domain.
 - **Merged like MCP evidence.** When a domain matches, its evidence is prepended
   as high-precedence context (after any MCP evidence, before local evidence).
 - **Clean references.** For a domain-routed query, the normal home-corpus

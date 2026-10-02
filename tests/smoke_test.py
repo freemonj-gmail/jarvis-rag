@@ -343,6 +343,22 @@ def run_tests():
     assert not _looks_like_follow_up("TSP", prior_turn)
     # No prior turn -> a bare number is still not a follow-up.
     assert not _looks_like_follow_up("2026", {})
+    # Markers are whole words: "it" inside "limit"/"with"/"credit"/"benefit" and
+    # "its" inside "limits" must not merge an unrelated new question into the prior one.
+    unrelated_prior = {"user_query": "What is the return tracking number for the lamp?"}
+    for fresh in (
+        "What is the 2026 IRA contribution limit?",
+        "What are the annual limits on deposits?",
+        "Which credit card comes with travel benefits?",
+    ):
+        assert not _looks_like_follow_up(fresh, unrelated_prior), fresh
+    # ...while genuine back-references still continue the thread, plurals included.
+    for continuing in (
+        "Is it the same for the blender?",
+        "What does that mean?",
+        "Check the documents again.",
+    ):
+        assert _looks_like_follow_up(continuing, unrelated_prior), continuing
     # The contentless follow-up merges the prior question into the effective query.
     _eff_num, _is_fu_num, _h_num = _effective_query_for_turn("2026", prior_turn)
     assert _is_fu_num and "current employer" in _eff_num and _eff_num.strip().endswith("2026")

@@ -12,6 +12,7 @@ import re
 from typing import Any, Optional, cast
 
 from jarvisrag.config import debug_print
+from jarvisrag.iotools import Spinner
 from jarvisrag.text.textproc import is_low_information_text, normalize_text
 from jarvisrag.text.query import (
     _detail_candidates,
@@ -549,10 +550,12 @@ def build_hybrid_retriever(
     bm25_k = bm25_top_k or dense_top_k
     fusion_k = fusion_top_k or dense_top_k
     try:
-        bm25_retriever = BM25Retriever.from_defaults(
-            docstore=docstore,
-            similarity_top_k=bm25_k,
-        )
+        # Tokenizes every chunk: minutes on a large corpus (e.g. the mail index).
+        with Spinner(f"Building keyword index ({doc_count} chunks)"):
+            bm25_retriever = BM25Retriever.from_defaults(
+                docstore=docstore,
+                similarity_top_k=bm25_k,
+            )
         fusion = QueryFusionRetriever(
             [dense_retriever, bm25_retriever],
             similarity_top_k=fusion_k,

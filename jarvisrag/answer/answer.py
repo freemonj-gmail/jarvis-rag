@@ -149,6 +149,7 @@ def _build_escalation_llm() -> Any:
             model=model,
             request_timeout=timeout,
             temperature=temperature,
+            thinking=False,  # same reason as the primary client in bootstrap._build_llm
         )
         if num_ctx > 0:
             client_kwargs["context_window"] = num_ctx
@@ -1240,6 +1241,53 @@ def _answer_hedges_about_missing_detail(response_text: str) -> bool:
     return any(marker in text for marker in _HEDGE_MARKERS)
 
 
+ANSWER_COMPLETE = "answered"
+ANSWER_PARTIAL = "partial"
+ANSWER_UNANSWERED = "unanswered"
+
+_COMPLETENESS_PROMPT = (
+    "You check whether an answer gives the user the information their question asks for.\n"
+    "Judge ONLY whether the requested information is present in the answer, not whether it is correct.\n"
+    "If the question contains earlier turns followed by a latest message, judge against the latest message.\n"
+    "Reply with exactly one word:\n"
+    "ANSWERED - the answer supplies every specific value, detail, or fact the question asks for.\n"
+    "PARTIAL - the answer supplies some of what was asked, but says or implies that another requested part "
+    "is missing, unavailable, not provided, unknown, or could not be found.\n"
+    "UNANSWERED - the answer supplies none of what was asked: it reports the information as absent, or "
+    "discusses something other than what was asked.\n\n"
+    "Question: {question}\n\nAnswer: {answer}\n\nVerdict:"
+)
+
+
+def _answer_completeness(user_query: str, response_text: str, llm_client: Any) -> str:
+    """Whether an answer actually supplies what the question asked for.
+
+    A semantic verdict instead of phrase matching: an answer can report a detail
+    as absent in endless wordings ("is not provided", "isn't listed", "there's no
+    mention", "I wasn't able to locate"), and a marker list misses most of them
+    (measured 0/7 on paraphrased non-answers, while the model judged 16/16 for
+    the answered-vs-not decision). Falls back to the deterministic markers if the
+    model is unavailable or replies off-format."""
+    if not (response_text or "").strip() or _response_is_dismissive(response_text):
+        return ANSWER_UNANSWERED
+    prompt = _COMPLETENESS_PROMPT.format(question=user_query, answer=response_text)
+    try:
+        with Spinner("Checking the answer"):
+            response = llm_client.chat([ChatMessage(role=MessageRole.USER, content=prompt)])
+        verdict = " ".join((response.message.content or "").split()).upper()
+    except Exception as exc:
+        debug_print(f"[debug] Answer completeness check failed ({type(exc).__name__}); using markers.")
+        verdict = ""
+    # UNANSWERED contains ANSWERED, so test it first.
+    for word, label in (("UNANSWERED", ANSWER_UNANSWERED), ("PARTIAL", ANSWER_PARTIAL), ("ANSWERED", ANSWER_COMPLETE)):
+        if verdict.startswith(word):
+            debug_print(f"[debug] Answer completeness: {label}.")
+            return label
+    if verdict:
+        debug_print(f"[debug] Unrecognized completeness verdict: {verdict[:60]}; using markers.")
+    return ANSWER_PARTIAL if _answer_hedges_about_missing_detail(response_text) else ANSWER_COMPLETE
+
+
 # General quantity/value intent -- a number that can change from year to year.
 # Domain-neutral (no tax-specific words) so the period clarification generalizes
 # to any corpus: prices, rates, thresholds, limits, fees, etc.
@@ -2167,14 +2215,14 @@ def _cascade_domain_answer(
 ) -> dict | None:
     """Second-pass answer over domain corpora NOT consulted on the first pass.
 
-    Runs ONLY when the primary (home/main + keyword-routed) answer came back
-    dismissive/empty: it broadens the search to the remaining domains -- e.g. the
+    Runs ONLY when the primary (home/main + keyword-routed) answer did not fully
+    answer: it broadens the search to the remaining domains -- e.g. the
     large personal mail index, which is gated behind explicit intent so it never
     dilutes an ordinary query -- and re-synthesizes. DOMAIN-AGNOSTIC and keyed on
     answer WEAKNESS, not any topic keyword: it consults whatever was left
     un-consulted this turn. Fail-safe: no domains, no supported evidence, or a
-    still-dismissive/failed re-synthesis yields None, so the caller simply
-    proceeds to its normal fallback chain.
+    failed re-synthesis / one that supplies none of what was asked yields None,
+    so the caller simply proceeds to its normal fallback chain.
 
     The re-synthesis deliberately uses ONLY the un-consulted domain evidence
     (plus any authoritative MCP lines) and NOT the home/main evidence: that
@@ -2190,11 +2238,13 @@ def _cascade_domain_answer(
     unrelated reference corpus, 0 from the mail index that held the answer at
     rank 0). Domains are tried in descending query relevance so the likeliest
     source is synthesized first; relevance only ORDERS the attempts and never
-    excludes a domain, and the first supported, non-dismissive answer wins.
+    excludes a domain. A domain whose answer is complete wins at once; otherwise
+    the first answer that supplies at least part of what was asked is kept, and
+    an answer that supplies none of it is never adopted, however it is worded.
 
     Returns a dict (response_text, review_reason, evidence_lines, refs,
-    superseded, domain_names) on a supported, non-dismissive answer; otherwise
-    None.
+    superseded, domain_names, completeness) on a supported answer that supplies
+    at least part of what was asked; otherwise None.
     """
     if not unconsulted_domains:
         return None
@@ -2203,6 +2253,7 @@ def _cascade_domain_answer(
         key=lambda d: _corpus_relevance(query, d.get("index")),
         reverse=True,
     )
+    first_partial = None
     for domain in ordered:
         casc_evidence, casc_refs, casc_superseded = _retrieve_domain_evidence(query, [domain])
         if not casc_evidence:
@@ -2216,17 +2267,25 @@ def _cascade_domain_answer(
             main_reserve=int(os.environ.get("JARVIS_MAIN_INDEX_RESERVE", str(_DEFAULT_MAIN_INDEX_RESERVE))),
         )
         text, passed, reason = _answer_with_review_loop(query, combined, llm)
-        if passed and text and not _response_is_dismissive(text):
-            return {
+        completeness = _answer_completeness(query, text, llm) if passed else ANSWER_UNANSWERED
+        if completeness != ANSWER_UNANSWERED:
+            result = {
                 "response_text": text,
                 "review_reason": reason,
                 "evidence_lines": combined,
                 "refs": casc_refs,
                 "superseded": casc_superseded,
                 "domain_names": [domain.get("name")],
+                "completeness": completeness,
             }
+            if completeness == ANSWER_COMPLETE:
+                return result
+            if first_partial is None:
+                first_partial = result
+            debug_print(f"[debug] Domain cascade: '{domain.get('name')}' answered in part; trying next.")
+            continue
         debug_print(f"[debug] Domain cascade: '{domain.get('name')}' did not answer; trying next.")
-    return None
+    return first_partial
 
 
 def handle_query(
@@ -2541,30 +2600,31 @@ def handle_query(
             response_text = ""
 
         # Failure-triggered domain cascade (G1): the primary answer (home/main +
-        # any keyword-routed domain) did not actually answer -- either it was
-        # demoted as dismissive, OR it PASSED review while still hedging that the
-        # asked-for detail is absent (a verbose non-answer that clears the short
-        # dismissive-length guard). Both mean "the consulted corpora lack it", so
-        # broaden to domains NOT consulted this turn -- e.g. the large personal
-        # mail index, kept behind explicit intent so it does not dilute ordinary
-        # queries. Fires ONLY on this failure signal (a genuine answer is never
-        # diluted) and stays domain-agnostic: it consults whatever is un-consulted,
-        # keyed on answer weakness, not any topic keyword. State is mutated ONLY on
-        # a successful adoption, so a hedged-but-passing answer is preserved when
-        # the cascade finds nothing.
-        primary_unanswered = (not review_passed) or (
-            review_passed
-            and len(evidence_lines) >= _HEDGE_MIN_EVIDENCE_LINES
-            and _answer_hedges_about_missing_detail(response_text)
+        # any keyword-routed domain) did not fully answer -- either it failed
+        # review / was demoted as dismissive, OR it passed review yet does not
+        # supply everything the question asked for. Whether it did is judged on
+        # MEANING (_answer_completeness), not on hedge phrases: a non-answer can
+        # be worded endlessly ("is not provided", "isn't listed", ...) and a
+        # phrase list missed most of them. Either way the consulted corpora lack
+        # it, so broaden to domains NOT consulted this turn -- e.g. the large
+        # personal mail index, kept behind explicit intent so it does not dilute
+        # ordinary queries. A complete answer never cascades, and it stays
+        # domain-agnostic: it consults whatever is un-consulted, keyed on answer
+        # completeness, not any topic keyword. State is mutated ONLY on a
+        # successful adoption, so a partial primary answer is preserved when the
+        # cascade finds nothing.
+        unconsulted = [
+            d for d in (domain_retrievers or []) if d.get("name") not in routed_domain_names
+        ]
+        cascade_possible = bool(unconsulted) and not (
+            is_follow_up and last_turn.get("awaiting_clarification")
         )
-        if (
-            primary_unanswered
-            and domain_retrievers
-            and not (is_follow_up and last_turn.get("awaiting_clarification"))
-        ):
-            unconsulted = [
-                d for d in domain_retrievers if d.get("name") not in routed_domain_names
-            ]
+        # Computed once per answer and reused by the clarification check below.
+        answer_completeness = ""
+        if review_passed and cascade_possible:
+            answer_completeness = _answer_completeness(effective_user_query, response_text, runtime.llm)
+        primary_unanswered = (not review_passed) or answer_completeness != ANSWER_COMPLETE
+        if primary_unanswered and cascade_possible:
             cascade = _cascade_domain_answer(
                 effective_user_query, unconsulted, mcp_evidence, runtime.llm
             )
@@ -2579,6 +2639,7 @@ def handle_query(
                 home_evidence_refs = cascade["refs"]
                 excluded_for_display = None
                 domain_superseded = cascade["superseded"]
+                answer_completeness = cascade["completeness"]
                 routed_domain_names = routed_domain_names + cascade["domain_names"]
                 answer_was_dismissive = False
 
@@ -2640,17 +2701,21 @@ def handle_query(
                     awaiting_clarification = response_text.endswith("?")
         else:
             debug_print("[debug] Returning reviewed answer.")
-            # An answer that PASSED review while still reporting a key detail as
-            # absent is the signature of an intent mismatch: the question was
+            # An answer that PASSED review while still not supplying everything
+            # asked for is the signature of an intent mismatch: the question was
             # answered literally, but the retrieved material is about a related
             # frame the user actually meant. The reviewer cannot catch this --
             # the answer is faithful to the evidence, just to the wrong reading.
             # Keep the answer in full and APPEND one disambiguating question, so
-            # nothing is lost and the next turn can resolve it.
+            # nothing is lost and the next turn can resolve it. Uses the same
+            # meaning-based completeness verdict as the cascade, not hedge phrases.
             if (
                 not last_turn.get("awaiting_clarification")
                 and len(evidence_lines) >= _HEDGE_MIN_EVIDENCE_LINES
-                and _answer_hedges_about_missing_detail(response_text)
+                and (
+                    answer_completeness
+                    or _answer_completeness(effective_user_query, response_text, runtime.llm)
+                ) != ANSWER_COMPLETE
             ):
                 clarifying = _clarifying_question_from_evidence(
                     effective_user_query, evidence_lines, runtime.llm
