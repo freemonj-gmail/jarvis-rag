@@ -10,7 +10,7 @@ types, and :mod:`jarvis_config` for the shared logger.
 """
 import json
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, List, Optional, Sequence, Set
 
 import numpy as np
@@ -399,7 +399,7 @@ class MilvusVectorStore(BasePydanticVectorStore):
 
             if "insertion_timestamp" not in metadata:
                 metadata["insertion_timestamp"] = (
-                    datetime.utcnow().isoformat() + "Z"
+                    datetime.now(timezone.utc).replace(tzinfo=None).isoformat() + "Z"
                 )
 
             rows.append({

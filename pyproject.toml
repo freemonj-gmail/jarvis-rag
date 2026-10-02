@@ -1,6 +1,6 @@
 [project]
 name = "my-python-examples"
-version = "1.31.0"
+version = "1.32.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
@@ -23,7 +23,6 @@ dependencies = [
     "pdf2image>=1.17.0",
     "pdfplumber>=0.11.9",
     "pillow>=12.2.0",
-    "pygame>=2.6.1",
     "pymilvus>=3.0.0",
     "pypandoc>=1.17",
     "pymupdf>=1.24.0",

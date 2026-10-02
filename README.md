@@ -159,7 +159,9 @@ whether it is required or only needed for a specific feature.
     resolved only on macOS). No manual OCR setup is needed.
   - Off macOS, OCR falls back to **Tesseract + EasyOCR** (see the native tools
     below).
-- **Python >= 3.13**.
+- **Python >= 3.13** (tested on 3.13 and 3.14). The repo pins **3.14.8** in
+  `.python-version`; `uv sync` installs a uv-managed 3.14.8 if needed
+  (`uv python install 3.14.8`).
 - **[uv](https://docs.astral.sh/uv/)** for dependency management and running the app.
 - **Disk / memory** — the models are large (the default LLM is a ~30B model and
   the `bge-m3` embedding model is ~2 GB). Plan for several GB of free disk and
@@ -258,7 +260,7 @@ uv sync
 
 This creates a virtual environment and installs every Python dependency pinned in
 `uv.lock` (LlamaIndex, Milvus client, Docling, EasyOCR/pytesseract, PyMuPDF,
-pdfplumber, tabula-py, python-pptx, transformers, Kokoro TTS, pygame, etc.). On
+pdfplumber, tabula-py, python-pptx, transformers, Kokoro TTS, etc.). On
 macOS it also installs `ocrmac` (Apple Vision); that dependency is skipped on
 other platforms automatically.
 
