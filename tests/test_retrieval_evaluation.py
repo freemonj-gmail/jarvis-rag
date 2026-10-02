@@ -18,7 +18,7 @@ from jarvisrag.evaluation import (
     evaluate_retrieval,
     load_retrieval_cases,
 )
-from scripts.evaluate_retrieval import _private_runtime_output
+from scripts.evaluate_retrieval import _mode_retrievers, _parse_modes, _private_runtime_output
 
 
 def run_tests() -> None:
@@ -180,6 +180,35 @@ def run_tests() -> None:
             logging.getLogger("jarvis-test").warning("private log")
     assert hidden_stdout.getvalue() == ""
     assert hidden_stderr.getvalue() == ""
+
+    from llama_index.retrievers.bm25 import BM25Retriever
+
+    class FakeDense:
+        pass
+
+    class FakeFusion:
+        pass
+
+    dense, bm25, fusion = FakeDense(), BM25Retriever.__new__(BM25Retriever), FakeFusion()
+    fusion._retrievers = [dense, bm25]
+    fusion._jarvis_docstore = "synthetic-docstore"
+    split_modes = _mode_retrievers(fusion, ["hybrid", "dense", "bm25"])
+    assert split_modes == {"hybrid": fusion, "dense": dense, "bm25": bm25}
+    assert dense._jarvis_docstore == "synthetic-docstore", "components keep source-hint force-include"
+    dense_only = FakeDense()
+    assert _mode_retrievers(dense_only, ["dense"]) == {"dense": dense_only}
+    try:
+        _mode_retrievers(dense_only, ["bm25"])
+        raise AssertionError("bm25 must be unavailable without a hybrid retriever")
+    except RuntimeError:
+        pass
+    assert _parse_modes("BM25, dense,hybrid,dense") == ["bm25", "dense", "hybrid"]
+    for bad in ("", "sparse"):
+        try:
+            _parse_modes(bad)
+            raise AssertionError(f"mode list {bad!r} must be rejected")
+        except Exception as exc:
+            assert type(exc).__name__ == "ArgumentTypeError"
 
     print("retrieval evaluation tests passed (3 targets, 9 evidence lines)")
 

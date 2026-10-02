@@ -76,6 +76,48 @@ def _vector_count(runtime: Any) -> int | None:
     return sum(counts) if counts else None
 
 
+RETRIEVER_MODES = ("hybrid", "dense", "bm25")
+
+
+def _mode_retrievers(retriever: Any, modes: list[str]) -> dict[str, Any]:
+    """Split the runtime's hybrid retriever into its own BM25 and dense parts.
+
+    Every mode is the SAME object the runtime built (same index, same top-k), so
+    a comparison isolates the retrieval method and nothing else.
+    """
+
+    from llama_index.retrievers.bm25 import BM25Retriever
+
+    parts = list(getattr(retriever, "_retrievers", None) or [])
+    available: dict[str, Any] = {"hybrid": retriever if parts else None}
+    available["bm25"] = next((part for part in parts if isinstance(part, BM25Retriever)), None)
+    available["dense"] = next((part for part in parts if not isinstance(part, BM25Retriever)), None)
+    if not parts:
+        available["dense"] = retriever
+    docstore = getattr(retriever, "_jarvis_docstore", None)
+    for mode in ("bm25", "dense"):
+        part = available[mode]
+        if part is not None and docstore is not None and getattr(part, "_jarvis_docstore", None) is None:
+            with contextlib.suppress(Exception):
+                part._jarvis_docstore = docstore
+    missing = [mode for mode in modes if available.get(mode) is None]
+    if missing:
+        raise RuntimeError(
+            f"retriever mode(s) {', '.join(missing)} unavailable: the runtime did not build a hybrid retriever"
+        )
+    return {mode: available[mode] for mode in modes}
+
+
+def _parse_modes(value: str) -> list[str]:
+    modes = [mode.strip().lower() for mode in value.split(",") if mode.strip()]
+    unknown = [mode for mode in modes if mode not in RETRIEVER_MODES]
+    if not modes or unknown:
+        raise argparse.ArgumentTypeError(
+            f"choose one or more of {', '.join(RETRIEVER_MODES)} (comma-separated)"
+        )
+    return list(dict.fromkeys(modes))
+
+
 @contextlib.contextmanager
 def _private_runtime_output(verbose: bool):
     """Hide bootstrap/retrieval logs that can contain private document text."""
@@ -113,6 +155,15 @@ def _parser() -> argparse.ArgumentParser:
         help="include case IDs, ranks, counts, and latency; never includes query/evidence text",
     )
     parser.add_argument(
+        "--retrievers",
+        type=_parse_modes,
+        default=["hybrid"],
+        help=(
+            "comma-separated retrieval methods to score from one runtime build: "
+            "hybrid (production), dense, bm25; one report per method"
+        ),
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         help="show bootstrap/retrieval logs; may expose private filenames and extracted text",
@@ -136,15 +187,19 @@ def main(argv: list[str] | None = None) -> int:
     startup_seconds = time.perf_counter() - startup_started
     if runtime.doc_retriever is None:
         raise RuntimeError("the corpus produced no retriever")
+    retrievers = _mode_retrievers(runtime.doc_retriever, args.retrievers)
 
-    def retrieve(query: str) -> list[str]:
-        with _private_runtime_output(args.verbose):
-            evidence, _ = _retrieve_query_supported_evidence(
-                query,
-                runtime.doc_retriever,
-                home_corpus_dir=runtime.home_corpus_dir,
-            )
-        return evidence
+    def retriever_for(mode_retriever: Any):
+        def retrieve(query: str) -> list[str]:
+            with _private_runtime_output(args.verbose):
+                evidence, _ = _retrieve_query_supported_evidence(
+                    query,
+                    mode_retriever,
+                    home_corpus_dir=runtime.home_corpus_dir,
+                )
+            return evidence
+
+        return retrieve
 
     manifest_chunk_count = _manifest_chunk_count(runtime.persist_dir)
     vector_count = _vector_count(runtime)
@@ -164,18 +219,22 @@ def main(argv: list[str] | None = None) -> int:
         "retrieval_top_k": int(os.environ.get("JARVIS_RETRIEVAL_TOP_K", DEFAULT_RETRIEVAL_TOP_K)),
         "max_evidence_lines": int(os.environ.get("JARVIS_MAX_EVIDENCE_LINES", "30")),
     }
-    report = evaluate_retrieval(
-        cases,
-        retrieve,
-        include_case_details=args.case_details,
-        metadata=metadata,
-    )
+    reports = {
+        mode: evaluate_retrieval(
+            cases,
+            retriever_for(mode_retriever),
+            include_case_details=args.case_details,
+            metadata={**metadata, "retriever_mode": mode},
+        )
+        for mode, mode_retriever in retrievers.items()
+    }
+    report = reports[args.retrievers[0]] if len(reports) == 1 else {"by_retriever": reports}
     rendered = json.dumps(report, indent=2, sort_keys=True)
     if args.output:
         output_path = Path(args.output)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(rendered + "\n", encoding="utf-8")
-        print(f"Retrieval evaluation report written ({report['case_count']} aggregate cases).")
+        print(f"Retrieval evaluation report written ({len(cases)} aggregate cases, {len(reports)} method(s)).")
     else:
         print(rendered)
     return 0

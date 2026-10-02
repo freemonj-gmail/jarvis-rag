@@ -311,6 +311,12 @@ make smoke-test-e2e ARGS='"What is in my documents?"'
 # Keep case files and reports under jarvis_storage/evaluation/ so they remain private.
 make retrieval-eval ARGS='"/path/to/corpus" "jarvis_storage/evaluation/cases.json" --persist-dir "jarvis_storage/evaluation/baseline" --output "jarvis_storage/evaluation/baseline.json"'
 
+# Compare retrieval methods from one runtime build: hybrid (production), dense-only
+# and BM25-only, one report per method. Use an isolated MILVUS_COLLECTION so the
+# evaluation never writes into the production collection. Building a new index
+# embeds every chunk; JARVIS_EMBED_DEVICE=cpu avoids GPU memory growth on large builds.
+MILVUS_COLLECTION=jarvis_eval_example JARVIS_EMBED_DEVICE=cpu make retrieval-eval ARGS='"/path/to/corpus" "jarvis_storage/evaluation/cases.json" --persist-dir "jarvis_storage/evaluation/compare" --retrievers hybrid,dense,bm25 --output "jarvis_storage/evaluation/compare.json"'
+
 # Answer-quality metrics through the real query pipeline: checks that required facts
 # appear, forbidden claims do not, expected sources are cited, and answers are not
 # refusals. Runs the model, so it is slow and deliberately opt-in. MCP is force-disabled
