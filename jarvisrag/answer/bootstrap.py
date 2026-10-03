@@ -21,6 +21,7 @@ from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from llama_index.llms.ollama import Ollama
 
 from jarvisrag.config import JARVIS_DOMAIN, short_text_qa_template
+from jarvisrag.embeddings import bound_mps_embedding_shapes
 from jarvisrag.speech import TTSManager, _SilentTTS
 from jarvisrag.speech.chatterbox import ChatterboxTTSClient, _CLIENT_LOG
 from jarvisrag.extraction.extractors import (
@@ -118,7 +119,9 @@ def _build_embed_model() -> HuggingFaceEmbedding:
     # chunks per forward pass.
     device = _auto_embed_device()
     print(f"[jarvis] Embedding model device: {device}")
-    return HuggingFaceEmbedding(model_name="BAAI/bge-m3", embed_batch_size=32, device=device)
+    embed_model = HuggingFaceEmbedding(model_name="BAAI/bge-m3", embed_batch_size=32, device=device)
+    bound_mps_embedding_shapes(embed_model)
+    return embed_model
 
 
 def _load_corpus_documents(input_dir: str) -> list:

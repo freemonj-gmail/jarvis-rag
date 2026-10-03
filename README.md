@@ -173,7 +173,9 @@ whether it is required or only needed for a specific feature.
 - **Disk / memory** — the models are large (the default LLM is a ~30B model and
   the `bge-m3` embedding model is ~2 GB). Plan for several GB of free disk and
   enough RAM/VRAM to run a 30B-class model. Apple Silicon or a discrete GPU is
-  recommended for acceptable latency.
+  recommended for acceptable latency. On Apple Silicon, embedding runs on the GPU
+  in a bounded set of batch shapes, so GPU memory stays flat even when indexing
+  a large new folder.
 
 ### 2. Local LLM runtime (Ollama) + models
 
@@ -313,9 +315,8 @@ make retrieval-eval ARGS='"/path/to/corpus" "jarvis_storage/evaluation/cases.jso
 
 # Compare retrieval methods from one runtime build: hybrid (production), dense-only
 # and BM25-only, one report per method. Use an isolated MILVUS_COLLECTION so the
-# evaluation never writes into the production collection. Building a new index
-# embeds every chunk; JARVIS_EMBED_DEVICE=cpu avoids GPU memory growth on large builds.
-MILVUS_COLLECTION=jarvis_eval_example JARVIS_EMBED_DEVICE=cpu make retrieval-eval ARGS='"/path/to/corpus" "jarvis_storage/evaluation/cases.json" --persist-dir "jarvis_storage/evaluation/compare" --retrievers hybrid,dense,bm25 --output "jarvis_storage/evaluation/compare.json"'
+# evaluation never writes into the production collection.
+MILVUS_COLLECTION=jarvis_eval_example make retrieval-eval ARGS='"/path/to/corpus" "jarvis_storage/evaluation/cases.json" --persist-dir "jarvis_storage/evaluation/compare" --retrievers hybrid,dense,bm25 --output "jarvis_storage/evaluation/compare.json"'
 
 # Answer-quality metrics through the real query pipeline: checks that required facts
 # appear, forbidden claims do not, expected sources are cited, and answers are not

@@ -85,6 +85,66 @@ class RetentionTests(unittest.TestCase):
         store.delete_nodes(["synthetic-child"])
 
 
+class BoundedEmbeddingShapeTests(unittest.TestCase):
+    """Fixed-shape MPS batching: bounded shapes, original order, CPU untouched."""
+
+    def _fake_model(self, device):
+        class Module:
+            max_seq_length = 8192
+
+            def __init__(self):
+                self.tokenizer = lambda texts, **kw: {"input_ids": [[0] * len(t.split()) for t in texts]}
+                self.tokenize = lambda texts, *a, **kw: {}
+
+        class SentenceModel(list):
+            pass
+
+        sentence = SentenceModel([Module()])
+        sentence.device = device
+
+        class Model:
+            embed_batch_size = 32
+
+        model = Model()
+        model._model = sentence
+        model.calls = []
+
+        def stock_embed(inputs, prompt_name=None):
+            model.calls.append((len(inputs), model.embed_batch_size))
+            return [[float(len(text.split()))] for text in inputs]
+
+        model._embed = stock_embed
+        return model
+
+    def test_padded_lengths_form_a_small_fixed_set(self):
+        from jarvisrag.embeddings import _padded_length
+
+        sizes = {_padded_length(n, 8192) for n in range(1, 8193)}
+        self.assertEqual(sorted(sizes), [128, 192, 256, 384, 512, 768, 1024, 1536, 2048, 3072, 4096, 6144, 8192])
+
+    def test_non_mps_model_is_left_untouched(self):
+        from jarvisrag.embeddings import bound_mps_embedding_shapes
+
+        model = self._fake_model("cpu")
+        original = model._embed
+        self.assertFalse(bound_mps_embedding_shapes(model))
+        self.assertIs(model._embed, original)
+
+    def test_batches_use_bounded_sizes_and_keep_input_order(self):
+        from jarvisrag.embeddings import bound_mps_embedding_shapes
+
+        model = self._fake_model("mps")
+        self.assertTrue(bound_mps_embedding_shapes(model))
+        lengths = [5, 300, 40, 900, 7, 1300, 120, 64] * 7
+        texts = [" ".join(["w"] * n) for n in lengths]
+        vectors = model._embed(texts)
+        self.assertEqual([v[0] for v in vectors], [float(n) for n in lengths])
+        self.assertEqual(model.embed_batch_size, 32)
+        for count, size in model.calls:
+            self.assertEqual(count % size, 0, "every batch is full at its own size")
+            self.assertTrue(size & (size - 1) == 0 or size in {32, 21, 16, 10, 8, 5, 4, 2, 1})
+
+
 class ExactVectorSearchTests(unittest.TestCase):
     def _existing_store(self, index_type):
         store = create_milvus_vector_store(dim=8)
