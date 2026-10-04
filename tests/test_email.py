@@ -85,6 +85,38 @@ class RetentionTests(unittest.TestCase):
         store.delete_nodes(["synthetic-child"])
 
 
+class CacheFirstModelLoadTests(unittest.TestCase):
+    """Cached models load with the Hub off; only an uncached model goes online."""
+
+    def test_cached_model_loads_without_the_hub_and_restores_the_setting(self):
+        from huggingface_hub import constants
+        from jarvisrag.answer.bootstrap import _load_from_cache_first
+
+        before = constants.HF_HUB_OFFLINE
+        seen = []
+        result = _load_from_cache_first(lambda: seen.append(constants.HF_HUB_OFFLINE) or "model")
+        self.assertEqual(result, "model")
+        self.assertEqual(seen, [True])
+        self.assertEqual(constants.HF_HUB_OFFLINE, before)
+
+    def test_uncached_model_falls_back_to_an_online_load(self):
+        from huggingface_hub import constants
+        from jarvisrag.answer.bootstrap import _load_from_cache_first
+
+        before = constants.HF_HUB_OFFLINE
+        attempts = []
+
+        def load():
+            attempts.append(constants.HF_HUB_OFFLINE)
+            if constants.HF_HUB_OFFLINE:
+                raise OSError("synthetic: not in the local cache")
+            return "downloaded"
+
+        self.assertEqual(_load_from_cache_first(load), "downloaded")
+        self.assertEqual(attempts, [True, before])
+        self.assertEqual(constants.HF_HUB_OFFLINE, before)
+
+
 class BoundedEmbeddingShapeTests(unittest.TestCase):
     """Fixed-shape MPS batching: bounded shapes, original order, CPU untouched."""
 
@@ -1261,6 +1293,46 @@ class AnswerBudgetTests(unittest.TestCase):
         answer, ok, distills = self._run_with_empty_synthesis(budget=1000)
         self.assertEqual(distills, 1)  # with budget remaining, the distill IS attempted
         self.assertEqual(answer, "DISTILLED ANSWER")
+
+class ReviewerCorroborationTests(unittest.TestCase):
+    """A reviewer's hallucination claim discards an answer only when the evidence agrees."""
+
+    EVIDENCE = [
+        "- limits.html: For 2026 the 401(k) elective deferral limit is $24,500 and the catch-up is $8,000.",
+        "- ira.html: The 2026 IRA limit is $7,500 ($8,600 if age 50 or older).",
+    ]
+
+    def _run(self, answer_text):
+        from jarvisrag.answer import answer as answer_module
+
+        reviewer = lambda *_a, **_k: (False, "these values are not present in the evidence")
+        with patch.object(answer_module, "_synthesize_evidence_answer", return_value=answer_text), \
+                patch.object(answer_module, "_review_answer_against_evidence", side_effect=reviewer), \
+                patch.object(answer_module, "_extractive_value_answer_from_evidence", return_value="EXTRACTIVE"), \
+                patch.object(answer_module, "_extractive_reasoning_answer_from_evidence", return_value=""), \
+                patch.object(answer_module, "_extractive_summary_answer_from_evidence", return_value=""), \
+                patch.object(answer_module, "_distill_answer_from_evidence", return_value=""), \
+                patch.object(answer_module, "_forced_extractive_summary_from_evidence", return_value=""):
+            return answer_module._answer_with_review_loop("are the limits the same", self.EVIDENCE, object())
+
+    def test_answer_is_kept_when_every_value_is_in_the_evidence(self):
+        text = "No. The 2026 IRA limit is $7,500 ($8,600 at 50+); the 401(k) limit is $24,500 plus $8,000."
+        answer, ok, reason = self._run(text)
+        self.assertEqual(answer, text)
+        self.assertTrue(ok)
+        self.assertIn("not corroborated", reason)
+
+    def test_answer_is_discarded_when_a_value_is_missing_from_the_evidence(self):
+        answer, ok, _reason = self._run("The 2026 IRA limit is $9,999.")
+        self.assertEqual(answer, "EXTRACTIVE")
+        self.assertTrue(ok)
+
+    def test_value_extraction_normalizes_formatting(self):
+        from jarvisrag.answer.answer import _unsupported_answer_values
+
+        self.assertEqual(_unsupported_answer_values("Limits: $7,500, $24,500.", self.EVIDENCE), set())
+        self.assertEqual(_unsupported_answer_values("A rise of 12% to $1,234.50.", self.EVIDENCE), {"12", "1234.50"})
+
 
 class EvidenceBudgetTests(unittest.TestCase):
     """The global evidence ceiling must bound the diluting per-source pile WITHOUT

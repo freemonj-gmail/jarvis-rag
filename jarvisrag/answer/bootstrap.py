@@ -20,7 +20,7 @@ from llama_index.core.settings import Settings
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from llama_index.llms.ollama import Ollama
 
-from jarvisrag.config import JARVIS_DOMAIN, short_text_qa_template
+from jarvisrag.config import JARVIS_DOMAIN, debug_print, short_text_qa_template
 from jarvisrag.embeddings import bound_mps_embedding_shapes
 from jarvisrag.speech import TTSManager, _SilentTTS
 from jarvisrag.speech.chatterbox import ChatterboxTTSClient, _CLIENT_LOG
@@ -110,6 +110,28 @@ def _auto_embed_device() -> str:
     return "cpu"
 
 
+def _load_from_cache_first(load):
+    """Run ``load`` with the Hugging Face Hub switched off, then online if that fails.
+
+    A cached model then starts with no network at all: transformers otherwise
+    queries the Hub while building a tokenizer, so a dropped connection crashed
+    startup even though nothing needed downloading, and an online load can also
+    pull a newer model revision than the one the saved indexes were built with.
+    Only a model that is not cached yet (first run) goes online, to download it.
+    """
+    from huggingface_hub import constants
+
+    previous = constants.HF_HUB_OFFLINE
+    constants.HF_HUB_OFFLINE = True
+    try:
+        return load()
+    except Exception as exc:  # noqa: BLE001 - not cached yet; download below
+        debug_print(f"[jarvis] Model not fully cached ({type(exc).__name__}); loading from the Hub.")
+    finally:
+        constants.HF_HUB_OFFLINE = previous
+    return load()
+
+
 def _build_embed_model() -> HuggingFaceEmbedding:
     # Local embedding model — bge-m3: 8192-token context, 1024-dim, multilingual,
     # strong retrieval ranking on heterogeneous content (resumes, contracts, PDFs).
@@ -119,7 +141,9 @@ def _build_embed_model() -> HuggingFaceEmbedding:
     # chunks per forward pass.
     device = _auto_embed_device()
     print(f"[jarvis] Embedding model device: {device}")
-    embed_model = HuggingFaceEmbedding(model_name="BAAI/bge-m3", embed_batch_size=32, device=device)
+    embed_model = _load_from_cache_first(
+        lambda: HuggingFaceEmbedding(model_name="BAAI/bge-m3", embed_batch_size=32, device=device)
+    )
     bound_mps_embedding_shapes(embed_model)
     return embed_model
 

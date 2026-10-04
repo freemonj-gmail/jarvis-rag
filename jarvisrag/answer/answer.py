@@ -344,6 +344,24 @@ def _build_evidence_preview(response: object, max_items: int = 4) -> str:
     return "\n".join(lines) if added else ""
 
 
+_CONCRETE_VALUE_RE = re.compile(r"(?<![\w.])\d[\d,]*(?:\.\d+)?")
+
+
+def _concrete_values(text: str) -> set[str]:
+    """Numbers, amounts, percentages and years in ``text``, normalized for comparison."""
+    values = set()
+    for raw in _CONCRETE_VALUE_RE.findall(text or ""):
+        value = raw.replace(",", "").rstrip(".")
+        if value:
+            values.add(value)
+    return values
+
+
+def _unsupported_answer_values(answer: str, evidence_lines: list[str]) -> set[str]:
+    """Concrete values the answer states that appear nowhere in its evidence."""
+    return _concrete_values(answer) - _concrete_values("\n".join(evidence_lines))
+
+
 def _review_answer_against_evidence(
     user_query: str,
     answer: str,
@@ -987,6 +1005,12 @@ def _answer_with_review_loop(
         hallucination_markers = ("hallucinat", "outside", "not present", "not in the evidence", "invent", "external", "made up", "fabricat")
         reason_lower = last_review_reason.lower()
         looks_hallucinated = any(marker in reason_lower for marker in hallucination_markers)
+        if looks_hallucinated and not _unsupported_answer_values(best_answer, evidence_lines):
+            # Measured: the reviewer routinely claims figures are "not present"
+            # when they are. Discard only when a concrete value really is missing
+            # from the evidence; otherwise the objection is not corroborated.
+            debug_print("[debug] Reviewer flagged hallucination, but every concrete value is in the evidence; keeping the answer.")
+            return best_answer, True, f"kept answer; reviewer objection not corroborated by the evidence: {last_review_reason}"
         if looks_hallucinated:
             debug_print("[debug] Best LLM answer was flagged as hallucinated; falling back to extractive evidence summary.")
             if reasoning_requested:
