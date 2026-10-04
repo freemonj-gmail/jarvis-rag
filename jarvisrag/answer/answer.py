@@ -2020,18 +2020,25 @@ def _retrieve_domain_evidence(
     if not domains:
         return [], [], set()
     cap = max(1, int(os.environ.get("JARVIS_MAX_EVIDENCE_LINES", str(_DEFAULT_DOMAIN_EVIDENCE_LINES))))
-    lines: list[str] = []
+    per_domain: list[list[str]] = []
     nodes: list = []
     for domain in domains:
-        if len(lines) >= cap:
-            break
         try:
             evidence, source_nodes = _retrieve_query_supported_evidence(query, domain["retriever"])
-            lines.extend(evidence)
+            per_domain.append(list(evidence))
             nodes.extend(source_nodes or [])
         except Exception as exc:  # noqa: BLE001 - never let a domain lookup break a turn
             debug_print(f"[domain] {domain.get('name')} retrieval failed ({exc}); skipping.")
-    delivered = lines[:cap]
+    # Interleave the domains' ranked lines (A1, B1, A2, B2, ...) under the one cap.
+    # Filling the cap in domain order let the first domain's lines starve every
+    # later domain, which was then never even searched. One domain = its own order.
+    delivered: list[str] = []
+    for rank in range(max((len(evidence) for evidence in per_domain), default=0)):
+        for evidence in per_domain:
+            if rank < len(evidence) and len(delivered) < cap:
+                delivered.append(evidence[rank])
+        if len(delivered) >= cap:
+            break
     references, superseded = _domain_reference_lines(delivered, nodes)
     return delivered, references, superseded
 

@@ -1050,6 +1050,43 @@ class MailCitationTests(unittest.TestCase):
         self.assertIn('Email: "Subject 0"', references)
         self.assertNotIn(f'Email: "Subject {cap}"', references)
 
+    def test_every_routed_domain_is_represented_under_the_shared_cap(self):
+        from jarvisrag.answer import answer as answer_module
+
+        cap = 6
+        first = [f"- a{i}.pdf: alpha {i}" for i in range(20)]
+        second = [f"- b{i}.pdf: beta {i}" for i in range(2)]
+        retrievers = {"first": object(), "second": object()}
+        by_retriever = {id(retrievers["first"]): first, id(retrievers["second"]): second}
+
+        def retrieve(_query, retriever, **_kwargs):
+            return by_retriever[id(retriever)], []
+
+        domains = [{"name": name, "retriever": retriever} for name, retriever in retrievers.items()]
+        with patch.dict(os.environ, {"JARVIS_MAX_EVIDENCE_LINES": str(cap)}), \
+                patch.object(answer_module, "_retrieve_query_supported_evidence", side_effect=retrieve):
+            delivered, _refs, _superseded = answer_module._retrieve_domain_evidence("question", domains)
+            single, _r, _s = answer_module._retrieve_domain_evidence("question", domains[:1])
+        self.assertEqual(len(delivered), cap)
+        self.assertEqual(delivered[:4], [first[0], second[0], first[1], second[1]])
+        self.assertEqual(delivered[4:], first[2:4], "unused slots go to the domain that has more")
+        self.assertEqual(single, first[:cap], "a single domain keeps its own order")
+
+    def test_a_failing_domain_does_not_block_the_others(self):
+        from jarvisrag.answer import answer as answer_module
+
+        good = [f"- g{i}.pdf: good {i}" for i in range(3)]
+
+        def retrieve(_query, retriever, **_kwargs):
+            if retriever == "broken":
+                raise RuntimeError("synthetic lookup failure")
+            return good, []
+
+        domains = [{"name": "broken", "retriever": "broken"}, {"name": "good", "retriever": "good"}]
+        with patch.object(answer_module, "_retrieve_query_supported_evidence", side_effect=retrieve):
+            delivered, _refs, _superseded = answer_module._retrieve_domain_evidence("question", domains)
+        self.assertEqual(delivered, good)
+
     def test_references_survive_when_the_model_cites_nothing_in_prose(self):
         from jarvisrag.answer.answer import _format_response_for_display
 

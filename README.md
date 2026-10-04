@@ -552,6 +552,9 @@ How it works:
   a non-matching domain.
 - **Merged like MCP evidence.** When a domain matches, its evidence is prepended
   as high-precedence context (after any MCP evidence, before local evidence).
+  When several domains match the same question, their ranked lines alternate
+  (first of each, then second of each, ...) under one shared limit, so every
+  matched domain is represented instead of the first one filling it.
 - **Clean references.** For a domain-routed query, the normal home-corpus
   force-include is suppressed, so the answer cites the domain sources rather than
   pulling in unrelated files from your working folder.
