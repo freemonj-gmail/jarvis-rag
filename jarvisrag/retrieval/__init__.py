@@ -18,7 +18,6 @@ from jarvisrag.text.query import (
     _detail_candidates,
     _evidence_body_from_evidence_line,
     _extract_source_hints,
-    _payment_context_score,
     _prioritize_source_hinted_evidence,
     _query_anchor_terms,
     _query_requests_enumeration,
@@ -607,7 +606,6 @@ def _query_candidate_score(
     specific_terms = _specific_query_terms(terms, anchor_terms)
     specific_hits = sum(1 for term in specific_terms if _term_family_hit(lowered, term))
     value_hits = len(set(_value_numbers(compact)))
-    payment_context_hits = _payment_context_score(lowered) if require_value else 0
 
     if require_value and value_hits == 0:
         return 0
@@ -621,7 +619,6 @@ def _query_candidate_score(
     return (
         anchor_hits * 30
         + topic_hits * 20
-        + min(payment_context_hits, 6) * 18
         + min(value_hits, 8) * 6
         + min(len(compact) // 180, 6)
     )

@@ -89,7 +89,6 @@ from jarvisrag.extraction.extractors import (
 )
 
 from jarvisrag.text.query import (
-    PAYMENT_CONTEXT_MARKERS,
     _FOLLOW_UP_PRONOUN_RE,
     _NON_SUBJECT_WORDS,
     _best_detail_candidate,
@@ -108,7 +107,6 @@ from jarvisrag.text.query import (
     _looks_like_follow_up,
     _names_new_subject,
     _normalize_source_hint,
-    _payment_context_score,
     _prepare_retrieval_query,
     _prioritize_source_hinted_evidence,
     _query_anchor_terms,

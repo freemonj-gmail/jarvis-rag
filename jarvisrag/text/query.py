@@ -436,12 +436,11 @@ def _query_terms(user_query: str) -> list[str]:
         "these", "this", "user", "was", "were", "what", "which", "with", "you", "year",
         "based", "hypothesis", "hypothesize", "implication", "implications", "imply", "implies", "increase", "increased",
         "increases", "increasing", "infer", "inference", "into", "likely", "maybe", "might",
-        "should", "taxwise", "think", "wise", "would",
+        "should", "think", "wise", "would",
         "pertain", "pertains", "pertaining",
     }
     terms = []
-    normalized_query = re.sub(r"\btax\s+year\b", "year", user_query.lower())
-    for term in re.findall(r"\b(?:\d{2,}|[a-zA-Z][a-zA-Z0-9-]{2,})\b", normalized_query):
+    for term in re.findall(r"\b(?:\d{2,}|[a-zA-Z][a-zA-Z0-9-]{2,})\b", user_query.lower()):
         if term not in stop_words and term not in terms:
             terms.append(term)
     # Also preserve short all-uppercase acronyms from the original (case-sensitive) query
@@ -524,46 +523,16 @@ def _query_topic_terms(terms: list[str], anchor_terms: list[str]) -> list[str]:
 
 
 def _specific_query_terms(terms: list[str], anchor_terms: list[str]) -> list[str]:
-    generic_terms = {
-        "amount", "amounts", "balance", "balances", "due", "federal", "income",
-        "owe", "owed", "payment", "payments", "plan", "plans", "state", "tax",
-        "taxes", "total", "totals", "value", "values",
-    }
     return [
         term
         for term in _query_topic_terms(terms, anchor_terms)
-        if term not in generic_terms and (any(char.isdigit() for char in term) or len(term) > 4)
+        if any(char.isdigit() for char in term) or len(term) > 4
     ]
 
 
 def _term_family(term: str) -> list[str]:
-    families = {
-        "charitable": ["charit", "contribut", "donat", "gift"],
-        "charities": ["charit", "contribut", "donat", "gift"],
-        "charity": ["charit", "contribut", "donat", "gift"],
-        "contribution": ["contribut", "charit", "donat", "gift"],
-        "contributions": ["contribut", "charit", "donat", "gift"],
-        "donated": ["donat", "contribut", "charit", "gift"],
-        "donation": ["donat", "contribut", "charit", "gift"],
-        "donations": ["donat", "contribut", "charit", "gift"],
-        "due": ["due", "owe", "owed", "payment", "remittance", "debit", "withdraw", "balance due"],
-        "federal": ["irs", "treasury", "1040", "u.s. individual income tax", "united states treasury"],
-        "529": ["529", "maryland529", "qualified tuition", "qtp", "esa", "college 529", "state qtp"],
-        "owed": ["owe", "owed", "amount you owe", "payment", "remittance", "debit", "withdraw", "balance due"],
-        "owe": ["owe", "owed", "amount you owe", "payment", "remittance", "debit", "withdraw", "balance due"],
-        "payment": ["payment", "payments", "remittance", "debit", "withdraw", "amount you owe"],
-        "payments": ["payment", "payments", "remittance", "debit", "withdraw", "amount you owe"],
-        "investment": ["investment", "invest", "portfolio", "account", "contribution", "contributions", "principal", "earnings"],
-        "investments": ["investment", "invest", "portfolio", "account", "contribution", "contributions", "principal", "earnings"],
-        "plan": ["plan", "program", "account", "qtp", "esa"],
-        "state": ["maryland", "md", "comptroller", "form 502", "502/505", "local tax", "state tax", "state income"],
-        "tax": ["tax", "taxes", "1040", "irs", "treasury"],
-        "taxes": ["tax", "taxes", "1040", "irs", "treasury"],
-        "total": ["total", "amount", "payment", "remittance", "balance", "line 37"],
-        "totals": ["total", "amount", "payment", "remittance", "balance", "line 37"],
-    }
-    if term in families:
-        return families[term]
+    """The query word plus its singular form. No synonym or alias lists: matching
+    stays on the words the user actually wrote, so it favors no corpus or domain."""
     if len(term) > 5:
         return [term, term.rstrip("s")]
     return [term]
@@ -571,11 +540,6 @@ def _term_family(term: str) -> list[str]:
 
 def _term_family_hit(text: str, term: str) -> bool:
     lowered = text.lower().replace("\\n", " ")
-    if term == "federal":
-        if any(alias in lowered for alias in _term_family(term)):
-            return True
-        without_bank_name = re.sub(r"\bnavy\s+federal(?:\s+credit\s+union)?\b", "", lowered)
-        return bool(re.search(r"\bfederal\b", without_bank_name))
     for alias in _term_family(term):
         alias = alias.lower()
         if len(alias) <= 3 and re.fullmatch(r"[a-z0-9]+", alias):
@@ -595,18 +559,6 @@ def _query_topic_coverage(text: str, terms: list[str], anchor_terms: list[str]) 
     }
 
 
-PAYMENT_CONTEXT_MARKERS = (
-    "amount due", "amount of tax payment", "amount you owe", "balance due",
-    "balance owed", "debit", "direct debit", "due/-refund", "electronic funds withdrawal",
-    "owed", "payment", "remittance", "tax balances", "withdraw", "withdrawal",
-)
-
-
-def _payment_context_score(text: str) -> int:
-    lowered = text.lower()
-    return sum(1 for marker in PAYMENT_CONTEXT_MARKERS if marker in lowered)
-
-
 def _source_label_from_evidence_line(evidence_line: str) -> str:
     compact = evidence_line[2:] if evidence_line.startswith("- ") else evidence_line
     return compact.split(": ", 1)[0].strip()
@@ -622,18 +574,12 @@ def _prepare_retrieval_query(user_query: str) -> str:
     terms = _query_terms(user_query)
     anchor_terms = _query_anchor_terms(user_query, terms)
     topic_terms = _query_topic_terms(terms, anchor_terms)
-    require_value = _query_requests_values(user_query)
 
     focus_terms = []
     for term in anchor_terms:
         focus_terms.append(term)
     for term in topic_terms:
         focus_terms.extend(_term_family(term))
-    if require_value:
-        focus_terms.extend([
-            "amount", "amounts", "total", "totals", "value", "values", "dollars",
-            "deduction", "payment", "remittance", "debit", "withdraw", "balance due",
-        ])
 
     deduped_focus = []
     for term in focus_terms:
@@ -656,26 +602,21 @@ def _retrieval_query_variants(user_query: str) -> list[str]:
     terms = _query_terms(user_query)
     anchor_terms = _query_anchor_terms(user_query, terms)
     topic_terms = _query_topic_terms(terms, anchor_terms)
-    require_value = _query_requests_values(user_query)
 
     topic_family_terms = []
     for term in topic_terms:
         topic_family_terms.extend(_term_family(term))
 
-    value_terms = [
-        "amount", "amounts", "total", "totals", "value", "values", "dollars",
-        "deduction", "payment", "remittance", "debit", "withdraw", "balance due",
-    ] if require_value else []
     query_parts = [
         _prepare_retrieval_query(user_query),
         " ".join(user_query.split()),
-        " ".join(anchor_terms + topic_family_terms + value_terms),
-        " ".join(anchor_terms + topic_terms + value_terms),
+        " ".join(anchor_terms + topic_family_terms),
+        " ".join(anchor_terms + topic_terms),
     ]
     for topic_term in topic_terms:
-        query_parts.append(" ".join(anchor_terms + _term_family(topic_term) + value_terms))
+        query_parts.append(" ".join(anchor_terms + _term_family(topic_term)))
     query_parts.extend([
-        " ".join(topic_family_terms + value_terms),
+        " ".join(topic_family_terms),
         " ".join(anchor_terms),
     ])
 

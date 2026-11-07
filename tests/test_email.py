@@ -10,6 +10,7 @@ import contextlib
 import io
 import json
 import os
+import re
 import shutil
 import sqlite3
 import struct
@@ -1375,6 +1376,34 @@ class DetailSnippetScoringTests(unittest.TestCase):
         from jarvisrag.text.query import _detail_score
 
         self.assertEqual(_detail_score("12 34 56 78 90 11 22 33 44 55 66 77"), 0)
+
+
+class QueryLexiconTests(unittest.TestCase):
+    """Retrieval phrasings and the evidence gate use only the question's own words:
+    no hardcoded aliases (state names, form numbers) or padding lists."""
+
+    QUESTION = "What is the state payment total for the 2026 filing?"
+
+    def test_search_phrasings_use_only_the_question_words(self):
+        from jarvisrag.text.query import _retrieval_query_variants
+
+        allowed = set(re.findall(r"[a-z0-9]+", self.QUESTION.lower())) | {
+            "find", "indexed", "evidence", "for", "original", "question",
+        }
+        for variant in _retrieval_query_variants(self.QUESTION):
+            extra = set(re.findall(r"[a-z0-9]+", variant.lower())) - allowed
+            self.assertEqual(extra, set(), variant)
+
+    def test_gate_matches_the_question_words_not_aliases(self):
+        from jarvisrag.retrieval import _query_evidence_is_supported
+        from jarvisrag.text.query import _query_anchor_terms, _query_terms
+
+        terms = _query_terms(self.QUESTION)
+        anchors = _query_anchor_terms(self.QUESTION, terms)
+        on_topic = "The state payment total for the 2026 filing was $1,250.00."
+        alias_only = "Comptroller remittance by direct debit: $1,250.00."
+        self.assertTrue(_query_evidence_is_supported(on_topic, terms, anchors, True))
+        self.assertFalse(_query_evidence_is_supported(alias_only, terms, anchors, True))
 
 
 class EvidenceBudgetTests(unittest.TestCase):
