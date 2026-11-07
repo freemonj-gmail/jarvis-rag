@@ -1308,9 +1308,8 @@ class ReviewerCorroborationTests(unittest.TestCase):
         reviewer = lambda *_a, **_k: (False, "these values are not present in the evidence")
         with patch.object(answer_module, "_synthesize_evidence_answer", return_value=answer_text), \
                 patch.object(answer_module, "_review_answer_against_evidence", side_effect=reviewer), \
-                patch.object(answer_module, "_extractive_value_answer_from_evidence", return_value="EXTRACTIVE"), \
                 patch.object(answer_module, "_extractive_reasoning_answer_from_evidence", return_value=""), \
-                patch.object(answer_module, "_extractive_summary_answer_from_evidence", return_value=""), \
+                patch.object(answer_module, "_extractive_summary_answer_from_evidence", return_value="EXTRACTIVE"), \
                 patch.object(answer_module, "_distill_answer_from_evidence", return_value=""), \
                 patch.object(answer_module, "_forced_extractive_summary_from_evidence", return_value=""):
             return answer_module._answer_with_review_loop("are the limits the same", self.EVIDENCE, object())
@@ -1332,6 +1331,32 @@ class ReviewerCorroborationTests(unittest.TestCase):
 
         self.assertEqual(_unsupported_answer_values("Limits: $7,500, $24,500.", self.EVIDENCE), set())
         self.assertEqual(_unsupported_answer_values("A rise of 12% to $1,234.50.", self.EVIDENCE), {"12", "1234.50"})
+
+
+class ValueQuestionSynthesisTests(unittest.TestCase):
+    """A value question with evidence is answered by synthesis + review, never by a
+    pre-model keyword shortcut that pairs the question's own words with nearby numbers."""
+
+    EVIDENCE = [
+        "- rates.pdf, page 3: Schedule A. Not over $10,000: 5% of the amount. Over $10,000 but not over $40,000: "
+        "$500 plus 9% of the excess over $10,000. Penalty for late payment: $350.",
+        "- rates.pdf, page 4: Schedule B. Not over $5,000: 5% of the amount. Payment due within 30 days.",
+        "- notes.pdf: Filing fees are $10 per form; amounts owed are withdrawn by direct debit.",
+    ]
+
+    def test_value_question_goes_to_the_review_loop(self):
+        import jarvisrag.answer.answer as ans
+        runtime = ans.QueryRuntime(all_docs=[], llm=Mock(), doc_retriever=object(), domain_retrievers=[])
+        loop = Mock(return_value=("SYNTHESIZED ANSWER", True, "ok"))
+        with patch.object(
+            ans, "_retrieve_query_supported_evidence", return_value=(list(self.EVIDENCE), [])
+        ), patch.object(ans, "fetch_mcp_evidence", return_value=[]), patch.object(
+            ans, "_answer_with_review_loop", loop
+        ), patch.object(ans, "_answer_completeness", return_value=ans.ANSWER_COMPLETE), \
+                contextlib.redirect_stdout(io.StringIO()):
+            turn = ans.handle_query("What are the schedule A rates for filing amounts owed?", runtime)
+        loop.assert_called_once()
+        self.assertEqual(turn["response_text"], "SYNTHESIZED ANSWER")
 
 
 class EvidenceBudgetTests(unittest.TestCase):
@@ -1839,10 +1864,6 @@ class CascadeTriggerTests(unittest.TestCase):
         with patch.object(
             ans, "_retrieve_query_supported_evidence", return_value=(list(self._EVIDENCE), [])
         ), patch.object(ans, "fetch_mcp_evidence", return_value=[]), patch.object(
-            ans, "_extractive_value_answer_from_evidence", return_value=""
-        ), patch.object(
-            ans, "_extractive_value_answer_from_documents", return_value=""
-        ), patch.object(
             ans, "_answer_with_review_loop", return_value=(self._PRIMARY, True, "ok")
         ), patch.object(ans, "_answer_completeness", judge), patch.object(
             ans, "_cascade_domain_answer", cascade

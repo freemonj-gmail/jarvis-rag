@@ -43,19 +43,11 @@ from jarvisrag.text.query import (
     _document_search_text,
     _effective_query_for_turn,
     _evidence_body_from_evidence_line,
-    _evidence_line_matches_page,
-    _evidence_line_matches_phrase,
     _extract_source_hints,
-    _facet_amount_value,
-    _facet_label,
-    _format_amount,
     _is_negative_evidence_feedback,
     _is_refinement_turn,
     _latest_user_turn,
-    _payment_context_score,
     _query_anchor_terms,
-    _query_page_hints,
-    _query_phrase_anchors,
     _query_requests_authoring,
     _query_requests_corpus_details,
     _query_requests_reasoning,
@@ -63,11 +55,8 @@ from jarvisrag.text.query import (
     _query_requests_source_details,
     _query_requests_values,
     _query_terms,
-    _query_topic_coverage,
     _query_topic_terms,
-    _query_value_facets,
     _source_label_from_evidence_line,
-    _value_amounts,
 )
 from jarvisrag.retrieval import (
     _evidence_lines_for_turn,
@@ -446,112 +435,6 @@ def _review_answer_against_evidence(
         reason = " ".join(review_text.splitlines()[1:]).strip() or "answer failed evidence review"
         return False, reason
     return True, f"unrecognized review response: {review_text[:120]}"
-
-
-def _extractive_value_answer_from_evidence(user_query: str, evidence_lines: list[str]) -> str:
-    if not evidence_lines or not _query_requests_values(user_query):
-        return ""
-
-    terms = _query_terms(user_query)
-    anchor_terms = _query_anchor_terms(user_query, terms)
-    facets = _query_value_facets(terms, anchor_terms)
-    if not facets:
-        return ""
-
-    phrase_anchors = _query_phrase_anchors(user_query)
-    page_hints = _query_page_hints(user_query)
-
-    best_by_facet: dict[str, tuple[int, str, list[str]]] = {}
-    for line in evidence_lines:
-        evidence_body = _evidence_body_from_evidence_line(line)
-        values = _value_amounts(evidence_body)
-        payment_score = _payment_context_score(evidence_body)
-        if not values or payment_score == 0:
-            continue
-        coverage = _query_topic_coverage(evidence_body, terms, anchor_terms)
-        # Phrase + page hint bonuses make exact-match evidence dominate over
-        # generic value-dense lines that merely share a topic word.
-        phrase_hit = any(_evidence_line_matches_phrase(evidence_body, phrase) for phrase in phrase_anchors)
-        page_hit = _evidence_line_matches_page(line, page_hints)
-        bonus = (200 if phrase_hit else 0) + (300 if page_hit else 0)
-        for facet in facets:
-            if facet not in coverage and not (phrase_hit or page_hit):
-                continue
-            score = payment_score * 20 + len(values) * 4 + bonus
-            current = best_by_facet.get(facet)
-            if current is None or score > current[0]:
-                best_by_facet[facet] = (score, line, values)
-
-    # Strict all-facets coverage only when the query enumerates multiple value buckets
-    # (e.g., "federal and state amounts owed"). For other multi-term queries
-    # (e.g., proper-noun org names like "Doctors without borders donation"),
-    # returning whichever facet matched is more useful than refusing outright.
-    enumerates_multiple = bool(re.search(r"\b(and|or)\b|,", user_query))
-    if enumerates_multiple and len(facets) > 1 and any(facet not in best_by_facet for facet in facets):
-        return ""
-    if not best_by_facet:
-        return ""
-
-    parts = []
-    for facet in facets:
-        match = best_by_facet.get(facet)
-        if not match:
-            continue
-        _, line, values = match
-        source_label = _source_label_from_evidence_line(line)
-        evidence_body = _evidence_body_from_evidence_line(line)
-        answer_value = _facet_amount_value(facet, evidence_body, values)
-        if answer_value:
-            parts.append(f"{_facet_label(facet, line)}: {_format_amount(answer_value)} ({source_label})")
-
-    if not parts:
-        return ""
-    return "From the retrieved evidence, " + "; ".join(parts) + "."
-
-
-def _extractive_value_answer_from_documents(user_query: str, documents: list[Document], max_items: int = 12) -> str:
-    if not documents or not _query_requests_values(user_query):
-        return ""
-
-    terms = _query_terms(user_query)
-    anchor_terms = _query_anchor_terms(user_query, terms)
-    ranked: list[tuple[int, str]] = []
-
-    for doc in documents:
-        text = doc.text or ""
-        if not text or is_low_information_text(text):
-            continue
-
-        metadata = doc.metadata or {}
-        search_text = _document_search_text(doc)
-        score = _query_candidate_score(search_text, terms, anchor_terms, require_value=True)
-        if score <= 0:
-            continue
-
-        snippet = _query_focused_snippet(text, terms, anchor_terms, require_value=True, max_chars=4000)
-        if not _value_amounts(snippet) or _payment_context_score(snippet) == 0:
-            compact = " ".join(normalize_text(text).split())[:4000].rstrip()
-            if _value_amounts(compact) and _payment_context_score(compact) > 0:
-                snippet = compact
-            else:
-                continue
-
-        coverage = _query_topic_coverage(snippet, terms, anchor_terms)
-        if not coverage:
-            continue
-
-        file_name = os.path.basename(str(metadata.get("file_name") or metadata.get("file_path") or "unknown file"))
-        page_number = metadata.get("page_number")
-        label = file_name
-        if page_number is not None:
-            label += f", page {page_number}"
-        ranked.append((score + _payment_context_score(snippet) * 20, f"- {label}: {snippet}"))
-
-    ranked.sort(key=lambda item: item[0], reverse=True)
-    return _extractive_value_answer_from_evidence(
-        user_query,
-        [line for _, line in ranked[:max_items]],
-    )
 
 
 def _reasoning_guidance(user_query: str) -> str:
@@ -1021,8 +904,7 @@ def _answer_with_review_loop(
                 )
             else:
                 extractive = (
-                    _extractive_value_answer_from_evidence(user_query, evidence_lines)
-                    or _extractive_reasoning_answer_from_evidence(user_query, evidence_lines)
+                    _extractive_reasoning_answer_from_evidence(user_query, evidence_lines)
                     or _extractive_summary_answer_from_evidence(user_query, evidence_lines)
                     or (_distill_answer_from_evidence(user_query, evidence_lines, llm_client) if _answer_budget_left() else "")
                     or _forced_extractive_summary_from_evidence(user_query, evidence_lines)
@@ -1054,8 +936,8 @@ def _answer_with_review_loop(
     # Final unconditional safety net: prefer an LLM-distilled succinct answer
     # over a raw snippet dump. The distillation prompt is strict evidence-only
     # and only re-asks the model to pick the value(s) that answer the question.
-    # Reasoning queries skip distillation + value extractor (both value-shaped)
-    # and use the reasoning extractor as their last-chance grounded answer.
+    # Reasoning queries skip distillation (value-shaped) and use the reasoning
+    # extractor as their last-chance grounded answer.
     if reasoning_requested:
         reasoning_answer = _extractive_reasoning_answer_from_evidence(user_query, evidence_lines)
         if reasoning_answer:
@@ -1066,13 +948,6 @@ def _answer_with_review_loop(
         if distilled:
             debug_print("[debug] Returning LLM-distilled evidence answer as final safety net.")
             return distilled, True, f"distilled answer (review never passed): {last_review_reason or 'no answer produced'}"
-        # Heuristic value extractor (with phrase/page-hint bonuses) as a last
-        # resort BEFORE dumping raw snippets, so value-intent queries still get a
-        # concrete "X: $N (source)" answer even when the LLM produced no text.
-        value_answer = _extractive_value_answer_from_evidence(user_query, evidence_lines)
-        if value_answer:
-            debug_print("[debug] Returning heuristic value extractor answer as final safety net.")
-            return value_answer, True, f"heuristic value extractor (LLM empty): {last_review_reason or 'no answer produced'}"
     forced = _forced_extractive_summary_from_evidence(user_query, evidence_lines)
     if forced:
         print(
@@ -2564,63 +2439,22 @@ def handle_query(
             debug_print("[debug] Authoring path returned empty; falling through to standard pipeline.")
 
         if evidence_lines:
-            phrase_anchors = _query_phrase_anchors(effective_user_query)
-            page_hints = _query_page_hints(effective_user_query)
-            latest_turn_is_reasoning = _query_requests_reasoning(
-                _latest_user_turn(effective_user_query)
+            prior_answer_for_refinement = ""
+            # A clarifying QUESTION is not a prior answer to refine; feeding
+            # it back would have the model rework the question instead of
+            # answering it now that the missing detail has arrived.
+            if is_follow_up and not last_turn.get("awaiting_clarification"):
+                prior_answer_for_refinement = str(last_turn.get("response_text") or "")
+            response_text, review_passed, review_reason = _answer_with_review_loop(
+                effective_user_query,
+                evidence_lines,
+                runtime.llm,
+                prior_answer=prior_answer_for_refinement,
             )
-            allow_keyword_extractor = (
-                not phrase_anchors
-                and not page_hints
-                and not latest_turn_is_reasoning
-            )
-            response_text = (
-                _extractive_value_answer_from_evidence(effective_user_query, evidence_lines)
-                if allow_keyword_extractor
-                else ""
-            )
-            if response_text:
-                review_passed = True
-                review_reason = "answered directly from retrieved value evidence"
-                debug_print("[debug] Used extractive value answer from retrieved evidence.")
-            else:
-                if not allow_keyword_extractor:
-                    debug_print(
-                        "[debug] Skipped keyword extractor due to phrase/page hints or reasoning intent; routing to LLM review loop."
-                    )
-                doc_scan_answer = (
-                    _extractive_value_answer_from_documents(effective_user_query, runtime.all_docs)
-                    if allow_keyword_extractor
-                    else ""
-                )
-                if doc_scan_answer:
-                    response_text = doc_scan_answer
-                    review_passed = True
-                    review_reason = "answered directly from local value evidence scan"
-                    debug_print("[debug] Used extractive value answer from local document scan.")
-                else:
-                    prior_answer_for_refinement = ""
-                    # A clarifying QUESTION is not a prior answer to refine; feeding
-                    # it back would have the model rework the question instead of
-                    # answering it now that the missing detail has arrived.
-                    if is_follow_up and not last_turn.get("awaiting_clarification"):
-                        prior_answer_for_refinement = str(last_turn.get("response_text") or "")
-                    response_text, review_passed, review_reason = _answer_with_review_loop(
-                        effective_user_query,
-                        evidence_lines,
-                        runtime.llm,
-                        prior_answer=prior_answer_for_refinement,
-                    )
         else:
-            response_text = _extractive_value_answer_from_documents(effective_user_query, runtime.all_docs)
-            if response_text:
-                review_passed = True
-                review_reason = "answered directly from local value evidence scan"
-                debug_print("[debug] Used extractive value answer from local document scan.")
-            else:
-                response_text = ""
-                review_passed = False
-                review_reason = "no query-supported evidence was retrieved"
+            response_text = ""
+            review_passed = False
+            review_reason = "no query-supported evidence was retrieved"
 
         answer_was_dismissive = bool(response_text) and _response_is_dismissive(response_text)
 
