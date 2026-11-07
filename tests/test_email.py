@@ -1624,6 +1624,11 @@ class SynthesisBoundedOutputTests(unittest.TestCase):
         self.assertEqual(out, "A grounded answer.")
         self.assertIn("ANSWER SHAPE", prompt)
 
+    def test_status_fidelity_rule_applies_to_any_question(self):
+        from jarvisrag.answer.answer import _STATUS_FIDELITY_RULE
+        _out, prompt = self._run()
+        self.assertIn(_STATUS_FIDELITY_RULE.strip(), prompt)
+
 
 class DomainCascadeTests(unittest.TestCase):
     """The failure-triggered domain cascade (_cascade_domain_answer) consults
