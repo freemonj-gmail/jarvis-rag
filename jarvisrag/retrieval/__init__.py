@@ -7,6 +7,8 @@ scoring/snippeting. Sits between the pure query-analysis layer
 (``jarvis_query``) and the answer-synthesis layer (``jarvis_answer``).
 """
 
+import hashlib
+import math
 import os
 import re
 from typing import Any, Optional, cast
@@ -48,6 +50,42 @@ def _node_identity(node: object) -> object:
 
 
 _WORD_RE = re.compile(r"[a-z0-9]+", re.IGNORECASE)
+
+# Chunk embeddings for the home-folder reserve, keyed by text digest. Launch
+# folder chunks repeat across a session's queries, so each is embedded once.
+_TEXT_EMBEDDING_CACHE: dict[str, list[float]] = {}
+_TEXT_EMBEDDING_CACHE_MAX = 4096
+
+
+def _semantic_similarities(query: str, texts: list[str]) -> list[float] | None:
+    """Cosine similarity of each text to the query under the active embedding
+    model (the one retrieval itself uses). None when no model is configured or
+    embedding fails, so callers keep their previous ordering."""
+    try:
+        from llama_index.core import Settings
+
+        model = getattr(Settings, "_embed_model", None)
+        if model is None or not texts:
+            return None
+        keys = [hashlib.sha1(text.encode("utf-8", "ignore")).hexdigest() for text in texts]
+        missing = list(dict.fromkeys(key for key in keys if key not in _TEXT_EMBEDDING_CACHE))
+        if missing:
+            if len(_TEXT_EMBEDDING_CACHE) + len(missing) > _TEXT_EMBEDDING_CACHE_MAX:
+                _TEXT_EMBEDDING_CACHE.clear()
+            text_by_key = dict(zip(keys, texts))
+            vectors = model.get_text_embedding_batch([text_by_key[key] for key in missing])
+            _TEXT_EMBEDDING_CACHE.update(zip(missing, vectors))
+        query_vector = model.get_query_embedding(query)
+        query_norm = math.sqrt(sum(v * v for v in query_vector)) or 1.0
+        similarities = []
+        for key in keys:
+            vector = _TEXT_EMBEDDING_CACHE[key]
+            norm = math.sqrt(sum(v * v for v in vector)) or 1.0
+            similarities.append(sum(a * b for a, b in zip(query_vector, vector)) / (query_norm * norm))
+        return similarities
+    except Exception as exc:  # noqa: BLE001 - ordering aid only; never break retrieval
+        debug_print(f"[debug] Home-folder semantic ordering unavailable ({type(exc).__name__}).")
+        return None
 
 
 def _line_tokens(evidence_line: str) -> set[str]:
@@ -252,7 +290,21 @@ def _source_nodes_to_query_evidence_lines(
     # single-corpus case), leaving default ranking untouched.
     home_share = (home_node_count / total_node_count) if total_node_count else 0.0
     if home_candidates and 0.0 < home_share < 0.5:
-        home_candidates.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
+        # Many home chunks arrive only through the force-include, with no search
+        # relevance and often no keyword overlap (a resume never says "jobs" or
+        # "held"), so order the reserve by meaning first.
+        similarity = _semantic_similarities(
+            user_query, [_evidence_body_from_evidence_line(item[4]) for item in home_candidates]
+        )
+        if similarity is not None:
+            ranked_home = sorted(
+                zip(similarity, home_candidates),
+                key=lambda pair: (pair[0], pair[1][0], pair[1][1], pair[1][2]),
+                reverse=True,
+            )
+            home_candidates = [item for _, item in ranked_home]
+        else:
+            home_candidates.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
         reserve = min(len(home_candidates), max(4, max_items // 3))
         for _, _, _, identity, line in home_candidates[:reserve]:
             if identity in selected_ids or line in selected:

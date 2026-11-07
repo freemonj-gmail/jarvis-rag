@@ -1406,6 +1406,69 @@ class QueryLexiconTests(unittest.TestCase):
         self.assertFalse(_query_evidence_is_supported(alias_only, terms, anchors, True))
 
 
+class HomeReserveSemanticOrderTests(unittest.TestCase):
+    """The reserved launch-folder slots go to the chunks closest in meaning to the
+    question, even when they share no words with it and search never returned them."""
+
+    class _Node:
+        def __init__(self, node_id, path, text):
+            self.node_id, self.metadata, self._text = node_id, {"file_path": path, "file_name": os.path.basename(path)}, text
+
+        def get_content(self):
+            return self._text
+
+    def _nodes(self):
+        home = [self._Node(f"h{i}", f"/tmp/homedir/note{i}.txt", f"Household note {i}: water the plants, buy milk, item {i * 7}.")
+                for i in range(4)]
+        home.append(self._Node("h-cv", "/tmp/homedir/cv.txt",
+                               "Professional experience. Senior engineer at Acme Corporation from 2001 to 2005, "
+                               "leading the platform team. Analyst at Beta Consulting from 2005 to 2010, "
+                               "responsible for data modeling and reporting for regional clients."))
+        other = [self._Node(f"o{i}", f"/tmp/other/doc{i}.txt", f"Jobs held record {i}: position {i} held at site {i * 11}.")
+                 for i in range(7)]
+        return other + home
+
+    def _select(self, similarities):
+        import jarvisrag.retrieval as R
+        nodes = self._nodes()
+        sims = None if similarities is None else (lambda _q, texts: [similarities(t) for t in texts])
+        with patch.object(R, "_semantic_similarities", side_effect=sims or (lambda *_a: None)):
+            return R._source_nodes_to_query_evidence_lines(
+                "Which jobs have I held?", nodes, max_items=5, home_corpus_dir="/tmp/homedir"
+            )
+
+    def test_closest_home_chunk_fills_the_reserve(self):
+        lines = self._select(lambda text: 0.9 if "Acme" in text else 0.1)
+        self.assertTrue(any("cv.txt" in line for line in lines))
+
+    def test_without_similarities_previous_order_is_kept(self):
+        lines = self._select(None)
+        self.assertFalse(any("cv.txt" in line for line in lines))
+
+    def test_similarity_helper_embeds_each_text_once(self):
+        import jarvisrag.retrieval as R
+        from llama_index.core import Settings
+
+        calls = []
+
+        class FakeModel:
+            def get_text_embedding_batch(self, texts):
+                calls.append(len(texts))
+                return [[1.0, 0.0] if "match" in t else [0.0, 1.0] for t in texts]
+
+            def get_query_embedding(self, _q):
+                return [1.0, 0.0]
+
+        R._TEXT_EMBEDDING_CACHE.clear()
+        with patch.object(Settings, "_embed_model", FakeModel()):
+            first = R._semantic_similarities("q", ["a match", "other", "a match"])
+            second = R._semantic_similarities("q", ["a match", "other"])
+        self.assertEqual([round(x, 3) for x in first], [1.0, 0.0, 1.0])
+        self.assertEqual([round(x, 3) for x in second], [1.0, 0.0])
+        self.assertEqual(calls, [2])
+        R._TEXT_EMBEDDING_CACHE.clear()
+
+
 class EvidenceBudgetTests(unittest.TestCase):
     """The global evidence ceiling must bound the diluting per-source pile WITHOUT
     ever truncating the authoritative (MCP + domain) tiers -- so a value the domain
