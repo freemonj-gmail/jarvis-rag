@@ -1405,6 +1405,18 @@ class QueryLexiconTests(unittest.TestCase):
         self.assertTrue(_query_evidence_is_supported(on_topic, terms, anchors, True))
         self.assertFalse(_query_evidence_is_supported(alias_only, terms, anchors, True))
 
+    def test_plural_forms_are_added_once_and_only_for_a_single_trailing_s(self):
+        from jarvisrag.text.query import _retrieval_query_variants, _term_family
+
+        self.assertEqual(_term_family("standard"), ["standard"])
+        self.assertEqual(_term_family("positions"), ["positions", "position"])
+        self.assertEqual(_term_family("address"), ["address"])
+        for variant in _retrieval_query_variants("What is the standard deduction?"):
+            if "original question" in variant.lower():
+                continue
+            words = variant.lower().split()
+            self.assertEqual(len(words), len(set(words)), variant)
+
 
 class HomeReserveSemanticOrderTests(unittest.TestCase):
     """The reserved launch-folder slots go to the chunks closest in meaning to the

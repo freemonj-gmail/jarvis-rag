@@ -533,8 +533,8 @@ def _specific_query_terms(terms: list[str], anchor_terms: list[str]) -> list[str
 def _term_family(term: str) -> list[str]:
     """The query word plus its singular form. No synonym or alias lists: matching
     stays on the words the user actually wrote, so it favors no corpus or domain."""
-    if len(term) > 5:
-        return [term, term.rstrip("s")]
+    if len(term) > 5 and term.endswith("s") and not term.endswith("ss"):
+        return [term, term[:-1]]
     return [term]
 
 
