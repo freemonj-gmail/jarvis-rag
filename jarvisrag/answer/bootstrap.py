@@ -20,7 +20,7 @@ from llama_index.core.settings import Settings
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from llama_index.llms.ollama import Ollama
 
-from jarvisrag.config import JARVIS_DOMAIN, debug_print, short_text_qa_template
+from jarvisrag.config import debug_print, short_text_qa_template
 from jarvisrag.embeddings import bound_mps_embedding_shapes
 from jarvisrag.speech import TTSManager, _SilentTTS
 from jarvisrag.speech.chatterbox import ChatterboxTTSClient, _CLIENT_LOG
@@ -380,7 +380,6 @@ def _build_index(all_docs: list, embed_model, persist_dir=None, collection_name=
     print(f"Active vector backend: {active_vector_backend}")
     print(f"Response mode: {response_mode}")
     print(f"Context mode: {context_mode}")
-    print(f"Detail scan domain profile: {JARVIS_DOMAIN}")
     return doc_index, storage_context, response_mode, active_vector_backend
 
 

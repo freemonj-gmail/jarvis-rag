@@ -1359,6 +1359,24 @@ class ValueQuestionSynthesisTests(unittest.TestCase):
         self.assertEqual(turn["response_text"], "SYNTHESIZED ANSWER")
 
 
+class DetailSnippetScoringTests(unittest.TestCase):
+    """Detail snippets are chosen by structure (values, labels, readable words), not keyword lists."""
+
+    def test_labeled_values_beat_filler_prose(self):
+        from jarvisrag.text.query import _best_detail_candidate, _detail_score
+
+        prose = "Thank you for taking the time to read this message carefully today."
+        detail = "Reference number: 48213; Renewal date: 03/15/2027; Fee: $1,240.00 per period"
+        self.assertGreater(_detail_score(detail), _detail_score(prose))
+        _score, best = _best_detail_candidate(prose + "\n" + detail)
+        self.assertIn("48213", best)
+
+    def test_number_only_noise_is_rejected(self):
+        from jarvisrag.text.query import _detail_score
+
+        self.assertEqual(_detail_score("12 34 56 78 90 11 22 33 44 55 66 77"), 0)
+
+
 class EvidenceBudgetTests(unittest.TestCase):
     """The global evidence ceiling must bound the diluting per-source pile WITHOUT
     ever truncating the authoritative (MCP + domain) tiers -- so a value the domain

@@ -354,7 +354,6 @@ development, not day-to-day use.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `JARVIS_DOMAIN` | `general` | `general` or `tax` detail profile |
 | `JARVIS_CONTEXT_MODE` | `chunk` | `chunk` or `source_window` context assembly |
 | `JARVIS_RESPONSE_MODE` | `query` | `query` or `chat` synthesis mode |
 | `JARVIS_ALLOW_GENERAL_KNOWLEDGE` | `1` | On a corpus miss, allow a general-knowledge fallback answer; `0` refuses instead |

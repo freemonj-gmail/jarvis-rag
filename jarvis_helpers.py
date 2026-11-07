@@ -16,7 +16,6 @@ from jarvisrag.config import (
     INDEX_MANIFEST_FILE,
     INDEX_MANIFEST_VERSION,
     JARVIS_DEBUG,
-    JARVIS_DOMAIN,
     debug_print,
     logger,
     short_text_qa_template,
@@ -90,10 +89,6 @@ from jarvisrag.extraction.extractors import (
 )
 
 from jarvisrag.text.query import (
-    DOMAIN_BOILERPLATE_MARKERS,
-    DOMAIN_DETAIL_KEYWORDS,
-    GENERIC_BOILERPLATE_MARKERS,
-    GENERIC_DETAIL_KEYWORDS,
     PAYMENT_CONTEXT_MARKERS,
     _FOLLOW_UP_PRONOUN_RE,
     _NON_SUBJECT_WORDS,

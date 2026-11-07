@@ -37,7 +37,6 @@ from jarvis_helpers import (
 # fails loudly the moment any export is dropped or renamed during the move.
 _PUBLIC_API_SURFACE = (
     # Config / domain
-    "JARVIS_DOMAIN",
     "debug_print",
     "short_text_qa_template",
     # Orchestration

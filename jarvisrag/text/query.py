@@ -12,53 +12,11 @@ import re
 
 from llama_index.core.schema import Document
 
-from jarvisrag.config import JARVIS_DOMAIN
 from jarvisrag.text.textproc import (
     is_low_information_text,
     normalize_text,
     text_artifact_score,
 )
-
-
-GENERIC_DETAIL_KEYWORDS = [
-    "account", "account number", "address", "amount", "balance", "certificate",
-    "city", "contract", "credit", "customer", "date", "deduction", "description",
-    "document", "due", "email", "employer", "fee", "id", "identifier", "invoice",
-    "mailing", "name", "number", "organization", "owner", "payment", "phone",
-    "property", "recipient", "registration", "statement", "total", "withheld",
-]
-
-DOMAIN_DETAIL_KEYWORDS = {
-    "tax": [
-        "w-2", "1099", "1098", "1040", "dividend", "distribution", "federal income",
-        "form", "interest", "medicare wages", "mortgage", "payer", "principal residence",
-        "section 199a", "social security", "socialsecuritynumber", "state wages", "tax",
-        "wages",
-    ],
-}
-
-GENERIC_BOILERPLATE_MARKERS = [
-    ("all rights reserved", 40),
-    ("continued", 15),
-    ("disclosure", 30),
-    ("for your records", 35),
-    ("instructions", 40),
-    ("privacy", 25),
-    ("see instructions", 35),
-    ("see the", 20),
-    ("terms and conditions", 35),
-]
-
-DOMAIN_BOILERPLATE_MARKERS = {
-    "tax": [
-        ("department of the treasury", 60),
-        ("internal revenue service", 45),
-        ("keep for your records", 60),
-        ("this is important tax information", 70),
-        ("understanding your statement", 45),
-        ("www.irs.gov", 60),
-    ],
-}
 
 
 def _normalize_source_hint(source_hint: str) -> str:
@@ -770,38 +728,23 @@ def _detail_score(text: str) -> int:
     if artifact_penalty >= 100:
         return 0
 
-    lowered = compact.lower()
-    boilerplate_markers = list(GENERIC_BOILERPLATE_MARKERS)
-    boilerplate_markers.extend(DOMAIN_BOILERPLATE_MARKERS.get(JARVIS_DOMAIN, []))
-    boilerplate_penalty = sum(
-        penalty
-        for marker, penalty in boilerplate_markers
-        if marker in lowered
-    )
     tokens = compact.split()
     numeric_tokens = [token for token in tokens if any(char.isdigit() for char in token)]
     readable_words = re.findall(r"[A-Za-z]{3,}", compact)
     unique_readable_words = set(word.lower() for word in readable_words)
-    detail_keywords = list(GENERIC_DETAIL_KEYWORDS)
-    detail_keywords.extend(DOMAIN_DETAIL_KEYWORDS.get(JARVIS_DOMAIN, []))
-    keyword_hits = sum(
-        1
-        for keyword in detail_keywords
-        if keyword in lowered
-    )
-
-    if len(unique_readable_words) < 3 and keyword_hits == 0:
+    # Structural signals only (values, labels, readable words): no keyword or
+    # boilerplate lists, so scoring does not favor any one document type.
+    if len(unique_readable_words) < 3:
         return 0
-    if numeric_tokens and len(numeric_tokens) > max(len(readable_words) * 2, 8) and keyword_hits < 2:
+    if numeric_tokens and len(numeric_tokens) > max(len(readable_words) * 2, 8):
         return 0
 
     repeated_token_penalty = max(len(tokens) - len(set(tokens)), 0)
     value_score = min(len(set(_value_numbers(compact))), 8) * 5
     label_score = 6 if ":" in compact else 0
     word_score = min(len(unique_readable_words), 24)
-    score = value_score + keyword_hits * 8 + label_score + word_score + min(len(compact) // 160, 6)
+    score = value_score + label_score + word_score + min(len(compact) // 160, 6)
     score -= min(repeated_token_penalty, 20)
-    score -= boilerplate_penalty
     return max(score - artifact_penalty, 0)
 
 

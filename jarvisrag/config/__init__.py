@@ -34,10 +34,6 @@ short_text_qa_template = PromptTemplate(
     prompt_type=PromptType.QUESTION_ANSWER,
 )
 
-JARVIS_DOMAIN = os.environ.get("JARVIS_DOMAIN", "general").strip().lower()
-if JARVIS_DOMAIN not in {"general", "tax"}:
-    raise ValueError("JARVIS_DOMAIN must be 'general' or 'tax'.")
-
 # ---------------------------------------------------------------------------
 # MCP connector layer (opt-in). When enabled, Jarvis can pull fresh, authoritative
 # intelligence (e.g. current tax authority via taxmcp.io) and personal/account
