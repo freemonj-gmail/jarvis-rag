@@ -50,6 +50,16 @@ import sys
 import tempfile
 import threading
 
+# The MPS caching allocator keeps every freed buffer until usage passes its low
+# watermark (default 1.4 x the GPU's recommended working set). Each sampling step
+# grows the KV cache, so buffer sizes never repeat and the cache only grows; when
+# the recommended working set is large (e.g. a raised iogpu.wired_limit_mb) that
+# threshold exceeds physical RAM and the worker swells until macOS reaps it,
+# thrashing swap on the way. Measured on a 128 GB Mac: 33 GB after one sentence
+# and an OOM kill on long answers by default; flat ~9.5 GB and faster sampling
+# with 0.05. Must be set before torch initialises MPS.
+os.environ.setdefault("PYTORCH_MPS_LOW_WATERMARK_RATIO", "0.05")
+
 
 def redirect_library_output():
     """Reserve stdout for the protocol and send library chatter to stderr.
