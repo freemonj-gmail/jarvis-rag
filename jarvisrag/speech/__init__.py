@@ -229,6 +229,47 @@ def _expand_time_units(text: str) -> str:
     return _TIME_UNIT_RE.sub(_repl, text)
 
 
+# US-style slash dates with a four-digit year: "1/15/2026" (month/day/year) or
+# "1/2026" (month/year). Year-less forms like "12/25" stay as written because
+# they cannot be told apart from fractions, and a slash inside a larger token
+# (paths, URLs, "1/2026/3") is left alone.
+_SLASH_DATE_RE = re.compile(r"(?<![\w/.\-])(\d{1,2})/(?:(\d{1,2})/)?(\d{4})(?![\w/\-])")
+# A month/year pair has no day to validate it, so "1/1000" (a ratio) must not be
+# read as a month and year; only calendar years of modern documents qualify.
+_MONTH_YEAR_RANGE = range(1900, 2100)
+
+
+def _expand_slash_dates(text: str) -> str:
+    """Speak slash dates as a person says them: "1/15/2026" -> "January
+    fifteenth, twenty twenty-six" and "1/2026" -> "January twenty twenty-six".
+    Impossible dates (month 13, February 30) are left as written."""
+    try:
+        from num2words import num2words
+    except Exception:
+        return text
+    import calendar
+    import datetime
+
+    def _repl(match: "re.Match[str]") -> str:
+        month, day, year = int(match.group(1)), match.group(2), int(match.group(3))
+        if not 1 <= month <= 12:
+            return match.group(0)
+        if day is None:
+            if year not in _MONTH_YEAR_RANGE:
+                return match.group(0)
+            return f"{calendar.month_name[month]} {num2words(year, to='year')}"
+        try:
+            datetime.date(year, month, int(day))
+        except ValueError:
+            return match.group(0)
+        return (
+            f"{calendar.month_name[month]} {num2words(int(day), to='ordinal')}, "
+            f"{num2words(year, to='year')}"
+        )
+
+    return _SLASH_DATE_RE.sub(_repl, text)
+
+
 # Street abbreviations that collide with a title ("Dr." Drive/Doctor, "St."
 # Street/Saint). A house number in front is what distinguishes the address.
 _STREET_WORDS = {"Dr": "Drive", "St": "Street"}
@@ -278,6 +319,7 @@ def _normalize_for_speech(text: str) -> str:
       * Address abbreviations: remaining "Dr." -> "Drive", "St." -> "Street"
       * Generational suffixes: "Jr."/"J-R" -> "Junior", "Sr."/"S-R" -> "Senior"
       * Name numerals:         "<Name> III"/"I-I-I" -> "<Name> the Third"
+      * Slash dates:           "1/15/2026" -> "January fifteenth, twenty twenty-six"
 
     Rules are case-sensitive where it matters (e.g. "Ms" -> "Miss" but "MS",
     which may mean Microsoft or Missouri, is left untouched). Only the spoken
@@ -374,6 +416,11 @@ def _normalize_for_speech(text: str) -> str:
     # 7) Sub-second time units attached to a number: "200 ms" -> "200
     #    milliseconds", "5us" -> "5 microseconds", "10 ns" -> "10 nanoseconds".
     s = _expand_time_units(s)
+
+    # 8) Slash dates -> spoken dates: "1/1/2026" -> "January first, twenty
+    #    twenty-six", "1/2026" -> "January twenty twenty-six". Runs after the
+    #    rate-slash rule, whose units never follow a date's slash.
+    s = _expand_slash_dates(s)
     return s
 
 

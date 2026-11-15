@@ -430,6 +430,20 @@ def run_tests():
     )
     print("- TTS money-scale wording OK")
 
+    # Slash dates are spoken as dates by both engines (the shared semantics pass
+    # feeds Kokoro and Chatterbox) instead of "one slash twenty twenty-six".
+    # Month/year names no day; year-less pairs, ratios and impossible dates are
+    # left as written.
+    from jarvisrag.speech import _normalize_spoken_semantics
+
+    assert _normalize_spoken_semantics("Effective 1/1/2026, it rises.") == (
+        "Effective January first, twenty twenty-six, it rises."
+    )
+    assert _normalize_spoken_semantics("starting 1/2026.") == "starting January twenty twenty-six."
+    for untouched in ("half is 1/2", "Christmas is 12/25", "a ratio of 1/1000", "13/2026", "2/30/2026"):
+        assert _normalize_spoken_semantics(untouched) == untouched, untouched
+    print("- TTS slash-date wording OK")
+
     # A worker the OS kills (SIGKILL, an out-of-memory reap) must not be
     # respawned into the same pressure; Chatterbox retires for the session so
     # Kokoro speaks instead of the machine thrashing. Dormant when no kill
