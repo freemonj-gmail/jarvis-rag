@@ -141,7 +141,7 @@ def copy_sample(documents, corpus_dir: Path, destination: Path):
 def measure_pipeline(embed_model):
     """Observe real calls without replacing their computations or return values."""
     from llama_index.core.storage.storage_context import StorageContext
-    from jarvisrag.extraction import indexing, owned_index
+    from jarvisrag.extraction import owned_index, persistence
     from jarvisrag.vectorstore import MilvusVectorStore
 
     metrics = {"seconds": {}, "calls": {}, "embedded_texts": 0, "prepared_sources": 0, "inserted_vectors": 0}
@@ -172,7 +172,7 @@ def measure_pipeline(embed_model):
         (owned_index, "_prepare_cache", "preparation"),
         (type(embed_model), "get_text_embedding_batch", "embedding"),
         (MilvusVectorStore, "add", "vector_write"),
-        (indexing, "_flush_vector_store", "flush"),
+        (persistence, "_flush_vector_store", "flush"),
         (MilvusVectorStore, "indexed_node_ids", "vector_verification"),
         (MilvusVectorStore, "delete_nodes", "vector_delete"),
         (StorageContext, "persist", "persistence"),
@@ -219,7 +219,7 @@ def pipeline_pilot(args):
     import torch
     from llama_index.core.schema import MetadataMode
     from jarvisrag.answer.bootstrap import EXTRACTION_CACHE_DIR, _build_embed_model
-    from jarvisrag.extraction.indexing import build_or_load_persistent_index
+    from jarvisrag.extraction.persistence import build_or_load_persistent_index
     from jarvisrag.iotools import _is_port_open
     from jarvisrag.vectorstore import MilvusVectorStore, create_milvus_vector_store
 

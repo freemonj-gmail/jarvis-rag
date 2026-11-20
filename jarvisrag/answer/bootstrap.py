@@ -31,10 +31,10 @@ from jarvisrag.extraction.extractors import (
 )
 from jarvisrag.vectorstore import create_milvus_vector_store
 from jarvisrag.extraction.indexing import (
-    build_or_load_persistent_index,
     filter_informative_documents,
     group_documents_by_source_windows,
 )
+from jarvisrag.extraction.persistence import build_or_load_persistent_index
 from jarvisrag.retrieval import build_hybrid_retriever
 from jarvisrag.iotools import Spinner, _is_port_open
 from jarvisrag.mcp.connector import load_mcp_registry

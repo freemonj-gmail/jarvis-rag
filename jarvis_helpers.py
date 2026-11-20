@@ -62,13 +62,15 @@ from jarvisrag.vectorstore import (
 )
 
 from jarvisrag.extraction.indexing import (
-    build_or_load_persistent_index,
     chunk_documents,
     chunk_text,
     ensure_document_metadata,
     filter_informative_documents,
     group_documents_by_source_windows,
     split_large_docs,
+)
+from jarvisrag.extraction.persistence import (
+    build_or_load_persistent_index,
     sync_documents_with_index,
 )
 

@@ -138,6 +138,63 @@ def check_page_tail_carry():
     print("- page-tail carry OK")
 
 
+def check_stale_chunks_are_removed(build, embed_model, LlamaDocument):
+    import tempfile
+    from llama_index.core import VectorStoreIndex
+    from llama_index.core.vector_stores.simple import SimpleVectorStore
+
+    def chunk(path, word):
+        return LlamaDocument(text=(
+            f"The {word} schedule lists every quarterly filing deadline, the responsible "
+            "office, and the amount due for each period of the coming year."
+        ), metadata={"file_path": path})
+
+    def stored(context):
+        files = sorted(info.metadata.get("file_path") for info in context.docstore.get_all_ref_doc_info().values())
+        return files, len(context.vector_store.data.embedding_dict)
+
+    with tempfile.TemporaryDirectory() as persist_dir:
+        _, context = build([chunk("a.pdf", "original"), chunk("c.pdf", "archived")], SimpleVectorStore(), persist_dir, embed_model)
+        context.persist(persist_dir)
+        # a.pdf changed; c.pdf belongs to another directory and is absent from this run.
+        index, context = build([chunk("a.pdf", "revised")], context.vector_store, persist_dir, embed_model)
+        assert stored(context) == (["a.pdf", "c.pdf"], 2), stored(context)
+
+        # A leftover the manifest does not know about is still found and removed.
+        VectorStoreIndex(
+            index_struct=index.index_struct, storage_context=context, embed_model=embed_model,
+        ).insert(chunk("a.pdf", "leftover"))
+        context.persist(persist_dir)
+        assert stored(context)[1] == 3
+        _, context = build([chunk("a.pdf", "revised")], context.vector_store, persist_dir, embed_model)
+        assert stored(context) == (["a.pdf", "c.pdf"], 2), stored(context)
+    print("- stale chunks removed, other-directory chunks kept OK")
+
+    class InventoriedStore(SimpleVectorStore):
+        """A store that can list its chunks, like the Milvus store."""
+
+        def indexed_ref_doc_files(self):
+            return {ref: None for ref in self.data.text_id_to_ref_doc_id.values()}
+
+    with tempfile.TemporaryDirectory() as persist_dir:
+        store = InventoriedStore()
+        _, context = build([chunk("a.pdf", "original"), chunk("c.pdf", "archived")], store, persist_dir, embed_model)
+        context.persist(persist_dir)
+        # Another index and a cache live beside this one's files.
+        for sibling in ("domains/mail", "extraction_cache"):
+            os.makedirs(os.path.join(persist_dir, sibling))
+            with open(os.path.join(persist_dir, sibling, "keep.bin"), "w") as handle:
+                handle.write("x")
+        # The store reports one vector more than the metadata lists (e.g. a
+        # deleted row still counted); that must reconcile, never wipe.
+        store.data.embedding_dict["deleted-but-counted"] = [0.0] * 8
+        _, context = build([chunk("a.pdf", "original")], store, persist_dir, embed_model)
+        assert "c.pdf" in stored(context)[0], stored(context)
+        for sibling in ("domains/mail", "extraction_cache"):
+            assert os.path.isfile(os.path.join(persist_dir, sibling, "keep.bin")), sibling
+    print("- vector-count mismatch reconciles without wiping other data OK")
+
+
 def run_tests():
     print("Running smoke tests...")
     check_public_api_surface()
@@ -291,7 +348,7 @@ def run_tests():
     assert set(bloated.excluded_embed_metadata_keys or []) == excluded
     print(f"- oversized metadata capped OK (budget={_METADATA_EMBED_BUDGET_CHARS} chars)")
 
-    from jarvisrag.extraction.indexing import (
+    from jarvisrag.extraction.persistence import (
         _diff_manifest_documents,
         _manifest_without_ids,
     )
@@ -605,6 +662,8 @@ def run_tests():
             rebuilt_count = len(rebuilt_context.vector_store.data.embedding_dict)
             assert rebuilt_count > 0
             print("- persistent empty-vector-store rebuild OK")
+
+        check_stale_chunks_are_removed(build_or_load_persistent_index, mock_emb, LlamaDocument)
     except Exception as e:
         print("- Minimal E2E index/query failed:", e)
         raise

@@ -34,7 +34,7 @@ from llama_index.core.ingestion import run_transformations
 from llama_index.core.schema import Document, MetadataMode, TextNode
 from llama_index.core.vector_stores.simple import SimpleVectorStore
 from llama_index.core.vector_stores.types import VectorStoreQuery
-from jarvisrag.extraction import indexing, owned_index
+from jarvisrag.extraction import indexing, owned_index, persistence
 from scripts.bench_mail_embedding import AlignedTokenizer, copy_sample, embedding_order, measure_pipeline, padded_tokens, revise_sample_message
 
 # An exported JARVIS_MAIL_ACCOUNTS scopes the walk to one real account, which
@@ -336,7 +336,7 @@ class OwnedIndexTests(unittest.TestCase):
         return Document(text=text, metadata={"file_path": str(path), "file_name": name})
 
     def build(self, documents, store=None):
-        return indexing.build_or_load_persistent_index(
+        return persistence.build_or_load_persistent_index(
             documents, store or SimpleVectorStore(), self.persist, self.embedder,
             owned_corpus_dir=str(self.root), owned_extensions=(".txt",),
         )
@@ -351,12 +351,12 @@ class OwnedIndexTests(unittest.TestCase):
 
     def test_multiple_write_batches_flush_once_and_remain_recoverable(self):
         documents = [self.document(f"message-{ordinal}.txt", "The committee approved the schedule after reviewing the project report.") for ordinal in range(65)]
-        with patch.object(indexing, "_flush_vector_store", side_effect=RuntimeError("synthetic final flush failure")) as flush:
+        with patch.object(persistence, "_flush_vector_store", side_effect=RuntimeError("synthetic final flush failure")) as flush:
             with self.assertRaisesRegex(RuntimeError, "final flush failure"):
                 self.build(documents)
         flush.assert_called_once()
         with patch.object(MockEmbedding, "_get_text_embedding", side_effect=AssertionError("unexpected re-embedding")), \
-                patch.object(indexing, "_flush_vector_store", wraps=indexing._flush_vector_store) as flush:
+                patch.object(persistence, "_flush_vector_store", wraps=persistence._flush_vector_store) as flush:
             recovered, _ = self.build(documents)
         flush.assert_called_once()
         self.assertEqual(len(recovered.vector_store.data.embedding_dict), 65)
@@ -1190,7 +1190,7 @@ def verify_live_milvus():
             embedder = MockEmbedding(embed_dim=8)
 
             def build(documents, active_store=store):
-                return indexing.build_or_load_persistent_index(
+                return persistence.build_or_load_persistent_index(
                     documents, active_store, persist, embedder,
                     owned_corpus_dir=str(root), owned_extensions=(".txt",),
                 )

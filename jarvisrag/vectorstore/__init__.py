@@ -11,7 +11,7 @@ types, and :mod:`jarvis_config` for the shared logger.
 import json
 import time
 from datetime import datetime, timezone
-from typing import Any, List, Optional, Sequence, Set
+from typing import Any, Dict, List, Optional, Sequence, Set
 
 import numpy as np
 from pymilvus import CollectionSchema, DataType, FieldSchema, MilvusClient
@@ -303,22 +303,26 @@ class MilvusVectorStore(BasePydanticVectorStore):
     ) -> List[BaseNode]:
         raise NotImplementedError("MilvusVectorStore does not store text nodes directly.")
 
-    def _get_collection_size(self) -> int:
-        """Get the current number of vectors in the collection."""
+    def _get_collection_size(self) -> Optional[int]:
+        """Live vectors in the collection, or None if it can't be read.
+
+        Counts with ``count(*)``: ``get_collection_stats`` row_count still
+        includes deleted rows until compaction, and a stale count made a
+        healthy index look damaged and get rebuilt."""
         try:
             self._connect()
-        except Exception:
-            return 0
-
-        # Prefer client stats when available
-        try:
-            if self._client is not None and self._client.has_collection(self.collection_name):
-                stats = self._client.get_collection_stats(self.collection_name)
-                return int(stats.get("row_count", 0))
-        except Exception:
-            pass
-        # Fallback to 0 if unknown
-        return 0
+            if self._client is None or not self._client.has_collection(self.collection_name):
+                return None
+            rows = self._client.query(
+                collection_name=self.collection_name,
+                filter="",
+                output_fields=["count(*)"],
+                consistency_level="Strong",
+            )
+            return int(rows[0]["count(*)"])
+        except Exception as exc:
+            logger.warning(f"Could not count vectors in Milvus collection '{self.collection_name}': {exc}")
+            return None
 
     def indexed_ref_doc_ids(self) -> Optional[Set[str]]:
         """Every ``ref_doc_id`` currently stored, or None if it can't be read.
@@ -328,6 +332,14 @@ class MilvusVectorStore(BasePydanticVectorStore):
         (rather than an empty set) keeps "unknown" distinct from "nothing
         indexed", so a transient failure can never be read as an empty index.
         """
+        files = self.indexed_ref_doc_files()
+        return None if files is None else set(files)
+
+    def indexed_ref_doc_files(self) -> Optional[Dict[str, Optional[str]]]:
+        """``ref_doc_id -> file_path`` for every stored chunk, or None if unreadable.
+
+        The file path lets callers scope stale-chunk cleanup to the corpus they
+        are indexing, leaving other directories' vectors alone."""
         try:
             self._connect()
         except Exception as exc:
@@ -336,26 +348,26 @@ class MilvusVectorStore(BasePydanticVectorStore):
         if self._client is None or not self._client.has_collection(self.collection_name):
             return None
 
-        ref_doc_ids: Set[str] = set()
+        files: Dict[str, Optional[str]] = {}
         try:
             iterator = self._client.query_iterator(
                 collection_name=self.collection_name,
                 filter='node_id != ""',
-                output_fields=["ref_doc_id"],
+                output_fields=["ref_doc_id", "file_path"],
                 batch_size=1000,
             )
             while True:
                 batch = iterator.next()
                 if not batch:
                     break
-                ref_doc_ids.update(
-                    row["ref_doc_id"] for row in batch if row.get("ref_doc_id")
-                )
+                for row in batch:
+                    if row.get("ref_doc_id"):
+                        files[row["ref_doc_id"]] = row.get("file_path") or None
             iterator.close()
         except Exception as exc:
             logger.warning(f"Could not enumerate indexed documents from Milvus: {exc}")
             return None
-        return ref_doc_ids
+        return files
 
     def indexed_node_ids(self) -> Set[str]:
         """Enumerate actual children; a failed read must not look like an empty store."""

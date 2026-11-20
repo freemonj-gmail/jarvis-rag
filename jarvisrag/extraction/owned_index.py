@@ -28,7 +28,7 @@ from llama_index.core.storage.storage_context import StorageContext
 from llama_index.core.vector_stores.simple import SimpleVectorStore
 
 from jarvisrag.iotools import Spinner
-from jarvisrag.extraction import indexing
+from jarvisrag.extraction import indexing, persistence
 
 
 def _digest(value):
@@ -248,7 +248,7 @@ def _metadata_digest(persist_dir):
 def _preparation_signature(embed_model):
     return _digest({
         "version": 1,
-        "embedding": indexing._embed_model_signature(embed_model),
+        "embedding": persistence._embed_model_signature(embed_model),
         "max_length": getattr(embed_model, "max_length", None),
         "transformations": [transform.to_dict() for transform in Settings.transformations],
         "metadata_budget": indexing._METADATA_EMBED_BUDGET_CHARS,
@@ -261,7 +261,7 @@ def build_owned_index(documents, vector_store, persist_dir, embed_model, corpus_
     if embed_model is None:
         raise ValueError("Owned indexing requires an explicit embedding model.")
     grouped = _source_groups(documents, corpus_dir, extensions)
-    store_signature = indexing._vector_store_signature(vector_store)
+    store_signature = persistence._vector_store_signature(vector_store)
     store_signature.pop("dim", None)
     owner = _digest([str(Path(corpus_dir).resolve()), store_signature])
     signature = _preparation_signature(embed_model)
@@ -338,7 +338,7 @@ def build_owned_index(documents, vector_store, persist_dir, embed_model, corpus_
                     index.insert_nodes([node for node, _ in missing], upsert=True)
                     installed += len(missing)
                     if installed - flushed >= _FLUSH_EVERY:
-                        indexing._flush_vector_store(vector_store)
+                        persistence._flush_vector_store(vector_store)
                         flushed = installed
                 for node in page_nodes:
                     node.embedding = None  # keep vectors out of the persisted docstore
@@ -348,7 +348,7 @@ def build_owned_index(documents, vector_store, persist_dir, embed_model, corpus_
                     _report_progress(installed, total, started, persist_dir)
                     last_report = time.monotonic()
             if installed:
-                indexing._flush_vector_store(vector_store)
+                persistence._flush_vector_store(vector_store)
             verified = _stored_ids(vector_store)
             if expected - verified:
                 raise RuntimeError("Vector verification is incomplete; checkpoints retained for retry.")
@@ -356,7 +356,7 @@ def build_owned_index(documents, vector_store, persist_dir, embed_model, corpus_
             for start in range(0, len(stale), 256):
                 vector_store.delete_nodes(stale[start:start + 256], strict=True)
             if stale:
-                indexing._flush_vector_store(vector_store)
+                persistence._flush_vector_store(vector_store)
                 if _stored_ids(vector_store) != expected:
                     raise RuntimeError("Stale-vector deletion is incomplete; retry before querying.")
             storage.index_store.add_index_struct(index.index_struct)
