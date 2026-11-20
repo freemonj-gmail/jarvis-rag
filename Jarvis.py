@@ -19,7 +19,7 @@ import sys
 if os.environ.get("JARVIS_DEBUG_HTTP", "0") != "1":
     logging.getLogger("httpx").setLevel(logging.WARNING)
 
-from jarvisrag.answer.bootstrap import build_runtime
+from jarvisrag.answer.bootstrap import build_runtime, release_llm
 from jarvisrag.answer.answer import QueryRuntime, handle_query
 from jarvisrag.iotools import read_user_query
 
@@ -48,21 +48,24 @@ def main(argv: list[str] | None = None) -> int:
     print("Press Ctrl-C to cancel the current request and return to the prompt.")
 
     last_turn: dict[str, object] = {}
-    while True:
-        try:
-            user_query = read_user_query("\n\nYou: ")
-        except KeyboardInterrupt:
-            print("\n[Jarvis] Input cancelled. Ready for another question.")
-            continue
-        if user_query.strip().lower() in ["exit", "quit"]:
-            print("Goodbye!")
-            runtime.tts.say_goodbye()
-            runtime.tts.cleanup()
-            break
-        try:
-            last_turn = handle_query(user_query, runtime, last_turn)
-        except KeyboardInterrupt:
-            print("\n[Jarvis] Current request cancelled. Ready for another question.")
+    try:
+        while True:
+            try:
+                user_query = read_user_query("\n\nYou: ")
+            except KeyboardInterrupt:
+                print("\n[Jarvis] Input cancelled. Ready for another question.")
+                continue
+            if user_query.strip().lower() in ["exit", "quit"]:
+                print("Goodbye!")
+                runtime.tts.say_goodbye()
+                runtime.tts.cleanup()
+                break
+            try:
+                last_turn = handle_query(user_query, runtime, last_turn)
+            except KeyboardInterrupt:
+                print("\n[Jarvis] Current request cancelled. Ready for another question.")
+    finally:
+        release_llm(getattr(runtime, "llm", None))
     return 0
 
 

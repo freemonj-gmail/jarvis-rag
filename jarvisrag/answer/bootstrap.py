@@ -88,7 +88,30 @@ def _build_llm() -> Ollama:
     if num_ctx > 0:
         kwargs["context_window"] = num_ctx
         kwargs["additional_kwargs"] = {"num_predict": 256, "num_ctx": num_ctx}
+    # Keep the model (and Ollama's cached prompt prefix) loaded between
+    # questions for the whole session; Ollama's 5-minute default unloaded it
+    # mid-session, so the next question paid a reload plus a full prompt
+    # re-read. release_llm() unloads it when Jarvis exits. "0"/"5m" etc. trade
+    # responsiveness for memory on shared machines (mirrors the escalation knob).
+    keep_alive = os.environ.get("JARVIS_LLM_KEEP_ALIVE", "-1").strip() or "-1"
+    try:
+        kwargs["keep_alive"] = float(keep_alive)  # Ollama reads bare strings as Go durations
+    except ValueError:
+        kwargs["keep_alive"] = keep_alive  # e.g. "30m"
     return Ollama(**kwargs)
+
+
+def release_llm(llm) -> None:
+    """Unload the session's Ollama model; never raises (exit must not fail)."""
+    model = getattr(llm, "model", None)
+    if not model:
+        return
+    try:
+        from ollama import Client
+
+        Client(host=getattr(llm, "base_url", None)).generate(model=model, keep_alive=0)
+    except Exception as exc:  # noqa: BLE001 - best effort on the way out
+        print(f"[jarvis] Could not unload {model} ({type(exc).__name__}); Ollama keeps it until restart.")
 
 
 def _auto_embed_device() -> str:

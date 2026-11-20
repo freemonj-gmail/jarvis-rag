@@ -421,6 +421,7 @@ hardware, memory, latency, or corpus — you rarely need to.
 | `JARVIS_ANSWER_REVIEW_ATTEMPTS` | `3` | Max synthesis/review attempts |
 | `JARVIS_LLM_MODEL` | `gemma4:26b-mlx` | Ollama tag for the primary synthesis model |
 | `JARVIS_NUM_CTX` | `131072` | Primary model context window (128K, ChatGPT-class). Bounded worst-case prompt is ~100k tokens so this never truncates, while halving KV-cache memory vs the model's 262144 max. Raise toward `262144` for more headroom; `0` keeps the model default |
+| `JARVIS_LLM_KEEP_ALIVE` | `-1` | Ollama `keep_alive` for the primary model: `-1` keeps it (and Ollama's cached prompt prefix) loaded for the whole session and Jarvis unloads it on exit; use e.g. `30m` or `0` to free memory sooner on a shared machine |
 | `JARVIS_CONTEXT_WINDOW_WORDS` | `2500` | Words per `source_window` context document |
 | `JARVIS_ENUM_CHUNK_CHARS` | `8000` | Char cap per evidence line for enumeration queries |
 | `JARVIS_SOURCE_HINT_CHUNK_CHARS` | `16000` | Char cap per evidence line for explicitly named files |
