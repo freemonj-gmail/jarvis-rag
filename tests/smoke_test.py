@@ -82,6 +82,62 @@ def check_public_api_surface():
     print(f"- public API surface OK ({len(_PUBLIC_API_SURFACE)} names exported)")
 
 
+def check_page_tail_carry():
+    import tempfile
+    from llama_index.core.schema import Document as LlamaDocument
+    from jarvisrag.extraction.extractors import carry_unfinished_page_tails, load_documents_with_cache
+
+    def page(file_path, number, text, chunk_index=0, **extra):
+        return LlamaDocument(text=text, metadata={
+            "file_path": file_path, "page_number": number, "chunk_index": chunk_index, **extra,
+        })
+
+    caption = "Table 2 - Quarterly totals by region"
+    docs = [
+        page("a.pdf", 1, f"The report covers every region. {caption}"),
+        page("a.pdf", 2, "North 120 South 95 East 80", chunk_index=0),
+        page("a.pdf", 2, "West 70 and the rest of page two ends here.", chunk_index=1),
+        page("a.pdf", 3, "Page three opens a new section."),
+        page("a.pdf", 2, f"Region | Total", table_index=0),
+        LlamaDocument(text=f"Region Total {caption}", metadata={"file_path": "a.pdf", "page_number": None}),
+        page("b.pdf", 1, "Unrelated sentence fragment without an end"),
+        page("b.pdf", 3, "Page three of another file"),
+    ]
+    raw = [doc.text for doc in docs]
+    out = carry_unfinished_page_tails(docs)
+    assert [doc.text for doc in docs] == raw, "inputs must stay raw for the extraction cache"
+    assert out[1].text == f"{caption}\nNorth 120 South 95 East 80", out[1].text
+    assert out[0].text == raw[0] and out[2].text == raw[2], "only the next page's first chunk changes"
+    assert out[3].text == raw[3], "a page that finishes its sentence carries nothing"
+    assert out[4].text == raw[4] and out[5].text == raw[5], "tables are never prefixed"
+    assert out[7].text == raw[7], "a carry needs the immediately preceding page of the same file"
+    long_tail = carry_unfinished_page_tails(
+        [page("c.pdf", 1, " ".join(f"w{i}" for i in range(500))), page("c.pdf", 2, "next")],
+        max_words=50,
+    )
+    assert long_tail[1].text.split()[:-1] == [f"w{i}" for i in range(450, 500)]
+
+    class PagedReader:
+        def load_data(self, file_path, **kwargs):
+            return [page(str(file_path), 1, f"Intro. {caption}"), page(str(file_path), 2, "North 120")]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        corpus, cache = os.path.join(tmp, "corpus"), os.path.join(tmp, "cache")
+        os.makedirs(corpus)
+        with open(os.path.join(corpus, "doc.pgs"), "w") as handle:
+            handle.write("x")
+        loads = [
+            [d.text for d in load_documents_with_cache(corpus, [".pgs"], {".pgs": PagedReader()}, cache)]
+            for _ in range(2)
+        ]
+        assert loads[0] == loads[1] == [f"Intro. {caption}", f"{caption}\nNorth 120"], loads
+        import json
+        with open(os.path.join(cache, os.listdir(cache)[0]), encoding="utf-8") as handle:
+            stored = [entry["text"] for entry in json.load(handle)["documents"]]
+        assert stored == [f"Intro. {caption}", "North 120"], "the cache must keep the raw extraction"
+    print("- page-tail carry OK")
+
+
 def run_tests():
     print("Running smoke tests...")
     check_public_api_surface()
@@ -172,6 +228,8 @@ def run_tests():
     carried = chunk_text(" ".join(f"f{i}" for i in range(1000)), chunk_size=400, chunk_overlap=100)
     assert len(carried) > 1 and set(carried[0].split()) & set(carried[1].split())
     print("- chunk budget invariant OK")
+
+    check_page_tail_carry()
 
     from jarvisrag.extraction.indexing import (
         _METADATA_EMBED_BUDGET_CHARS,

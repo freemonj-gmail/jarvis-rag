@@ -8,6 +8,7 @@ per-file (path, mtime, size) extraction caching.
 
 import hashlib
 import html as html_lib
+import inspect
 import json
 import os
 import re
@@ -1431,6 +1432,70 @@ def _deserialize_documents_from_cache(entries: List[Dict[str, Any]]) -> List[Doc
     return docs
 
 
+# A sentence terminator: . ! or ? plus any closing quote/bracket, then whitespace.
+_SENTENCE_END_RE = re.compile(r"[.!?][\"')\]]*\s")
+_TEXT_ENDS_SENTENCE_RE = re.compile(r"[.!?][\"')\]]*$")
+# Carry at most what chunk_text already overlaps between neighbouring chunks.
+# Read from its signature: indexing.py's bytes are part of the mail ledger's
+# preparation signature, so editing that file would re-embed every mail vector.
+_PAGE_TAIL_MAX_WORDS = inspect.signature(chunk_text).parameters["chunk_overlap"].default
+
+
+def _unfinished_tail(text: str, max_words: int) -> str:
+    """The trailing text after the last finished sentence ('' if the text ends one)."""
+    stripped = (text or "").rstrip()
+    if not stripped or _TEXT_ENDS_SENTENCE_RE.search(stripped):
+        return ""
+    last = None
+    for last in _SENTENCE_END_RE.finditer(stripped):
+        pass
+    tail = stripped[last.end():] if last else stripped
+    return " ".join(tail.split()[-max_words:])
+
+
+def carry_unfinished_page_tails(
+    docs: List[Document], max_words: int = _PAGE_TAIL_MAX_WORDS
+) -> List[Document]:
+    """Prefix each page's first chunk with the unfinished tail of the page before.
+
+    Pages are chunked one at a time, so a heading, table caption or sentence
+    that ends a page is cut off from the text it introduces on the next page
+    (e.g. a table title at the bottom of one page, its rows on the next). Only
+    page-numbered text-flow chunks take part; tables (``table_index`` or no page)
+    are left alone. Returns new Document objects for the changed chunks; the
+    inputs are never mutated, so cached extractions stay raw.
+    """
+    flows: Dict[Any, Dict[int, List[int]]] = {}
+    for position, doc in enumerate(docs):
+        metadata = doc.metadata or {}
+        page = metadata.get("page_number")
+        if not isinstance(page, int) or "table_index" in metadata:
+            continue
+        pages = flows.setdefault(metadata.get("file_path"), {})
+        pages.setdefault(page, []).append(position)
+    if not flows:
+        return docs
+
+    out = list(docs)
+    for pages in flows.values():
+        for positions in pages.values():
+            positions.sort(key=lambda i: (docs[i].metadata or {}).get("chunk_index", 0))
+        for page in sorted(pages):
+            previous = pages.get(page - 1)
+            if not previous:
+                continue
+            tail = _unfinished_tail(docs[previous[-1]].text, max_words)
+            if not tail:
+                continue
+            first = docs[pages[page][0]]
+            out[pages[page][0]] = Document(
+                text=f"{tail}\n{first.text}",
+                metadata=dict(first.metadata or {}),
+                id_=first.id_,
+            )
+    return out
+
+
 def _walk_files(input_dir: str, extensions: List[str], recursive: bool = True) -> List[str]:
     matched: List[str] = []
     if not os.path.exists(input_dir):
@@ -1475,7 +1540,7 @@ def load_documents_with_cache(
             required_exts=required_exts,
             file_extractor=file_extractor,
         )
-        return reader.load_data()
+        return carry_unfinished_page_tails(reader.load_data())
 
     os.makedirs(cache_dir, exist_ok=True)
     files = _walk_files(input_dir, required_exts, recursive=recursive)
@@ -1516,7 +1581,7 @@ def load_documents_with_cache(
             and cached.get("file_path") == os.path.abspath(file_path)
         ):
             docs = _deserialize_documents_from_cache(cached.get("documents") or [])
-            all_docs.extend(docs)
+            all_docs.extend(carry_unfinished_page_tails(docs))
             cache_hits += 1
             continue
 
@@ -1554,7 +1619,8 @@ def load_documents_with_cache(
             print(f"[jarvis] Extraction failed for {file_path}: {exc}")
             continue
 
-        all_docs.extend(docs)
+        all_docs.extend(carry_unfinished_page_tails(docs))
+        # The cache keeps the raw extraction; the carry is reapplied on every load.
         payload = {
             "version": EXTRACTION_CACHE_VERSION,
             "extraction_mode": mode_sig,
