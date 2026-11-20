@@ -139,6 +139,7 @@ def check_page_tail_carry():
 
 
 def check_stale_chunks_are_removed(build, embed_model, LlamaDocument):
+    import json
     import tempfile
     from llama_index.core import VectorStoreIndex
     from llama_index.core.vector_stores.simple import SimpleVectorStore
@@ -169,6 +170,27 @@ def check_stale_chunks_are_removed(build, embed_model, LlamaDocument):
         _, context = build([chunk("a.pdf", "revised")], context.vector_store, persist_dir, embed_model)
         assert stored(context) == (["a.pdf", "c.pdf"], 2), stored(context)
     print("- stale chunks removed, other-directory chunks kept OK")
+
+    with tempfile.TemporaryDirectory() as persist_dir, tempfile.TemporaryDirectory() as folder:
+        kept, deleted = os.path.join(folder, "kept.txt"), os.path.join(folder, "deleted.txt")
+        unmounted = os.path.join(folder, "unmounted-drive", "report.txt")
+        for path in (kept, deleted):
+            with open(path, "w") as handle:
+                handle.write("x")
+        _, context = build(
+            [chunk(kept, "current"), chunk(deleted, "removed"), chunk(unmounted, "offline")],
+            SimpleVectorStore(), persist_dir, embed_model,
+        )
+        context.persist(persist_dir)
+        os.remove(deleted)
+        # The next run indexes another directory; the deleted file still goes,
+        # while a file whose whole folder is unreachable is kept.
+        _, context = build([chunk("other.pdf", "unrelated")], context.vector_store, persist_dir, embed_model)
+        assert stored(context) == (sorted(["other.pdf", kept, unmounted]), 3), stored(context)
+        with open(os.path.join(persist_dir, "jarvis_index_manifest.json"), encoding="utf-8") as handle:
+            manifest_files = {entry["file_path"] for entry in json.load(handle)["documents"]}
+        assert deleted not in manifest_files and unmounted in manifest_files, manifest_files
+    print("- chunks of files deleted from disk removed OK")
 
     class InventoriedStore(SimpleVectorStore):
         """A store that can list its chunks, like the Milvus store."""

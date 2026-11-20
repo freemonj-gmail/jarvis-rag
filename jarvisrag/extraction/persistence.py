@@ -218,6 +218,17 @@ def _scope_file_paths(manifest: Dict[str, Any]) -> set[str]:
     }
 
 
+def _is_deleted_file(file_path: Optional[str]) -> bool:
+    """An indexed absolute path whose file is gone while its folder remains.
+
+    Requiring the folder keeps an unmounted drive or a moved folder from being
+    mistaken for a deletion; relative or synthetic paths are never treated as
+    deleted."""
+    if not file_path or not os.path.isabs(file_path):
+        return False
+    return not os.path.exists(file_path) and os.path.isdir(os.path.dirname(file_path))
+
+
 def _scoped_manifests_match(
     current: Dict[str, Any],
     persisted: Optional[Dict[str, Any]],
@@ -352,7 +363,8 @@ def _stale_stored_ids(
     Asks the docstore and the vector store what they actually hold rather than
     trusting the manifest, which only records the last run and so cannot name
     a stale chunk that an earlier sync failed to remove. Chunks from files
-    outside ``scope_file_paths`` belong to other directories and are kept.
+    outside ``scope_file_paths`` belong to other directories and are kept,
+    unless their file has since been deleted from disk.
     """
     stored: Dict[str, Optional[str]] = {}
     try:
@@ -372,7 +384,7 @@ def _stale_stored_ids(
         ref_id
         for ref_id, file_path in stored.items()
         if ref_id not in current_ids
-        and (scope_file_paths is None or file_path in scope_file_paths)
+        and (scope_file_paths is None or file_path in scope_file_paths or _is_deleted_file(file_path))
     )
 
 
@@ -564,6 +576,13 @@ def build_or_load_persistent_index(
     print("[index] Comparing current document signature against persisted manifest...")
     persisted_manifest = _load_index_manifest(persist_dir)
     scope_file_paths = _scope_file_paths(current_manifest)
+    # A file deleted from disk is in no run's documents, so it would never come
+    # into scope; add it so its chunks and manifest entries are removed.
+    scope_file_paths |= {
+        entry.get("file_path")
+        for entry in (persisted_manifest or {}).get("documents", [])
+        if _is_deleted_file(entry.get("file_path"))
+    }
     structural_ok = _structural_signatures_match(current_manifest, persisted_manifest)
     # The scoped fast path must NEVER skip a rebuild when the embed model or
     # vector store schema changed — old vectors would be queried with a new
