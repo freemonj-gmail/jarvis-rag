@@ -13,6 +13,12 @@ import os
 # Let unsupported MPS ops fall back to CPU instead of erroring. torch reads this
 # at import, so it must be set before llama_index pulls torch in below.
 os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+# Return cached MPS memory to the system sooner. The default lets the embedding
+# cache grow toward physical RAM during long index builds; 0.05 kept a full
+# mail re-embed flat at 14-21 GB on a 128 GB Mac and, measured on a 641-chunk
+# sample, cut driver memory ~15 -> ~12 GiB at unchanged throughput. Same
+# setting (and reason) as scripts/chatterbox_tts_worker.py.
+os.environ.setdefault("PYTORCH_MPS_LOW_WATERMARK_RATIO", "0.05")
 
 from llama_index.core import VectorStoreIndex
 from llama_index.core.schema import Document
