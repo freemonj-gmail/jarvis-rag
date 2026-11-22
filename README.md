@@ -324,6 +324,20 @@ MILVUS_COLLECTION=jarvis_eval_example make retrieval-eval ARGS='"/path/to/corpus
 # so no query text leaves the machine. Add --repeat 3 to expose unstable cases.
 make answer-eval ARGS='"/path/to/corpus" "jarvis_storage/evaluation/answer_cases.json" --case-details'
 
+# Regression gate: run the same cases before and after a change and compare. The
+# report also measures hallucinated figures (values absent from the answer's own
+# evidence), time to answer, answer and spoken length, follow-up handling in
+# multi-turn "conversations" from the case file, and memory (process peak and
+# growth across the run, lowest free system memory, swap). --baseline exits 1 when
+# any metric is worse than the saved report and stays worse in an automatic second
+# run (one flaky answer cannot fail the gate); a hallucination flag that does not
+# repeat is still printed as a warning, with the flagged figures, which --case-details
+# reports record per question. The comparator's rules are unit-tested in make test.
+# Close Jarvis while it runs so memory and timing are comparable, and keep the Mac
+# awake for the whole run (e.g. caffeinate -i -s make answer-eval ...).
+make answer-eval ARGS='"/path/to/corpus" "jarvis_storage/evaluation/answer_cases.json" --repeat 2 --case-details --output "jarvis_storage/evaluation/baseline.json"'
+make answer-eval ARGS='"/path/to/corpus" "jarvis_storage/evaluation/answer_cases.json" --repeat 2 --case-details --output "jarvis_storage/evaluation/after.json" --baseline "jarvis_storage/evaluation/baseline.json"'
+
 # Live Milvus validation (requires a running Milvus server)
 uv run python tests/milvus_live_test.py
 ```
