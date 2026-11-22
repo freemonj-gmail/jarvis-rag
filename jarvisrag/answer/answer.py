@@ -336,6 +336,9 @@ def _build_evidence_preview(response: object, max_items: int = 4) -> str:
 
 
 _CONCRETE_VALUE_RE = re.compile(r"(?<![\w.])\d[\d,]*(?:\.\d+)?")
+# A page reference without a file name ("page 05", "pp. 3-4"); file names with
+# an optional page are matched by the shared _SOURCE_REFERENCE_RE.
+_PAGE_REFERENCE_RE = re.compile(r"\b(?:pages?|pp?\.)\s*\d+(?:\s*[-\u2013]\s*\d+)?", re.IGNORECASE)
 
 
 def _concrete_values(text: str) -> set[str]:
@@ -349,8 +352,13 @@ def _concrete_values(text: str) -> set[str]:
 
 
 def _unsupported_answer_values(answer: str, evidence_lines: list[str]) -> set[str]:
-    """Concrete values the answer states that appear nowhere in its evidence."""
-    return _concrete_values(answer) - _concrete_values("\n".join(evidence_lines))
+    """Concrete values the answer states that appear nowhere in its evidence.
+
+    File names and page references in the answer are skipped: they identify
+    where a fact came from rather than state one, and a follow-up answer may
+    cite a page that this turn's evidence does not include."""
+    claims = _PAGE_REFERENCE_RE.sub(" ", _SOURCE_REFERENCE_RE.sub(" ", answer or ""))
+    return _concrete_values(claims) - _concrete_values("\n".join(evidence_lines))
 
 
 def _review_answer_against_evidence(

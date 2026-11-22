@@ -1376,6 +1376,18 @@ class ReviewerCorroborationTests(unittest.TestCase):
         self.assertEqual(_unsupported_answer_values("Limits: $7,500, $24,500.", self.EVIDENCE), set())
         self.assertEqual(_unsupported_answer_values("A rise of 12% to $1,234.50.", self.EVIDENCE), {"12", "1234.50"})
 
+    def test_source_references_are_not_claims(self):
+        from jarvisrag.answer.answer import _unsupported_answer_values
+
+        # Page numbers and file names cite a source; they are not stated values.
+        cited = "The IRA limit is $7,500 (Notice_2026-66.pdf, page 05); see also page 12 and pp. 3-4."
+        self.assertEqual(_unsupported_answer_values(cited, self.EVIDENCE), set())
+        # A figure inside the same citation is still checked.
+        self.assertEqual(
+            _unsupported_answer_values("The IRA limit is $7,500 (Notice_2026-66.pdf, page 05, $9,999).", self.EVIDENCE),
+            {"9999"},
+        )
+
 
 class ValueQuestionSynthesisTests(unittest.TestCase):
     """A value question with evidence is answered by synthesis + review, never by a
