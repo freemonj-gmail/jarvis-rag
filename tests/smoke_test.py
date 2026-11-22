@@ -500,6 +500,52 @@ def run_tests():
     assert _is_fu_num and "current employer" in _eff_num and _eff_num.strip().endswith("2026")
     print("- conversational follow-up detection OK")
 
+    # The model verdict decides by meaning where the wording rules cannot: an
+    # "it" that points inside the same message, and a follow-up with no marker.
+    from types import SimpleNamespace
+    from jarvisrag.answer.answer import _turn_continues_previous
+
+    class _VerdictLLM:
+        def __init__(self, reply=None, error=None):
+            self.reply, self.error, self.calls = reply, error, 0
+
+        def chat(self, messages):
+            self.calls += 1
+            if self.error:
+                raise self.error
+            return SimpleNamespace(message=SimpleNamespace(content=self.reply))
+
+    limits_turn = {
+        "user_query": "What is the standard deduction for a single filer?",
+        "response_text": "The standard deduction for a single filer is $10,000.",
+    }
+    self_contained = "Who qualifies for the household credit, and how much is it?"
+    assert _looks_like_follow_up(self_contained, limits_turn)  # the wording rules merge it
+    assert not _turn_continues_previous(self_contained, limits_turn, _VerdictLLM("NEW"))
+    eff_new, fu_new, _ = _effective_query_for_turn(self_contained, limits_turn, False)
+    assert not fu_new and eff_new == self_contained
+    markerless = "And for heads of household?"
+    assert not _looks_like_follow_up(markerless, limits_turn)
+    assert _turn_continues_previous(markerless, limits_turn, _VerdictLLM(" continues.\n"))
+    # Off-format reply, a failing model, or no model -> the wording rules decide.
+    for llm in (_VerdictLLM("maybe"), _VerdictLLM(error=RuntimeError("down")), None):
+        assert _turn_continues_previous(self_contained, limits_turn, llm)
+        assert not _turn_continues_previous(markerless, limits_turn, llm)
+    # Structural cases are settled without asking the model.
+    for query, turn, expected in (
+        ("2026", limits_turn, True),
+        ("How much is it?", {}, False),
+    ):
+        llm = _VerdictLLM("NEW" if expected else "CONTINUES")
+        assert _turn_continues_previous(query, turn, llm) is expected and llm.calls == 0, query
+    # After the assistant asked for a detail, the model tells a reply from a new
+    # question; without a model the reply is assumed.
+    asked_turn = {**limits_turn, "awaiting_clarification": True}
+    moved_on = "How long must I hold stock for a gain to be long-term?"
+    assert not _turn_continues_previous(moved_on, asked_turn, _VerdictLLM("NEW"))
+    assert _turn_continues_previous(moved_on, asked_turn, None)
+    print("- follow-up decided by meaning OK")
+
     # Display formatting: the full answer (values intact) is kept, and a
     # de-duplicated 'References' list of the named sources is appended instead
     # of repeating the answer body.

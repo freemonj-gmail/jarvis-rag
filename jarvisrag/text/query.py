@@ -158,19 +158,15 @@ def _names_new_subject(user_query: str, last_turn: dict[str, object]) -> bool:
     return False
 
 
-def _looks_like_follow_up(user_query: str, last_turn: dict[str, object]) -> bool:
+def _structural_follow_up(user_query: str, last_turn: dict[str, object]) -> bool | None:
+    """Follow-up cases decided by the shape of the conversation, not by wording.
+
+    True/False when settled; None when only the meaning of the new message can
+    tell, which is left to the model verdict or the wording rules below."""
     if not last_turn.get("user_query"):
         return False
-    lowered = " ".join(user_query.lower().split())
-    if not lowered:
+    if not " ".join(user_query.lower().split()):
         return False
-    # The assistant ended the previous turn by ASKING for a missing detail, so
-    # this turn is its answer by construction -- however terse. Phrasing
-    # heuristics cannot see this: a bare "2026" or "the Roth one" has no pronoun
-    # and no refinement marker, and would otherwise restart as a fresh question,
-    # stranding the clarification.
-    if last_turn.get("awaiting_clarification"):
-        return True
     # A CONTENTLESS turn -- only a bare year/number with no topic word (no run of
     # 3+ letters) -- cannot stand as its own question, so it must be refining the
     # prior turn (e.g. a lone "2026" typed after a limits answer). Treating it as
@@ -179,15 +175,31 @@ def _looks_like_follow_up(user_query: str, last_turn: dict[str, object]) -> bool
     # absence of any alphabetic topic word, never on a specific value or topic.
     if not re.search(r"[A-Za-z]{3,}", user_query or ""):
         return True
-    has_source_hint = bool(_extract_source_hints(user_query))
+    # An explicit source reference ("the answer is in X.pdf") is a deliberate
+    # continuation and always stays a follow-up.
+    if _extract_source_hints(user_query):
+        return True
+    return None
+
+
+def _looks_like_follow_up(user_query: str, last_turn: dict[str, object]) -> bool:
+    """Deterministic follow-up detection: the structural cases, then wording rules.
+
+    The wording rules are the fallback for when the model verdict
+    (``_turn_continues_previous`` in the answer pipeline) is unavailable."""
+    structural = _structural_follow_up(user_query, last_turn)
+    if structural is not None:
+        return structural
+    # The assistant ended the previous turn by ASKING for a missing detail, so a
+    # reply is usually its answer -- however terse ("the Roth one" has no pronoun
+    # and no marker). The model verdict reads the question in the previous answer
+    # and also recognizes when the user moved on instead of replying.
+    if last_turn.get("awaiting_clarification"):
+        return True
+    lowered = " ".join(user_query.lower().split())
     wants_refinement = _query_requests_reasoning(user_query) or _query_requests_refinement(user_query)
     has_pronoun = bool(_FOLLOW_UP_PRONOUN_RE.search(lowered))
     has_marker = bool(_FOLLOW_UP_MARKER_RE.search(lowered))
-
-    # An explicit source reference ("the answer is in X.pdf") is a deliberate
-    # continuation and always stays a follow-up.
-    if has_source_hint:
-        return True
 
     # Topic-switch guard: if the user names a NEW proper-noun subject and does
     # NOT refer back with a pronoun, treat it as a fresh question so the prior
@@ -373,9 +385,17 @@ def _query_requests_authoring(user_query: str) -> bool:
     return False
 
 
-def _effective_query_for_turn(user_query: str, last_turn: dict[str, object]) -> tuple[str, bool, list[str]]:
+def _effective_query_for_turn(
+    user_query: str, last_turn: dict[str, object], continues: bool | None = None
+) -> tuple[str, bool, list[str]]:
+    """Merge the prior question into this turn when it continues that exchange.
+
+    ``continues`` is the caller's already-made decision (the model verdict);
+    None decides deterministically with ``_looks_like_follow_up``."""
     source_hints = _extract_source_hints(user_query)
-    if not _looks_like_follow_up(user_query, last_turn):
+    if continues is None:
+        continues = _looks_like_follow_up(user_query, last_turn)
+    if not continues:
         return user_query, False, source_hints
 
     prior_query = str(last_turn.get("effective_query") or last_turn.get("user_query") or "").strip()
