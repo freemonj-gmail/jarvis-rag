@@ -1998,6 +1998,19 @@ _DEFAULT_SYNTHESIS_EVIDENCE_BUDGET = 40
 _DEFAULT_MAIN_INDEX_RESERVE = 6
 
 
+def _evidence_source_labels(evidence_lines: list[str]) -> list[str]:
+    """The source label of each evidence line: the connector label of an MCP
+    line ("[MCP · <label> · ...]"), else the file label before the colon."""
+    labels = []
+    for line in evidence_lines or ():
+        text = str(line)
+        if text.startswith("[MCP ·"):
+            labels.append(text[len("[MCP ·"):].split("·", 1)[0].strip())
+        else:
+            labels.append(_source_label_from_evidence_line(text))
+    return labels
+
+
 def _budget_combined_evidence(
     mcp_lines: list[str],
     domain_lines: list[str],
@@ -2642,7 +2655,7 @@ def handle_query(
                     )
 
         print(f"Jarvis: {_format_response_for_display(response_text, excluded_for_display, home_evidence_refs, domain_superseded)}\n")
-        tts.speak(_spoken_response_text(response_text))
+        tts.speak(_spoken_response_text(response_text, _evidence_source_labels(evidence_lines)))
         last_turn = {
             "user_query": user_query,
             "effective_query": effective_user_query,

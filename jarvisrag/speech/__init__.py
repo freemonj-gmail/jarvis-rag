@@ -21,6 +21,7 @@ import subprocess
 import sys
 import tempfile
 from contextlib import nullcontext
+from typing import Iterable
 
 import numpy as np
 
@@ -485,16 +486,54 @@ def _summarize_for_speech(response_text: str, max_sentences: int = 2, max_chars:
     return " ".join(chosen).strip()
 
 
-def _spoken_response_text(response_text: str) -> str:
+def _strip_label_citations(text: str, label_words: frozenset[str]) -> str:
+    """Remove parenthetical citations made of the answer's own source labels.
+
+    The model cites sources in its own shorthand, e.g. "(irc)" or "(irc,
+    Result 3)" for a source labelled "taxmcp.io (IRC/Treasury Regs/IRS)", which
+    has no file extension or page for ``_strip_inline_citations`` to key on. A
+    parenthetical is dropped when one of its comma- or semicolon-separated parts
+    consists only of words from those labels and contains a word, not just a
+    number; parentheses that say something else are kept.
+    """
+    if not text or not label_words:
+        return text
+
+    def is_citation(match: "re.Match[str]") -> bool:
+        for part in re.split(r"[,;]", match.group(1)):
+            words = re.findall(r"[a-z0-9]+", part.lower())
+            if words and any(w.isalpha() for w in words) and all(w in label_words for w in words):
+                return True
+        return False
+
+    # A citation follows a space ("... 17 (irc)"), unlike "152(c)", and may hold
+    # one level of nested parentheses ("(irc, Section 24(c)(1))").
+    stripped = re.sub(
+        r"\s+\(((?:[^()\n]|\([^()\n]*\))*)\)", lambda m: "" if is_citation(m) else m.group(0), text
+    )
+    stripped = re.sub(r"\s+([.,;:!?])", r"\1", stripped)
+    return re.sub(r"[ \t]{2,}", " ", stripped)
+
+
+def _source_label_words(source_labels: Iterable[str]) -> frozenset[str]:
+    """Lowercase words of the source labels, the vocabulary of a citation."""
+    return frozenset(
+        word for label in source_labels or () for word in re.findall(r"[a-z0-9]+", str(label).lower())
+    )
+
+
+def _spoken_response_text(response_text: str, source_labels: Iterable[str] = ()) -> str:
     """Return the FULL prose of a response for TTS, dropping only the
     'Relevant evidence found:' block and reference/citation metadata lines.
     Unlike `_summarize_for_speech`, this keeps the entire answer — including
     list/bullet content (with the bullet marker removed) and all sentences —
     so the listener hears the complete response, not just a two-sentence
-    preview."""
+    preview. ``source_labels`` are the labels of the answer's evidence; a
+    citation written with their words is not read aloud."""
     if not response_text:
         return ""
     text = _speech_text_for_response(response_text)
+    label_words = _source_label_words(source_labels)
 
     citation_prefixes = (
         "source:", "sources:", "reference:", "references:",
@@ -530,6 +569,7 @@ def _spoken_response_text(response_text: str) -> str:
         # The printed answer (and its References block) is produced elsewhere
         # and keeps the citations intact.
         line = _strip_inline_citations(line)
+        line = _strip_label_citations(line, label_words)
         cleaned_lines.append(line)
 
     # Collapse runs of blank lines so the speech engine doesn't insert

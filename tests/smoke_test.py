@@ -590,6 +590,23 @@ def run_tests():
     assert "3.50" in spoken and "3.65" in spoken
     # Neutral placeholder is used so the spoken sentence stays grammatical.
     assert "the document" in lowered_spoken
+    # Citations written with the words of the answer's own source labels are not
+    # read aloud; parentheses that say something else are.
+    from jarvisrag.answer.answer import _evidence_source_labels
+    labels = _evidence_source_labels([
+        "[MCP · example.org (Code/Regulations/Agency — cited) · live authoritative source · search-tool] ## Result 1 ...",
+        "- Rate_Notice_2026.pdf, page 3: The 2026 rate is $2,000.",
+    ])
+    cited = (
+        "The credit is $2,000 per child (code). It applies to a qualifying child "
+        "(as defined in section 152(c)) (code, Result 3). Bake it covered (covered) for 2026 (2026) "
+        "per the notice (Rate Notice 2026; code, Result 1, section 24(c)(1))."
+    )
+    spoken_cited = _spoken_response_text(cited, labels)
+    assert "(code" not in spoken_cited and "Rate Notice" not in spoken_cited, spoken_cited
+    for kept in ("$2,000 per child.", "(as defined in section 152(c))", "(covered)", "(2026)"):
+        assert kept in spoken_cited, (kept, spoken_cited)
+    assert _spoken_response_text(cited) .count("(code") == 2, "without labels nothing extra is removed"
     print("- TTS citation suppression OK")
 
     # Spoken dollar amounts must absorb a magnitude scale (word or letter suffix)
