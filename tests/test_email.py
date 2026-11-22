@@ -1295,6 +1295,49 @@ class AnswerBudgetTests(unittest.TestCase):
         self.assertEqual(distills, 1)  # with budget remaining, the distill IS attempted
         self.assertEqual(answer, "DISTILLED ANSWER")
 
+class RunawayGenerationTests(unittest.TestCase):
+    """An evidence answer that reaches the token ceiling has run away: it is
+    discarded, and a runaway refinement falls back to the earlier draft."""
+
+    class _CapLLM:
+        def __init__(self, done_reason):
+            self.additional_kwargs = {"num_predict": 256}
+            self.done_reason, self.cap_seen = done_reason, None
+
+        def chat(self, messages):
+            self.cap_seen = self.additional_kwargs.get("num_predict")
+            resp = Mock()
+            resp.message = Mock()
+            resp.message.content = "The limit is $1,000 " * 50
+            resp.raw = {"done_reason": self.done_reason}
+            return resp
+
+    def test_capped_synthesis_is_discarded(self):
+        from jarvisrag.answer.answer import _ANSWER_MAX_TOKENS, _synthesize_evidence_answer
+        evidence = ["- doc.pdf: The limit is $1,000."]
+        runaway = self._CapLLM("length")
+        self.assertEqual(_synthesize_evidence_answer("What is the limit?", evidence, runaway), "")
+        self.assertEqual(runaway.cap_seen, _ANSWER_MAX_TOKENS)
+        self.assertEqual(runaway.additional_kwargs["num_predict"], 256)  # restored afterwards
+        finished = self._CapLLM("stop")
+        self.assertTrue(_synthesize_evidence_answer("What is the limit?", evidence, finished))
+
+    def test_runaway_refinement_keeps_the_earlier_draft(self):
+        from jarvisrag.answer import answer as answer_module
+        draft = "The limit is $1,000."
+        reviewer = lambda *_a, **_k: (False, "the answer is too generic")
+        with patch.object(answer_module, "_synthesize_evidence_answer", side_effect=[draft, ""]), \
+                patch.object(answer_module, "_review_answer_against_evidence", side_effect=reviewer), \
+                patch.object(answer_module, "_extractive_reasoning_answer_from_evidence", return_value=""), \
+                patch.object(answer_module, "_distill_answer_from_evidence", return_value=""), \
+                patch.object(answer_module, "_forced_extractive_summary_from_evidence", return_value="FORCED SUMMARY"):
+            answer, ok, _reason = answer_module._answer_with_review_loop(
+                "What is the limit?", ["- doc.pdf: The limit is $1,000."], object()
+            )
+        self.assertTrue(ok)
+        self.assertTrue(answer.startswith(draft))
+        self.assertNotIn("FORCED SUMMARY", answer)
+
 class ReviewerCorroborationTests(unittest.TestCase):
     """A reviewer's hallucination claim discards an answer only when the evidence agrees."""
 

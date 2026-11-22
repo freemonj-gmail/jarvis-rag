@@ -602,8 +602,11 @@ def _distill_answer_from_evidence(
     )
     def _call(p: str) -> str:
         try:
-            with _llm_output_budget(llm_client, -1):
+            with _llm_output_budget(llm_client, _ANSWER_MAX_TOKENS):
                 response = llm_client.chat([ChatMessage(role=MessageRole.USER, content=p)])
+            if _hit_output_cap(response):
+                debug_print(f"[debug] Distillation reached the {_ANSWER_MAX_TOKENS}-token ceiling (runaway); discarding it.")
+                return ""
             return (response.message.content or "").strip()
         except Exception as exc:
             debug_print(f"[debug] Distillation LLM call failed: {exc}")
@@ -631,14 +634,29 @@ def _distill_answer_from_evidence(
     return answer
 
 
+# Safety ceiling for an evidence answer (synthesis, refinement, distillation).
+# Not a length target: the longest measured answers are ~1,300 tokens, while a
+# runaway generation was observed running into the 600 s request timeout. At
+# ~100-160 tokens/s this ends a runaway within about a minute. A capped reply
+# is treated as no answer.
+_ANSWER_MAX_TOKENS = 8192
+
+
+def _hit_output_cap(response: Any) -> bool:
+    """True when the model stopped because it reached the token cap, not by finishing."""
+    raw = getattr(response, "raw", None)
+    reason = raw.get("done_reason") if isinstance(raw, dict) else getattr(raw, "done_reason", None)
+    return reason == "length"
+
+
 @contextmanager
 def _llm_output_budget(llm_client: Ollama, num_predict: int):
     """Temporarily override the Ollama `num_predict` for a call.
 
     Pass a positive integer to raise the cap to at least that many tokens.
-    Pass -1 to fully uncap generation (model stops on its own EOS token);
-    this is the right choice for synthesis and distillation on a local LLM
-    where we care more about answer completeness than token cost. The prior
+    Pass -1 to fully uncap generation (model stops on its own EOS token), for
+    output that is legitimately long (authored documents, general knowledge).
+    Evidence answers use the ``_ANSWER_MAX_TOKENS`` ceiling instead. The prior
     value is always restored on exit so cheaper callsites (review PASS/FAIL,
     speech summary) keep their default cap.
     """
@@ -756,11 +774,14 @@ def _synthesize_evidence_answer(
         + "\n".join(evidence_lines)
     )
     try:
-        with _llm_output_budget(llm_client, -1):
+        with _llm_output_budget(llm_client, _ANSWER_MAX_TOKENS):
             response = llm_client.chat([ChatMessage(role=MessageRole.USER, content=prompt)])
+        if _hit_output_cap(response):
+            debug_print(f"[debug] Synthesis reached the {_ANSWER_MAX_TOKENS}-token ceiling (runaway); discarding it.")
+            return ""
         answer = (response.message.content or "").strip()
         if not answer:
-            debug_print("[debug] Synthesis LLM returned empty completion despite uncapped num_predict.")
+            debug_print("[debug] Synthesis LLM returned an empty completion.")
         return answer
     except Exception as exc:
         debug_print(f"[debug] Synthesis LLM call failed: {exc}")
@@ -815,6 +836,11 @@ def _answer_with_review_loop(
                 prior_answer=prior_answer,
             )
             if not answer:
+                if best_answer:
+                    # A refinement produced nothing (e.g. it ran away and was
+                    # capped): keep the earlier draft and its review outcome.
+                    debug_print(f"[debug] Refinement attempt {attempt} produced no answer; keeping the earlier draft.")
+                    break
                 fallback_answer = _extractive_reasoning_answer_from_evidence(user_query, evidence_lines)
                 if fallback_answer:
                     debug_print(f"[debug] Used extractive reasoning fallback on attempt {attempt}.")
@@ -864,7 +890,7 @@ def _answer_with_review_loop(
             review_feedback = review_reason
             best_answer = answer
 
-            # Circuit breaker. Each refine attempt is another uncapped generation
+            # Circuit breaker. Each refine attempt is another long generation
             # over the full evidence set, so on a slow model or a large evidence
             # context the retries can silently stack into a many-minute turn that
             # looks like a hang. Attempt 1 always runs in full; further attempts
