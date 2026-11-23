@@ -89,18 +89,24 @@ not trigger re-embedding.
 
 Jarvis keeps lightweight conversational state across turns in a single session:
 
-- **Pronoun-aware follow-ups.** A follow-up that refers back to the prior subject
-  with a pronoun ("How long did **he** work **there**?") is recognized as a
-  follow-up, so the previous question's context is carried into retrieval. This
-  matters most for multi-subject corpora, where the pronoun would otherwise be
-  ambiguous.
+- **Follow-ups understood by meaning.** The model judges whether each new message
+  continues the previous exchange or starts a new question, so "How long did **he**
+  work **there**?" and a short "And for heads of household?" carry the previous
+  question into retrieval, while a self-contained question that merely contains
+  "it" ("Who qualifies for the child tax credit, and how much is it?") starts
+  fresh. A reply to a clarifying question ("Which year?") is linked back to it,
+  unless the user moved on to a new question. Clear cases (a bare number, a named
+  file) are decided without the model, and word rules are the fallback when the
+  model is unavailable.
 - **Clean source list.** The printed answer keeps its values and inline
   citations, followed by a de-duplicated **References** block listing each unique
   source (`file (page N)`) once — instead of repeating the whole answer.
 - **Citations are never spoken.** Text-to-speech reads the answer's prose and
-  values but never reads filenames, extensions, or page numbers aloud. Filenames
-  the model weaves into a sentence are spoken as "the document" / "the documents"
-  so the audio stays natural; the printed output is unaffected.
+  values but never reads filenames, extensions, or page numbers aloud, nor a
+  citation the model writes in the words of the answer's own source labels (such
+  as "(irc)" for a tax-law source). Filenames the model weaves into a sentence are
+  spoken as "the document" / "the documents" so the audio stays natural; the
+  printed output is unaffected.
 
 ## Math & calculations
 
@@ -170,12 +176,12 @@ whether it is required or only needed for a specific feature.
   `.python-version`; `uv sync` installs a uv-managed 3.14.8 if needed
   (`uv python install 3.14.8`).
 - **[uv](https://docs.astral.sh/uv/)** for dependency management and running the app.
-- **Disk / memory** — the models are large (the default LLM is a ~30B model and
-  the `bge-m3` embedding model is ~2 GB). Plan for several GB of free disk and
-  enough RAM/VRAM to run a 30B-class model. Apple Silicon or a discrete GPU is
-  recommended for acceptable latency. On Apple Silicon, embedding runs on the GPU
-  in a bounded set of batch shapes, so GPU memory stays flat even when indexing
-  a large new folder.
+- **Disk / memory** — the models are large (the default LLM is a 26B
+  Mixture-of-Experts model, ~18 GB, and the `bge-m3` embedding model is ~2 GB).
+  Plan for several GB of free disk and enough RAM/VRAM to run a model of that
+  size. Apple Silicon or a discrete GPU is recommended for acceptable latency. On
+  Apple Silicon, embedding runs on the GPU in a bounded set of batch shapes, so
+  GPU memory stays flat even when indexing a large new folder.
 
 ### 2. Local LLM runtime (Ollama) + models
 
@@ -292,8 +298,8 @@ uv run python Jarvis.py /path/to/your/documents
 ## Tests
 
 ```bash
-# Fast, model-free suite: interrupt, math, retrieval-eval, and answer-eval unit
-# tests plus the helper smoke test (no model downloads, no Milvus/Ollama needed)
+# Fast, model-free suite: interrupt, math, retrieval-eval, answer-eval, and mail
+# unit tests plus the helper smoke test (no model downloads, no Milvus/Ollama needed)
 make test
 
 # Fast helper smoke test (no heavy model downloads)
@@ -357,6 +363,7 @@ development, not day-to-day use.
 | `JARVIS_SYNC_EXISTING_INDEX` | `0` | Reconcile the persistent index against the current corpus on load |
 | `JARVIS_DISABLE_EXTRACTION_CACHE` | `0` | Bypass the per-file extraction cache (always re-extract) |
 | `JARVIS_DOCUMENT_SOURCES` | `document_sources.json` | Path to the docsync / domain-corpus recipe |
+| `JARVIS_BUILD_MAIL_INDEX` | `0` | Set `1` for the launch that builds a mail domain index for the first time (a long, resumable run); without it, startup skips an unbuilt mail index so launching stays fast. Built indexes reload on every startup |
 | `JARVIS_MAIL_ACCOUNTS` | _(unset — all accounts)_ | Comma-separated Apple Mail account directory names to index; kept out of the committed recipe because the identifier is machine-specific |
 | `MILVUS_HOST` / `MILVUS_PORT` / `MILVUS_COLLECTION` | `127.0.0.1` / `19530` / `jarvis_context` | Milvus connection + collection (used when the backend is `milvus`) |
 | `HF_TOKEN` | _(unset)_ | Hugging Face token for authenticated embedding-model downloads |
@@ -424,6 +431,10 @@ hardware, memory, latency, or corpus — you rarely need to.
 | `JARVIS_HOME_CORPUS_MAX_CHUNKS` | `60` | Cap on home-folder chunks force-included as candidates |
 | `JARVIS_DUPLICATE_EVIDENCE_THRESHOLD` | `0.9` | Word-overlap ratio at which two evidence passages count as duplicates (near-duplicate suppression is always on); lower suppresses more aggressively |
 | `JARVIS_ANSWER_REVIEW_ATTEMPTS` | `3` | Max synthesis/review attempts |
+| `JARVIS_ANSWER_TIME_BUDGET_SECONDS` | `300` | Wall-clock budget for starting another refinement attempt or slow fallback in one turn; the first attempt always runs |
+| `JARVIS_SYNTHESIS_EVIDENCE_BUDGET` | `40` | Total evidence lines sent to the model across MCP, domain, and main-index sources (MCP and domain lines are never trimmed) |
+| `JARVIS_MAIN_INDEX_RESERVE` | `6` | Main-index lines kept when a domain corpus answered the question |
+| `JARVIS_QUERY_SNIPPET_CHARS` | `6000` | Char cap per query-focused evidence line on the ordinary retrieval path |
 | `JARVIS_LLM_MODEL` | `gemma4:26b-mlx` | Ollama tag for the primary synthesis model |
 | `JARVIS_NUM_CTX` | `131072` | Primary model context window (128K, ChatGPT-class). Bounded worst-case prompt is ~100k tokens so this never truncates, while halving KV-cache memory vs the model's 262144 max. Raise toward `262144` for more headroom; `0` keeps the model default |
 | `JARVIS_LLM_KEEP_ALIVE` | `-1` | Ollama `keep_alive` for the primary model: `-1` keeps it (and Ollama's cached prompt prefix) loaded for the whole session and Jarvis unloads it on exit; use e.g. `30m` or `0` to free memory sooner on a shared machine |
@@ -433,6 +444,7 @@ hardware, memory, latency, or corpus — you rarely need to.
 | `JARVIS_HOME_CHUNK_CHARS` | `8000` | Char cap per home-folder evidence line |
 | `JARVIS_METADATA_EMBED_BUDGET_CHARS` | `1024` | Per-node embedded-metadata budget (largest keys excluded past this) |
 | `JARVIS_INDEX_BATCH_SIZE` | `64` | Documents per embedding/insert batch |
+| `JARVIS_EMBED_DEVICE` | _(auto: `mps`, else `cuda`, else `cpu`)_ | Torch device for the embedding model; set only to override the automatic choice |
 | `JARVIS_OCR_MIN_CONF` | `0.65` | Region confidence at/above which OCR text is trusted as-is |
 | `JARVIS_OCR_VOCAB_THRESHOLD` | `0.25` | Min fraction of recognized English words before text is treated as OCR garbage |
 | `JARVIS_VLM_CONF` | `0.75` | Confidence assigned to VLM-recovered text |
@@ -565,7 +577,8 @@ How it works:
   pulling in unrelated files from your working folder.
 - **Persistent.** Each domain persists into its own collection + directory and
   **reloads** on later startups instead of re-embedding every launch; after a
-  `make docs-refresh` changes a file, only the changed documents are re-embedded.
+  `make docs-refresh` changes a file, only the changed documents are re-embedded,
+  and the old chunks of changed or deleted files are removed from the index.
 
 A domain self-activates when its entry has `match_any` routing terms and its
 `corpus_dir` exists; otherwise it is silently skipped. Any per-domain failure is
@@ -627,8 +640,11 @@ retrieved chunk, and it cites its parent email. Reading attachments needs no Ful
 Disk Access at answer time. Attachments Mail never downloaded to this Mac cannot
 be read.
 
-Run refresh before indexing, not concurrently. Startup automatically builds or
-resumes the mail domain index from the staged corpus. Unchanged messages reuse
+Run refresh before indexing, not concurrently. The first build of a mail domain
+index runs only on a launch with `JARVIS_BUILD_MAIL_INDEX=1` (it takes hours and
+resumes from its checkpoint if interrupted); after that, every startup reloads the
+index and picks up refreshed messages. Keep the machine awake for a long build (for
+example `caffeinate -i -s` on macOS); a sleeping Mac pauses it. Unchanged messages reuse
 caches; incomplete refreshes and indexing failures must be resolved before using
 the affected mail index. Legacy refresh state can require a one-time copy-and-hash
 verification, and older interrupted builds without checkpoints cannot reuse their
@@ -662,10 +678,11 @@ uv run --offline python scripts/bench_mail_embedding.py --sample 128 --repeat 2 
 Output contains aggregate timings, vector comparisons, and memory measurements,
 not message text or identifiers. Projections cover embedding only, not a complete
 build. Near-identical vectors are not proof of unchanged answer accuracy; batch
-experiments do not change production defaults. A full mail build and end-to-end
-accuracy validation remain pending. The checkpoint path has synthetic and live
-storage verification, not a measured full-mailbox completion time or answer-quality
-approval. The two-hour first-build target has not been demonstrated. MIME/thread
+experiments do not change production defaults. A full build of a mailbox of about
+330,000 chunks has completed on Apple Silicon, embedding at roughly 10 chunks per
+second (about 9 hours of embedding), so the two-hour first-build target has not been
+met. Spot checks of mail answers (including answers read from attachments) were
+correct; there is no systematic mail answer-quality evaluation yet. MIME/thread
 context handling and mail-only/no-egress answer routing remain unresolved; separate
 vector collections alone do not enforce those boundaries. Do not treat the benchmark
 or storage tests as full-feature readiness approval.
@@ -683,6 +700,7 @@ jarvisrag/             # Umbrella package (organized by function)
   extraction/          # Extractors + indexing
     pagepipe.py        #   confidence-routed page extraction pipeline
     apple_ocr.py       #   Apple Vision OCR engine (macOS, default document OCR)
+    persistence.py     #   persistent index lifecycle (delta sync, stale-chunk cleanup)
   vectorstore/         # Milvus vector store
   retrieval/           # Hybrid retrieval + fusion
   answer/              # Answer synthesis + runtime bootstrap
@@ -692,8 +710,9 @@ jarvisrag/             # Umbrella package (organized by function)
     connector.py       #   HTTP/OAuth + stdio transports + outbound PII guard
     registry.json      #   MCP connector registry (pure data)
   docsync/             # Remote-document refresh (SHA-256 + conditional GET)
-  evaluation/          # Privacy-safe retrieval + answer-quality harnesses
-scripts/               # Local evaluation CLIs (evaluate_retrieval.py, evaluate_answers.py)
+  evaluation/          # Privacy-safe retrieval + answer-quality harnesses, regression gate
+scripts/               # Evaluation CLIs (evaluate_retrieval.py, evaluate_answers.py),
+                       # benchmarks, and the out-of-process Chatterbox TTS worker
 tests/                 # Unit + smoke + Milvus tests
 jarvis_storage/        # Generated extraction cache + persistent index (gitignored)
 ```
