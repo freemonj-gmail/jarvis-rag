@@ -196,9 +196,6 @@ ollama pull gemma4:26b-mlx        # default synthesis model Jarvis loads
   `JARVIS_LLM_MODEL=gemma4:31b-mlx` to use the dense build instead. The tag must be
   available in your local Ollama. On non–Apple-Silicon hardware, pull an equivalent
   Gemma tag your machine can run and set `JARVIS_LLM_MODEL` to it.
-- The **escalation model** (`llama3:70b`, env `JARVIS_ESCALATION_MODEL`) is
-  **optional** — it is only used when the two-tier router is enabled
-  (`JARVIS_ROUTER=1`). You do not need it for normal use.
 
 ### 3. Embedding + speech models (auto-downloaded)
 
@@ -371,12 +368,6 @@ development, not day-to-day use.
 | `JARVIS_CONTEXT_MODE` | `chunk` | `chunk` or `source_window` context assembly |
 | `JARVIS_RESPONSE_MODE` | `query` | `query` or `chat` synthesis mode |
 | `JARVIS_ALLOW_GENERAL_KNOWLEDGE` | `1` | On a corpus miss, allow a general-knowledge fallback answer; `0` refuses instead |
-| `JARVIS_ROUTER` | `0` | Enable the two-tier LLM router (escalate out-of-corpus questions to a larger model) |
-| `JARVIS_ESCALATION_MODEL` | `llama3:70b` | Ollama tag for the escalation model (router) |
-| `JARVIS_ESCALATION_TIMEOUT` | `600` | Request timeout (seconds) for the escalation model |
-| `JARVIS_ESCALATION_TEMPERATURE` | `0.2` | Sampling temperature for the escalation model |
-| `JARVIS_ESCALATION_NUM_CTX` | `8192` | Escalation model context window; bounds its KV-cache memory (`0` = model default) |
-| `JARVIS_ESCALATION_KEEP_ALIVE` | `0` | Ollama `keep_alive` for the escalation model; `0` unloads it after each call (`5m`/`-1` keep it resident) |
 | `JARVIS_ENABLE_IMAGE_CHAT_ENGINE` | `0` | Build the image chat engine when image documents are present |
 
 ### Document extraction & OCR

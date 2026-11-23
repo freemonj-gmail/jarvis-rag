@@ -66,9 +66,9 @@ IMAGE_EXTENSIONS = [".jpg", ".jpeg", ".png", ".tiff", ".bmp", ".gif"]
 
 
 def _build_llm() -> Ollama:
-    # make sure ollama is running: `ollama run llama3`
-    # JARVIS_LLM_MODEL selects the primary synthesis model (deployment/hardware
-    # choice, mirrors JARVIS_ESCALATION_MODEL). Default is the MoE build: it matched
+    # Requires a running Ollama server with the model pulled.
+    # JARVIS_LLM_MODEL selects the synthesis model (deployment/hardware choice).
+    # Default is the MoE build: it matched
     # the dense 31B on the answer harness (identical accuracy) at ~4x faster median
     # latency; the dense tag stays selectable via the env var.
     model = os.environ.get("JARVIS_LLM_MODEL", "gemma4:26b-mlx").strip() or "gemma4:26b-mlx"
@@ -98,7 +98,7 @@ def _build_llm() -> Ollama:
     # questions for the whole session; Ollama's 5-minute default unloaded it
     # mid-session, so the next question paid a reload plus a full prompt
     # re-read. release_llm() unloads it when Jarvis exits. "0"/"5m" etc. trade
-    # responsiveness for memory on shared machines (mirrors the escalation knob).
+    # responsiveness for memory on shared machines.
     keep_alive = os.environ.get("JARVIS_LLM_KEEP_ALIVE", "-1").strip() or "-1"
     try:
         kwargs["keep_alive"] = float(keep_alive)  # Ollama reads bare strings as Go durations

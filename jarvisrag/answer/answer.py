@@ -1,7 +1,7 @@
 """Answer synthesis and the top-level query pipeline for Jarvis RAG.
 
-Owns everything that turns retrieved evidence into a user-facing answer: the
-optional two-tier LLM router, dismissive-answer detection, the extractive
+Owns everything that turns retrieved evidence into a user-facing answer:
+dismissive-answer detection, the extractive
 value/reasoning/summary fallbacks, the LLM synthesis + review loop, corpus and
 source-detail previews, display formatting, chat-memory purge, the chunked
 map-reduce query engines, and the ``QueryRuntime`` dataclass + ``handle_query``
@@ -67,115 +67,6 @@ from jarvisrag.retrieval import (
     _query_focused_snippet,
     _retrieve_query_supported_evidence,
 )
-
-
-# ---------------------------------------------------------------------------
-# LLM Router — two-tier model escalation (DISABLED BY DEFAULT)
-# ---------------------------------------------------------------------------
-# WHAT THIS DOES
-#   Provides an optional second model "tier" intended for future multi-GPU
-#   hardware. The PRIMARY model (small/fast, e.g. gemma) keeps answering
-#   everything that can be grounded in the local RAG corpus. When a query falls
-#   OUTSIDE the indexed corpus and Jarvis must fall back to parametric
-#   ("general") knowledge, the router escalates that single call to a larger
-#   ESCALATION model (e.g. llama3:70b) with broader world knowledge.
-#
-# WHY ESCALATE ONLY ON THE CORPUS-MISS PATH
-#   Retrieval is shared: both models read the same vector store, so running the
-#   big model adds nothing when good evidence already exists. The large model
-#   only helps when the answer must come from the model's own training
-#   knowledge — i.e. exactly the `_answer_from_general_knowledge` fallback.
-#   Routing only there keeps the expensive 70B model idle for the common
-#   (grounded) case and active only for genuine corpus misses, minimizing VRAM
-#   pressure and latency.
-#
-# ACTIVATION
-#   Fully gated behind JARVIS_ROUTER=1. While unset/"0" (the default), Jarvis
-#   behaves exactly as before: the primary client handles every call, the
-#   escalation model is never constructed, and no extra VRAM or latency is
-#   incurred. Flip the switch on after the hardware upgrade to enable it.
-#
-# CONFIGURATION (environment variables)
-#   JARVIS_ROUTER                 "0"           enable ("1") / disable the tier
-#   JARVIS_ESCALATION_MODEL       "llama3:70b"  Ollama tag for the escalation model
-#   JARVIS_ESCALATION_TIMEOUT     "600"         request timeout (seconds)
-#   JARVIS_ESCALATION_TEMPERATURE "0.2"         sampling temperature
-#   JARVIS_ESCALATION_NUM_CTX     "8192"        escalation context window (0 = model default)
-#   JARVIS_ESCALATION_KEEP_ALIVE  "0"           Ollama keep_alive; "0" unloads the model
-#                                               after each call ("5m"/"-1" to keep resident)
-#
-# FAILURE HANDLING
-#   If the escalation client cannot be built (Ollama down, model not pulled),
-#   the router logs the reason and transparently returns the primary client, so
-#   an answer is never blocked by a missing big model.
-# ---------------------------------------------------------------------------
-_escalation_llm_cache: dict[str, Any] = {}
-
-
-def _router_enabled() -> bool:
-    return os.environ.get("JARVIS_ROUTER", "0") == "1"
-
-
-def _build_escalation_llm() -> Any:
-    """Lazily construct (and cache) the escalation Ollama client. Returns None
-    if the model tag is empty or the client cannot be created."""
-    model = os.environ.get("JARVIS_ESCALATION_MODEL", "llama3:70b").strip()
-    if not model:
-        return None
-    if model in _escalation_llm_cache:
-        return _escalation_llm_cache[model]
-    client = None
-    try:
-        timeout = float(os.environ.get("JARVIS_ESCALATION_TIMEOUT", "600"))
-        temperature = float(os.environ.get("JARVIS_ESCALATION_TEMPERATURE", "0.2"))
-        # Bound the escalation context so the large model's KV cache (and thus the
-        # peak memory footprint when it is co-resident with the primary model) is
-        # deterministic; short general-knowledge answers do not need the primary
-        # model's large synthesis window. 0 defers to the model/Ollama default.
-        try:
-            num_ctx = int(os.environ.get("JARVIS_ESCALATION_NUM_CTX", "8192"))
-        except ValueError:
-            num_ctx = 8192
-        client_kwargs: dict[str, Any] = dict(
-            model=model,
-            request_timeout=timeout,
-            temperature=temperature,
-            thinking=False,  # same reason as the primary client in bootstrap._build_llm
-        )
-        if num_ctx > 0:
-            client_kwargs["context_window"] = num_ctx
-            client_kwargs["additional_kwargs"] = {"num_ctx": num_ctx}
-        # Unload the large escalation model when idle so it does not hold memory
-        # while the primary model does ordinary work. "0" evicts it right after
-        # each escalation; "5m"/"-1" keep it resident for back-to-back queries.
-        keep_alive = os.environ.get("JARVIS_ESCALATION_KEEP_ALIVE", "0").strip()
-        if keep_alive:
-            client_kwargs["keep_alive"] = keep_alive
-        client = Ollama(**client_kwargs)
-    except Exception as e:
-        debug_print(f"[debug] Router: failed to build escalation LLM '{model}': {e}")
-        client = None
-    _escalation_llm_cache[model] = client
-    return client
-
-
-def route_general_knowledge_llm(primary_llm: Any) -> Any:
-    """Pick the LLM client for the out-of-corpus (general-knowledge) fallback.
-
-    Returns the larger escalation model when the router is enabled
-    (JARVIS_ROUTER=1) and that model can be constructed; otherwise returns the
-    unchanged primary client. This is the single decision point that makes the
-    smaller primary model "defer to" the larger one for questions that are not
-    covered by the indexed corpus."""
-    if not _router_enabled():
-        return primary_llm
-    escalation = _build_escalation_llm()
-    if escalation is None:
-        debug_print("[debug] Router enabled but escalation LLM unavailable; using primary client.")
-        return primary_llm
-    model = os.environ.get("JARVIS_ESCALATION_MODEL", "llama3:70b").strip()
-    debug_print(f"[debug] Router: escalating out-of-corpus query to '{model}'.")
-    return escalation
 
 
 # A genuine "I have nothing" response is short. Longer text that merely contains
@@ -1004,9 +895,6 @@ def _answer_from_general_knowledge(user_query: str, llm_client: Any) -> str:
     query = (user_query or "").strip()
     if not query:
         return ""
-    # Out-of-corpus fallback: optionally escalate this single call to the larger
-    # router model (JARVIS_ROUTER=1). No-op passthrough when the router is off.
-    llm_client = route_general_knowledge_llm(llm_client)
     prompt = (
         "You are a helpful general-knowledge assistant.\n"
         "The user's question is NOT covered by any indexed documents, so answer "
