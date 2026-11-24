@@ -101,6 +101,18 @@ _TOKEN_EXPIRY_SKEW_SECONDS = 60      # refresh a little before actual expiry
 # ---------------------------------------------------------------------------
 # Data model (loaded from the JSON registry)
 # ---------------------------------------------------------------------------
+def routing_term_matches(term: str, text: str) -> bool:
+    """Whether a routing term occurs in ``text`` starting at the beginning of a word.
+
+    Shared by MCP connectors and domain corpora. A plain substring test let a
+    term match inside an unrelated word ("irs" in "first", "opm" in
+    "development", "irc" in "circumstance"); anchoring the start keeps derived
+    forms ("tax" in "taxable", "deduction" in "deductions"). Case-insensitive."""
+    if not term or not text:
+        return False
+    return re.search(r"(?<![a-z0-9])" + re.escape(term.lower()), text.lower()) is not None
+
+
 @dataclass
 class MCPCall:
     """One tool invocation against a connector's MCP server.
@@ -123,7 +135,7 @@ class MCPConnector:
     oauth_scope: str = ""               # oauth: scope requested during authorization
     command: list[str] = field(default_factory=list)    # stdio: process argv, spawned per query then torn down
     env: dict[str, str] = field(default_factory=dict)   # stdio: extra environment variables for the child
-    match_any: list[str] = field(default_factory=list)   # case-insensitive substrings
+    match_any: list[str] = field(default_factory=list)   # case-insensitive terms, matched from the start of a word
     match_regex: Optional[str] = None
     calls: list[MCPCall] = field(default_factory=list)
     source_label: str = ""              # human label cited in evidence/References
@@ -134,8 +146,7 @@ class MCPConnector:
         """Routing gate: does this connector apply to ``query``?"""
         if not query:
             return False
-        ql = query.lower()
-        if any(term.lower() in ql for term in self.match_any if term):
+        if any(routing_term_matches(term, query) for term in self.match_any if term):
             return True
         if self.match_regex:
             try:

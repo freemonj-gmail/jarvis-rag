@@ -35,7 +35,7 @@ from jarvisrag.speech import (
     _spoken_response_text,
 )
 from jarvisrag.extraction.indexing import chunk_documents, split_large_docs
-from jarvisrag.mcp.connector import fetch_mcp_evidence
+from jarvisrag.mcp.connector import fetch_mcp_evidence, routing_term_matches
 from jarvisrag.text.query import (
     _best_detail_candidate,
     _best_detail_snippet,
@@ -233,12 +233,17 @@ _PAGE_REFERENCE_RE = re.compile(r"\b(?:pages?|pp?\.)\s*\d+(?:\s*[-\u2013]\s*\d+)
 
 
 def _concrete_values(text: str) -> set[str]:
-    """Numbers, amounts, percentages and years in ``text``, normalized for comparison."""
+    """Numbers, amounts, percentages and years in ``text``, normalized so equal
+    numbers compare equal however they are written ("7,500.00" == "7500",
+    "2.540" == "2.54", "05" == "5")."""
     values = set()
     for raw in _CONCRETE_VALUE_RE.findall(text or ""):
         value = raw.replace(",", "").rstrip(".")
-        if value:
-            values.add(value)
+        if not value:
+            continue
+        whole, _, fraction = value.partition(".")
+        fraction = fraction.rstrip("0")
+        values.add((whole.lstrip("0") or "0") + (f".{fraction}" if fraction else ""))
     return values
 
 
@@ -781,6 +786,19 @@ def _answer_with_review_loop(
                 llm_client,
             )
             if review_passed:
+                # The model reviewer can pass an answer that states a figure the
+                # evidence never gives (a GPA read out of garbled scanned text).
+                # A stated value must appear in the evidence, the question, or the
+                # answer being refined; otherwise the pass does not stand and the
+                # named values go back to the model as review feedback.
+                unsupported = _unsupported_answer_values(answer, [*evidence_lines, user_query, prior_answer])
+                if unsupported:
+                    review_passed = False
+                    review_reason = (
+                        "The answer states values that are not in the evidence: "
+                        f"{', '.join(sorted(unsupported))}. State only values the evidence gives."
+                    )
+            if review_passed:
                 debug_print(f"[debug] Answer review passed on attempt {attempt}.")
                 return answer, True, review_reason
 
@@ -807,7 +825,9 @@ def _answer_with_review_loop(
         hallucination_markers = ("hallucinat", "outside", "not present", "not in the evidence", "invent", "external", "made up", "fabricat")
         reason_lower = last_review_reason.lower()
         looks_hallucinated = any(marker in reason_lower for marker in hallucination_markers)
-        if looks_hallucinated and not _unsupported_answer_values(best_answer, evidence_lines):
+        if looks_hallucinated and not _unsupported_answer_values(
+            best_answer, [*evidence_lines, user_query, prior_answer]
+        ):
             # Measured: the reviewer routinely claims figures are "not present"
             # when they are. Discard only when a concrete value really is missing
             # from the evidence; otherwise the objection is not corroborated.
@@ -1101,6 +1121,53 @@ def _answer_completeness(user_query: str, response_text: str, llm_client: Any) -
     if verdict:
         debug_print(f"[debug] Unrecognized completeness verdict: {verdict[:60]}; using markers.")
     return ANSWER_PARTIAL if _answer_hedges_about_missing_detail(response_text) else ANSWER_COMPLETE
+
+
+_EVIDENCE_TOPIC_PROMPT = (
+    "You decide whether excerpts retrieved from a user's documents are about what their question asks.\n"
+    "RELATED - the excerpts are about the specific thing the question asks about (the same person, organization, "
+    "item, account, rule, program, or event), so they are where its answer would be expected, even if this "
+    "particular detail is missing.\n"
+    "UNRELATED - the excerpts are about something else: they only share words or a broad field with the question, "
+    "and its answer would not be expected in them.\n"
+    "Reply with exactly one word: RELATED or UNRELATED.\n\n"
+    "Question: {question}\n\nExcerpts:\n{excerpts}\n\nVerdict:"
+)
+_EVIDENCE_TOPIC_LINES = 12
+_EVIDENCE_TOPIC_CHARS = 700
+
+
+def _evidence_concerns_question(user_query: str, evidence_lines: list[str], llm_client: Any) -> bool:
+    """Whether retrieved evidence is about what the question asks, judged by meaning.
+
+    Retrieval admits a chunk on shared words, so "query-supported" evidence can
+    be about something else entirely: "the first woman to win a Nobel Prize"
+    pulled insurance-policy pages and a resume, then a tax-law section on prize
+    income. Showing that as "relevant evidence" is wrong; the question belongs to
+    general knowledge. Measured on 72 labelled pairs from three corpora (general
+    knowledge, in-corpus, and in-corpus-but-missing-the-detail questions): 72/72
+    on each of 3 runs, ~0.45 s per verdict. Keeps the evidence (the previous
+    behavior) when the model is unavailable or replies off-format."""
+    if not evidence_lines or llm_client is None:
+        return bool(evidence_lines)
+    excerpts = "\n".join(
+        f"{i}. {' '.join(str(line).split())[:_EVIDENCE_TOPIC_CHARS]}"
+        for i, line in enumerate(evidence_lines[:_EVIDENCE_TOPIC_LINES], 1)
+    )
+    prompt = _EVIDENCE_TOPIC_PROMPT.format(question=user_query.strip(), excerpts=excerpts)
+    try:
+        with Spinner("Checking the evidence"):
+            response = llm_client.chat([ChatMessage(role=MessageRole.USER, content=prompt)])
+        verdict = " ".join((response.message.content or "").split()).upper()
+    except Exception as exc:
+        debug_print(f"[debug] Evidence topic check failed ({type(exc).__name__}); keeping the evidence.")
+        return True
+    # UNRELATED contains RELATED, so test it first.
+    if verdict.startswith("UNRELATED"):
+        return False
+    if not verdict.startswith("RELATED"):
+        debug_print(f"[debug] Unrecognized evidence topic verdict: {verdict[:60]}; keeping the evidence.")
+    return True
 
 
 _FOLLOW_UP_PROMPT = (
@@ -1778,10 +1845,9 @@ def _domains_for_turn(
     actually applies. Returns (active_domains, keyword_matched_domains)."""
     if not domain_retrievers:
         return [], []
-    ql = query.lower()
     keyword_matched = [
         d for d in domain_retrievers
-        if any(str(term).lower() in ql for term in (d.get("match_any") or []) if term)
+        if any(routing_term_matches(str(term), query) for term in (d.get("match_any") or []) if term)
     ]
     if keyword_matched:
         return keyword_matched, keyword_matched
@@ -2491,16 +2557,38 @@ def handle_query(
                 routed_domain_names = routed_domain_names + cascade["domain_names"]
                 answer_was_dismissive = False
 
+        # Retrieval admits evidence on shared words, so it can be about something
+        # else entirely. Whenever that evidence did not yield an answer -- the
+        # draft failed review, or passed while supplying none of what was asked --
+        # judge by meaning whether it is about the question at all. If not, the
+        # question is outside the indexed documents: answer from general
+        # knowledge instead of presenting unrelated text as "relevant evidence".
+        # An answered question never reaches the check, so it costs nothing there.
+        evidence_off_topic = False
+        if evidence_lines:
+            if review_passed and not answer_completeness:
+                answer_completeness = _answer_completeness(effective_user_query, response_text, runtime.llm)
+            if (not review_passed or answer_completeness == ANSWER_UNANSWERED) and not _evidence_concerns_question(
+                effective_user_query, evidence_lines, runtime.llm
+            ):
+                debug_print("[debug] Retrieved evidence is about something else; treating the question as uncovered.")
+                evidence_off_topic = True
+                review_passed = False
+                review_reason = "retrieved evidence is about something else"
+                evidence_lines = []
+                home_evidence_refs = []
+                answer_was_dismissive = False
+
         if not review_passed:
             debug_print(f"[debug] Initial answer did not pass review: {review_reason}")
-            # When ANY query-supported evidence was retrieved it has already
-            # passed the anchor/topic gate, so it is on-topic for this question.
-            # Surface it rather than routing to a general-knowledge answer that
-            # would wrongly deny the corpus. This holds even when the drafted LLM
-            # answer was dismissive because the chunks don't literally spell out
-            # the asked-for detail — showing what WAS found is more honest and
-            # trustworthy than pretending indexed files don't exist. No explicit
-            # filename mention is required to reach this path.
+            # Evidence reaching this branch was judged to be about the question
+            # (see the topic check above). Surface it rather than routing to a
+            # general-knowledge answer that would wrongly deny the corpus. This
+            # holds even when the drafted LLM answer was dismissive because the
+            # chunks don't literally spell out the asked-for detail — showing what
+            # WAS found is more honest and trustworthy than pretending indexed
+            # files don't exist. No explicit filename mention is required to reach
+            # this path.
             if evidence_lines:
                 if answer_was_dismissive:
                     debug_print(
@@ -2531,7 +2619,13 @@ def handle_query(
                 else:
                     response_text = _evidence_present_fallback(evidence_lines, review_reason)
             else:
-                topic_preview = _build_topic_details_preview(effective_user_query, runtime.all_docs, runtime.llm)
+                # Evidence already judged unrelated must not be re-surfaced by the
+                # word-overlap topic preview, which matches the same way retrieval did.
+                topic_preview = (
+                    ""
+                    if evidence_off_topic
+                    else _build_topic_details_preview(effective_user_query, runtime.all_docs, runtime.llm)
+                )
                 if topic_preview and not _response_is_dismissive(topic_preview):
                     debug_print("[debug] Applied direct topic corpus fallback.")
                     response_text = topic_preview

@@ -76,7 +76,9 @@ flowchart LR
     SC --> LLM[LLM answers from merged evidence]
     LLM --> DIS{dismissive / empty?}
     DIS -->|no| ANS[answer]
-    DIS -->|yes| GK[general-knowledge fallback<br/>corpus-miss only]
+    DIS -->|yes| TOP{evidence about<br/>the question?}
+    TOP -->|yes| PRE[evidence preview or<br/>one clarifying question]
+    TOP -->|no| GK[general-knowledge fallback<br/>corpus-miss only]
 ```
 
 Hybrid degrades gracefully: if the BM25 package is unavailable or the docstore is
@@ -98,6 +100,20 @@ Jarvis keeps lightweight conversational state across turns in a single session:
   unless the user moved on to a new question. Clear cases (a bare number, a named
   file) are decided without the model, and word rules are the fallback when the
   model is unavailable.
+- **Unrelated text is never presented as evidence.** Retrieval admits text that
+  shares words with a question, so a question outside your documents ("Who was the
+  first woman to win a Nobel Prize?") can pull in pages that merely contain "first"
+  or "prize". When that evidence yields no answer, the model judges by meaning
+  whether it is about the question at all; if not, Jarvis answers from general
+  knowledge (labelled as such) instead of listing the unrelated pages. Evidence
+  that *is* about the question but lacks the detail asked for is still shown, or
+  prompts one clarifying question.
+- **Every stated figure is checked against the evidence.** After the model
+  reviewer approves an answer, each number it states (amounts, rates, years,
+  scores) must appear in the retrieved evidence or the question; numbers are
+  compared by value, so "2.54" matches "2.540". An answer stating a figure from
+  nowhere is sent back with that figure named, and the earlier answer is replaced
+  by an evidence-based fallback if the retries do not fix it.
 - **Clean source list.** The printed answer keeps its values and inline
   citations, followed by a de-duplicated **References** block listing each unique
   source (`file (page N)`) once — instead of repeating the whole answer.
@@ -490,7 +506,9 @@ It is designed to be safe and unobtrusive:
 - **Extensible / pure data.** Connectors live in `jarvisrag/mcp/registry.json` (routing rules,
   endpoint, auth, tool calls). Adding a source is a data edit, not a code change.
 - **Gated.** A connector only fires when the query matches its routing rules
-  (e.g. an IRS/tax question for taxmcp.io). Non-matching questions are unaffected.
+  (e.g. an IRS/tax question for taxmcp.io). A routing term matches at the start of
+  a word, so "tax" matches "taxable" but "irs" never matches "first".
+  Non-matching questions are unaffected.
 - **Fail-safe.** Any failure (server down, missing credentials, protocol error,
   timeout) is caught and the connector is silently skipped — a failed MCP pull
   never breaks a turn; the answer proceeds on local/document evidence as before.
@@ -560,7 +578,8 @@ How it works:
   single shared collection could not keep domain text from leaking into — or
   crowding — ordinary queries. A separate index is the only clean isolation.
 - **Gated by routing terms.** A domain is consulted when the query matches one of
-  its `match_any` terms (e.g. `fers`, `tsp`, `federal annuity`). Otherwise it is
+  its `match_any` terms (e.g. `fers`, `tsp`, `federal annuity`), matched like MCP
+  routing terms: at the start of a word, so `opm` never matches "development". Otherwise it is
   searched only as a fallback: when the first answer fails, or does not supply
   everything the question asked for (judged by the model on meaning, however the
   answer words it), each unconsulted domain is tried on its own (most relevant

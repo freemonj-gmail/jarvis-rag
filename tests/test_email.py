@@ -1374,7 +1374,39 @@ class ReviewerCorroborationTests(unittest.TestCase):
         from jarvisrag.answer.answer import _unsupported_answer_values
 
         self.assertEqual(_unsupported_answer_values("Limits: $7,500, $24,500.", self.EVIDENCE), set())
-        self.assertEqual(_unsupported_answer_values("A rise of 12% to $1,234.50.", self.EVIDENCE), {"12", "1234.50"})
+        self.assertEqual(_unsupported_answer_values("A rise of 12% to $1,234.50.", self.EVIDENCE), {"12", "1234.5"})
+        # Equal numbers match however they are written.
+        self.assertEqual(_unsupported_answer_values("GPA 2.540, limit $7500.00", ["GPA 2.54; $7,500"]), set())
+
+    def test_passed_answer_with_an_invented_value_is_sent_back(self):
+        from jarvisrag.answer import answer as answer_module
+
+        drafts = iter(["The cumulative GPA is 2.731.", "The cumulative GPA is 2.54."])
+        feedback = []
+
+        def synthesize(*_a, review_feedback="", **_k):
+            feedback.append(review_feedback)
+            return next(drafts)
+
+        with patch.object(answer_module, "_synthesize_evidence_answer", side_effect=synthesize), \
+                patch.object(answer_module, "_review_answer_against_evidence", return_value=(True, "ok")):
+            answer, ok, _reason = answer_module._answer_with_review_loop(
+                "What cumulative GPA appears in the 2019 transcript?", ["- transcript.pdf: Cumulative 2.540"], object()
+            )
+        self.assertEqual(answer, "The cumulative GPA is 2.54.")
+        self.assertTrue(ok)
+        self.assertIn("2.731", feedback[1])
+
+    def test_values_from_the_question_are_not_invented(self):
+        from jarvisrag.answer import answer as answer_module
+
+        with patch.object(answer_module, "_synthesize_evidence_answer", return_value="The evidence has no 2031 figure."), \
+                patch.object(answer_module, "_review_answer_against_evidence", return_value=(True, "ok")):
+            answer, ok, _ = answer_module._answer_with_review_loop(
+                "What is the 2031 standard deduction?", ["- rp.pdf: 2026 standard deduction $16,100"], object()
+            )
+        self.assertEqual(answer, "The evidence has no 2031 figure.")
+        self.assertTrue(ok)
 
     def test_source_references_are_not_claims(self):
         from jarvisrag.answer.answer import _unsupported_answer_values
@@ -1760,6 +1792,32 @@ class SynthesisBoundedOutputTests(unittest.TestCase):
         self.assertIn(_STATUS_FIDELITY_RULE.strip(), prompt)
 
 
+class RoutingTermTests(unittest.TestCase):
+    """Routing terms for MCP connectors and domain corpora match at the start of
+    a word, never inside an unrelated word."""
+
+    def test_term_matches_at_word_start_only(self):
+        from jarvisrag.mcp.connector import routing_term_matches
+        for term, text in (("irs", "Who was the first woman to win?"), ("opm", "the development plan"),
+                           ("irc", "under these circumstances"), ("tax", "fix the syntax error")):
+            self.assertFalse(routing_term_matches(term, text), (term, text))
+        for term, text in (("irs", "What did the IRS say?"), ("tax", "Is my pension taxable?"),
+                           ("deduction", "Which deductions apply?"), ("401(k)", "my 401(k) limit"),
+                           ("w-2", "where is my W-2"), ("tax year", "for the 2026 tax year")):
+            self.assertTrue(routing_term_matches(term, text), (term, text))
+
+    def test_connector_and_domain_routing_share_the_rule(self):
+        from jarvisrag.answer.answer import _domains_for_turn
+        from jarvisrag.mcp.connector import MCPConnector
+        connector = MCPConnector(name="tax", enabled=True, transport="http", url="", match_any=["irs", "tax"])
+        self.assertFalse(connector.matches("Who was the first person to walk on Mars?"))
+        self.assertTrue(connector.matches("When are taxes due?"))
+        domains = [{"name": "benefits", "retriever": object(), "match_any": ["opm", "fers"]}]
+        self.assertEqual(_domains_for_turn("Summarize the development plan and the offers", domains), ([], []))
+        active, matched = _domains_for_turn("What does OPM say about FERS?", domains)
+        self.assertEqual([d["name"] for d in matched], ["benefits"])
+
+
 class DomainCascadeTests(unittest.TestCase):
     """The failure-triggered domain cascade (_cascade_domain_answer) consults
     domains left un-consulted this turn ONLY when the primary answer did not fully
@@ -2085,6 +2143,60 @@ class CascadeTriggerTests(unittest.TestCase):
         cascade.assert_called_once()
         self.assertEqual(turn["response_text"], self._PRIMARY)
         self.assertEqual(judge.call_count, 1)  # the clarification check reuses the verdict
+
+
+class EvidenceTopicTests(unittest.TestCase):
+    """Evidence that shares words with a question but is about something else is
+    not presented as relevant: the question is answered from general knowledge."""
+
+    _EVIDENCE = [
+        "- policy.pdf, page 9: Policy endorsements: nuclear hazard; strikes, riots and civil commotions",
+        "- resume.docx: Winner of the first annual robotics prize; led flight software development",
+    ]
+
+    def _run(self, review, on_topic, completeness=None):
+        import jarvisrag.answer.answer as ans
+        runtime = ans.QueryRuntime(all_docs=[], llm=Mock(), doc_retriever=object())
+        topic = Mock(return_value=on_topic)
+        with patch.object(
+            ans, "_retrieve_query_supported_evidence", return_value=(list(self._EVIDENCE), [])
+        ), patch.object(ans, "fetch_mcp_evidence", return_value=[]), patch.object(
+            ans, "_answer_with_review_loop", return_value=review
+        ), patch.object(ans, "_answer_completeness", return_value=completeness), patch.object(
+            ans, "_evidence_concerns_question", topic
+        ), patch.object(ans, "_clarifying_question_from_evidence", return_value=""), patch.object(
+            ans, "_answer_from_general_knowledge", return_value="GENERAL: Marie Curie, 1903."
+        ), patch.object(ans, "_build_topic_details_preview") as topic_preview, contextlib.redirect_stdout(
+            io.StringIO()
+        ) as out:
+            turn = ans.handle_query("Who was the first woman to win a Nobel Prize?", runtime)
+        return turn, topic, topic_preview, out.getvalue()
+
+    def test_unrelated_evidence_gets_a_general_knowledge_answer(self):
+        turn, topic, topic_preview, shown = self._run(("", False, "failed review"), on_topic=False)
+        self.assertEqual(turn["response_text"], "GENERAL: Marie Curie, 1903.")
+        self.assertEqual(turn["evidence_lines"], [])
+        self.assertNotIn("policy.pdf", shown)
+        topic.assert_called_once()
+        topic_preview.assert_not_called()  # word matching must not re-surface the same text
+
+    def test_related_evidence_is_still_previewed(self):
+        turn, _, _, _ = self._run(("", False, "failed review"), on_topic=True)
+        self.assertIn("Relevant evidence found", turn["response_text"])
+        self.assertIn("policy.pdf", turn["response_text"])
+
+    def test_passed_non_answer_over_unrelated_evidence_is_replaced(self):
+        import jarvisrag.answer.answer as ans
+        non_answer = "The provided evidence describes insurance endorsements and a resume, not Nobel laureates."
+        turn, topic, _, _ = self._run((non_answer, True, "ok"), False, ans.ANSWER_UNANSWERED)
+        self.assertEqual(turn["response_text"], "GENERAL: Marie Curie, 1903.")
+        topic.assert_called_once()
+
+    def test_answered_question_skips_the_check(self):
+        import jarvisrag.answer.answer as ans
+        turn, topic, _, _ = self._run(("Marie Curie (resume.docx).", True, "ok"), False, ans.ANSWER_COMPLETE)
+        self.assertEqual(turn["response_text"], "Marie Curie (resume.docx).")
+        topic.assert_not_called()
 
 
 def _write_attachment_emlx(path: str, message_id: str, parts: list[tuple[str, str, bytes, str]]) -> None:
