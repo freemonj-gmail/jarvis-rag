@@ -17,8 +17,9 @@ class RecordingTTS:
     def __init__(self) -> None:
         self.spoken: list[str] = []
 
-    def speak(self, text: str) -> None:
-        self.spoken.append(text)
+    def speak(self, text) -> None:
+        # Like the real voices, word deferred text when it is spoken.
+        self.spoken.append(text() if callable(text) else text)
 
 
 def run_tests() -> None:

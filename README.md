@@ -123,6 +123,21 @@ Jarvis keeps lightweight conversational state across turns in a single session:
   as "(irc)" for a tax-law source). Filenames the model weaves into a sentence are
   spoken as "the document" / "the documents" so the audio stays natural; the
   printed output is unaffected.
+- **Abbreviations, codes and numbers are read by context.** How a token is said
+  often depends on its meaning: "Ct." is Court in an address and carat on a
+  diamond, "1903" is a year in "won in 1903" but a count in "1903 workers", a
+  postal code is read digit by digit and a form number in pairs ("ten forty").
+  Before speaking, Jarvis finds such tokens by their shape (digits, symbols,
+  abbreviations with a period, capitals, a unit after a number) and asks the
+  answer model how each is said in its sentence. Only those tokens change, and a
+  reading is used only if it is plain words that keep every number's exact value;
+  otherwise the fixed wording rules apply, as they do when the model is
+  unavailable. This runs on the speech thread, so the printed answer and the next
+  prompt are not delayed; audio starts a second or so later on long answers.
+  Roman numerals are read by meaning too ("Henry the Eighth", "World War Two",
+  "Rocky Four"). On 188 labelled tokens across 26 subjects, every token is read
+  correctly or acceptably and about 94% in the most natural way, against 37% with
+  the fixed rules alone. Both voices benefit.
 
 ## Math & calculations
 
@@ -347,7 +362,7 @@ make answer-eval ARGS='"/path/to/corpus" "jarvis_storage/evaluation/answer_cases
 # report also measures hallucinated figures (values absent from the answer's own
 # evidence), time to answer, answer and spoken length, follow-up handling in
 # multi-turn "conversations" from the case file, and memory (process peak and
-# growth across the run, lowest free system memory, swap). --baseline exits 1 when
+# growth across the run, lowest free system memory, swap added during the run). --baseline exits 1 when
 # any metric is worse than the saved report and stays worse in an automatic second
 # run (one flaky answer cannot fail the gate); a hallucination flag that does not
 # repeat is still printed as a warning, with the flagged figures, which --case-details
@@ -356,6 +371,20 @@ make answer-eval ARGS='"/path/to/corpus" "jarvis_storage/evaluation/answer_cases
 # awake for the whole run (e.g. caffeinate -i -s make answer-eval ...).
 make answer-eval ARGS='"/path/to/corpus" "jarvis_storage/evaluation/answer_cases.json" --repeat 2 --case-details --output "jarvis_storage/evaluation/baseline.json"'
 make answer-eval ARGS='"/path/to/corpus" "jarvis_storage/evaluation/answer_cases.json" --repeat 2 --case-details --output "jarvis_storage/evaluation/after.json" --baseline "jarvis_storage/evaluation/baseline.json"'
+
+# Speech wording: grades the words handed to the voice against labelled readings
+# (natural and acceptable rates) and times the context step. No audio is made.
+# --baseline exits 1 when a rate falls or the step slows beyond tolerance and the
+# drop repeats in a second run.
+make speech-eval ARGS='"jarvis_storage/evaluation/speech_cases.json" --output "jarvis_storage/evaluation/speech.json" --baseline "jarvis_storage/evaluation/speech_baseline.json"'
+
+# Voice check (audio): renders the same labelled sentences with the real voice and
+# transcribes them with a local Whisper model (openai/whisper-small.en, offline once
+# cached), scoring how many words the voice dropped or garbled; numbers written in
+# another notation ("VIII" for "the eighth") count as the same words. Run it after
+# updating Python, PyTorch, macOS or the voice package, not on every change.
+# --baseline exits 1 when the voice drops clearly more words than before.
+uv run python scripts/evaluate_voice.py "jarvis_storage/evaluation/speech_cases.json" --engine kokoro --output "jarvis_storage/evaluation/voice.json" --baseline "jarvis_storage/evaluation/voice_baseline.json"
 
 # Live Milvus validation (requires a running Milvus server)
 uv run python tests/milvus_live_test.py
@@ -729,8 +758,8 @@ jarvisrag/             # Umbrella package (organized by function)
     connector.py       #   HTTP/OAuth + stdio transports + outbound PII guard
     registry.json      #   MCP connector registry (pure data)
   docsync/             # Remote-document refresh (SHA-256 + conditional GET)
-  evaluation/          # Privacy-safe retrieval + answer-quality harnesses, regression gate
-scripts/               # Evaluation CLIs (evaluate_retrieval.py, evaluate_answers.py),
+  evaluation/          # Privacy-safe retrieval, answer-quality, speech-wording and voice harnesses, regression gate
+scripts/               # Evaluation CLIs (evaluate_retrieval.py, evaluate_answers.py, evaluate_speech.py, evaluate_voice.py),
                        # benchmarks, and the out-of-process Chatterbox TTS worker
 tests/                 # Unit + smoke + Milvus tests
 jarvis_storage/        # Generated extraction cache + persistent index (gitignored)

@@ -1,6 +1,6 @@
 # Minimal test helper commands
 
-.PHONY: test interrupt-test math-test retrieval-eval-test answer-eval-test smoke-test smoke-test-e2e retrieval-eval answer-eval mcp-login docs-refresh mail-test
+.PHONY: test interrupt-test math-test retrieval-eval-test answer-eval-test smoke-test smoke-test-e2e retrieval-eval answer-eval speech-eval mcp-login docs-refresh mail-test
 
 test: interrupt-test math-test retrieval-eval-test answer-eval-test smoke-test mail-test
 
@@ -45,6 +45,12 @@ retrieval-eval:
 # Example: make answer-eval ARGS='"/path/to/corpus" "jarvis_storage/evaluation/answer_cases.json" --case-details'
 answer-eval:
 	uv run python scripts/evaluate_answers.py $(ARGS)
+
+# How answers are worded for speech (the context step + fixed wording rules), graded
+# against labelled readings. Runs the model; no audio. Add --baseline for the gate.
+# Example: make speech-eval ARGS='"jarvis_storage/evaluation/speech_cases.json" --output "jarvis_storage/evaluation/speech.json"'
+speech-eval:
+	uv run python scripts/evaluate_speech.py $(ARGS)
 
 # Refresh volatile remote document corpora (recipe: document_sources.json).
 # Downloads each source and rewrites a corpus file only when its content changed

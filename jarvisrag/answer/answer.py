@@ -32,6 +32,7 @@ from jarvisrag.speech import (
     _SOURCE_REFERENCE_RE,
     _SPEECH_DOC_RUN_RE,
     _SilentTTS,
+    _resolve_spoken_tokens,
     _spoken_response_text,
 )
 from jarvisrag.extraction.indexing import chunk_documents, split_large_docs
@@ -226,7 +227,9 @@ def _build_evidence_preview(response: object, max_items: int = 4) -> str:
     return "\n".join(lines) if added else ""
 
 
-_CONCRETE_VALUE_RE = re.compile(r"(?<![\w.])\d[\d,]*(?:\.\d+)?")
+# A comma groups thousands only before exactly three digits: "1,234,567" is one
+# number, but "Jan 29,2003" (no space after the comma) is a day and a year.
+_CONCRETE_VALUE_RE = re.compile(r"(?<![\w.])(?:\d{1,3}(?:,\d{3})+(?!\d|,\d)|\d+)(?:\.\d+)?")
 # A page reference without a file name ("page 05", "pp. 3-4"); file names with
 # an optional page are matched by the shared _SOURCE_REFERENCE_RE.
 _PAGE_REFERENCE_RE = re.compile(r"\b(?:pages?|pp?\.)\s*\d+(?:\s*[-\u2013]\s*\d+)?", re.IGNORECASE)
@@ -2241,6 +2244,16 @@ def _cascade_domain_answer(
     return first_partial
 
 
+def _speak_answer(tts, llm_client, response_text: str, source_labels=()) -> None:
+    """Hand the answer to the voice, worded on the speech thread: the context
+    step (how abbreviations, codes and numbers are said here) needs a model
+    call, which must not hold up the printed answer or the next prompt. A voice
+    that is off never calls it, so no model time is spent."""
+    spoken = _spoken_response_text(response_text, source_labels)
+    if spoken:
+        tts.speak(lambda: _resolve_spoken_tokens(spoken, llm_client))
+
+
 def handle_query(
     user_query: str,
     runtime: QueryRuntime,
@@ -2281,7 +2294,7 @@ def handle_query(
                 f"{calculation.category}/{calculation.operation}."
             )
             print(f"Jarvis: {response_text}\n")
-            tts.speak(_spoken_response_text(response_text))
+            _speak_answer(tts, runtime.llm, response_text)
             return {
                 "user_query": user_query,
                 "effective_query": effective_user_query,
@@ -2300,7 +2313,7 @@ def handle_query(
             )
             debug_print(f"[debug] Suggested math operator correction: {word} -> {suggestion}.")
             print(f"Jarvis: {response_text}\n")
-            tts.speak(_spoken_response_text(response_text))
+            _speak_answer(tts, runtime.llm, response_text)
             return {
                 "user_query": user_query,
                 "effective_query": effective_user_query,
@@ -2313,7 +2326,7 @@ def handle_query(
             response_text = _build_corpus_details_preview(runtime.all_docs)
             debug_print("[debug] Used direct corpus details scan.")
             print(f"Jarvis: {_format_response_for_display(response_text, runtime.home_excluded_files)}\n")
-            tts.speak(_spoken_response_text(response_text))
+            _speak_answer(tts, runtime.llm, response_text)
             return {
                 "user_query": user_query,
                 "effective_query": effective_user_query,
@@ -2325,7 +2338,7 @@ def handle_query(
             response_text = _build_source_details_preview(effective_user_query, runtime.all_docs, runtime.llm)
             debug_print("[debug] Used direct source details scan.")
             print(f"Jarvis: {_format_response_for_display(response_text, runtime.home_excluded_files)}\n")
-            tts.speak(_spoken_response_text(response_text))
+            _speak_answer(tts, runtime.llm, response_text)
             return {
                 "user_query": user_query,
                 "effective_query": effective_user_query,
@@ -2357,7 +2370,7 @@ def handle_query(
                         "Please try rephrasing the question or asking for the relevant source file first."
                     )
             print(f"Jarvis: {_format_response_for_display(response_text, runtime.home_excluded_files)}\n")
-            tts.speak(_spoken_response_text(response_text))
+            _speak_answer(tts, runtime.llm, response_text)
             return {
                 "user_query": user_query,
                 "effective_query": effective_user_query,
@@ -2478,7 +2491,7 @@ def handle_query(
             if response_text:
                 debug_print("[debug] Used authoring/composition path (single pass, no review loop).")
                 print(f"Jarvis: {_format_response_for_display(response_text, excluded_for_display, home_evidence_refs, domain_superseded)}\n")
-                tts.speak(_spoken_response_text(response_text))
+                _speak_answer(tts, runtime.llm, response_text)
                 return {
                     "user_query": user_query,
                     "effective_query": effective_user_query,
@@ -2671,7 +2684,7 @@ def handle_query(
                     )
 
         print(f"Jarvis: {_format_response_for_display(response_text, excluded_for_display, home_evidence_refs, domain_superseded)}\n")
-        tts.speak(_spoken_response_text(response_text, _evidence_source_labels(evidence_lines)))
+        _speak_answer(tts, runtime.llm, response_text, _evidence_source_labels(evidence_lines))
         last_turn = {
             "user_query": user_query,
             "effective_query": effective_user_query,

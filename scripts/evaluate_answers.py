@@ -16,7 +16,7 @@ next to the report as ``*.confirm.json``) and counts only if it reproduces; the
 run then exits 1 when any metric is confirmed worse: accuracy, hallucination
 (forbidden claims, figures absent from the evidence), time to answer, answer and
 spoken length, follow-up handling, refusals, empty answers, errors, or memory
-(process peak and growth across the run, lowest free system memory, swap).
+(process peak and growth across the run, lowest free system memory, swap added during the run).
 """
 
 from __future__ import annotations

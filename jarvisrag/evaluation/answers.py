@@ -408,7 +408,9 @@ def _memory_metrics(samples: list[dict[str, float]]) -> dict[str, float | None]:
     """Peak, growth, headroom, and swap from the per-turn memory samples.
 
     Growth is measured from the first post-turn sample, so one-time model and
-    index loading during the first answer is not mistaken for a leak."""
+    index loading during the first answer is not mistaken for a leak. Swap is a
+    system-wide level that other apps leave behind and macOS frees slowly, so
+    what the run itself adds is measured from the sample taken before it."""
 
     def series(key: str) -> list[float]:
         return [float(s[key]) for s in samples if s.get(key) is not None]
@@ -420,6 +422,7 @@ def _memory_metrics(samples: list[dict[str, float]]) -> dict[str, float | None]:
         "memory_rss_mb_growth": after_turns[-1] - after_turns[0] if len(after_turns) > 1 else None,
         "memory_available_pct_min": min(available) if available else None,
         "swap_mb_max": max(swap) if swap else None,
+        "swap_mb_growth": max(swap) - swap[0] if swap else None,
     }
 
 
@@ -537,8 +540,10 @@ def compare_answer_reports(
                 f"memory_rss_mb_growth rose {base['memory_rss_mb_growth']:.0f} -> "
                 f"{cur['memory_rss_mb_growth']:.0f} MB across the run (possible leak)"
             )
-    if both("swap_mb_max") and cur["swap_mb_max"] > base["swap_mb_max"] + swap_growth_mb:
-        regressions.append(f"swap_mb_max rose {base['swap_mb_max']:.0f} -> {cur['swap_mb_max']:.0f} MB")
+    if both("swap_mb_growth") and cur["swap_mb_growth"] > base["swap_mb_growth"] + swap_growth_mb:
+        regressions.append(
+            f"swap_mb_growth rose {base['swap_mb_growth']:.0f} -> {cur['swap_mb_growth']:.0f} MB during the run"
+        )
     if both("memory_available_pct_min") and (
         cur["memory_available_pct_min"] < base["memory_available_pct_min"] - available_drop_pct
     ):

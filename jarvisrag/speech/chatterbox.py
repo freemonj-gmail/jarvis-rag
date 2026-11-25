@@ -412,6 +412,15 @@ class ChatterboxTTSClient:
             pass  # executor already shut down
 
     def _speak_async(self, text):
+        # Deferred wording runs here, on the speech thread, not the REPL's.
+        if callable(text):
+            try:
+                text = text()
+            except Exception as error:
+                _notice(f"[tts] could not word the answer for speech: {error}")
+                return
+            if not text:
+                return
         self._ready.wait(_READY_TIMEOUT_SECONDS)
         if self._disabled_for_session or self._start_failed or not self._worker_alive():
             # A worker reaped by the OS while idle means the machine is out of

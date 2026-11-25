@@ -171,14 +171,16 @@ def run_regression_tests(cases, answers) -> None:
     # Memory: sampled before the first turn and after each one. Growth starts at
     # the first post-turn sample, so one-time loading is not counted as a leak.
     rss = iter([500.0, 2000.0, 2010.0, 2400.0])
-    swap = iter([0.0, 0.0, 100.0, 300.0])
+    swap = iter([1300.0, 1300.0, 1400.0, 1600.0])  # 1.3 GB left behind by other apps
     mem_report = evaluate_answers(
         [degree], lambda query: answers[query], repeat=3,
         sample_memory=lambda: {"rss_mb": next(rss), "available_pct": 60.0, "swap_mb": next(swap)},
     )["metrics"]
     assert mem_report["memory_rss_mb_peak"] == 2400.0, mem_report
     assert mem_report["memory_rss_mb_growth"] == 400.0, mem_report
-    assert mem_report["swap_mb_max"] == 300.0 and mem_report["memory_available_pct_min"] == 60.0
+    assert mem_report["swap_mb_max"] == 1600.0 and mem_report["memory_available_pct_min"] == 60.0
+    # Only the swap the run itself adds is counted, not what was there before it.
+    assert mem_report["swap_mb_growth"] == 300.0, mem_report
     def broken_sampler():
         raise OSError("no permission")
     assert evaluate_answers([degree], lambda q: answers[q], sample_memory=broken_sampler)["metrics"][
@@ -230,7 +232,7 @@ def run_regression_tests(cases, answers) -> None:
             "spoken_leak_rate": 0.0, "flaky_case_count": 0, "answer_chars_mean": 400.0,
             "spoken_chars_mean": 380.0, "latency_ms_p50": 20000.0, "latency_ms_p95": 40000.0,
             "latency_ms_max": 50000.0, "memory_rss_mb_peak": 8000.0, "memory_rss_mb_growth": 100.0,
-            "memory_available_pct_min": 60.0, "swap_mb_max": 200.0,
+            "memory_available_pct_min": 60.0, "swap_mb_max": 200.0, "swap_mb_growth": 50.0,
         }
         base.update(metrics)
         return {"case_count": 10, "conversation_turn_count": 0, "repeat": 2, "run_count": 20,
@@ -239,7 +241,7 @@ def run_regression_tests(cases, answers) -> None:
     baseline = report_with()
     assert compare_answer_reports(baseline, report_with()) == ([], [])
     within = report_with(case_pass_rate=0.95, latency_ms_p50=24000.0, answer_chars_mean=480.0,
-                         memory_rss_mb_peak=9000.0, memory_rss_mb_growth=300.0, swap_mb_max=600.0,
+                         memory_rss_mb_peak=9000.0, memory_rss_mb_growth=300.0, swap_mb_growth=500.0,
                          memory_available_pct_min=55.0)
     assert compare_answer_reports(baseline, within)[0] == [], "one flipped run or small drift is noise"
     for worse, metric in (
@@ -254,11 +256,13 @@ def run_regression_tests(cases, answers) -> None:
         (dict(refusal_rate=0.15), "refusal_rate"),
         (dict(memory_rss_mb_peak=10500.0), "memory_rss_mb_peak"),
         (dict(memory_rss_mb_growth=900.0), "memory_rss_mb_growth"),
-        (dict(swap_mb_max=1000.0), "swap_mb_max"),
+        (dict(swap_mb_growth=1000.0), "swap_mb_growth"),
         (dict(memory_available_pct_min=45.0), "memory_available_pct_min"),
     ):
         regressions, _ = compare_answer_reports(baseline, report_with(**worse))
         assert any(metric in r for r in regressions), (metric, regressions)
+    # Swap left over from before the run is not a regression; swap the run adds is.
+    assert compare_answer_reports(baseline, report_with(swap_mb_max=1800.0))[0] == []
     baseline_cases = dict(baseline, cases=[{"id": "a", "pass_rate": 1.0}, {"id": "b", "pass_rate": 1.0}])
     current_cases = dict(report_with(), cases=[{"id": "a", "pass_rate": 0.0}, {"id": "b", "pass_rate": 0.5}])
     regressions, warnings = compare_answer_reports(baseline_cases, current_cases)
@@ -303,6 +307,42 @@ def run_regression_tests(cases, answers) -> None:
     confirmed, warnings = confirm_regressions(cased, run_with(0.0, 1.0, case_pass_rate=0.85), run_with(1.0, 0.5, case_pass_rate=0.85))
     assert confirmed == [] and any("different questions" in w for w in warnings), (confirmed, warnings)
     print("- regression comparator flags worse metrics and tolerates one run of noise")
+
+    # Speech wording: a token counts as read correctly when one of its readings
+    # reaches the voice; an initialism left as written counts as its spoken letters.
+    from jarvisrag.evaluation.speech import SpeechCase, SpokenToken, compare_speech_reports, evaluate_speech
+
+    cases = [SpeechCase("x", "A 2 ct. ring from 1903.", (
+        SpokenToken("ct.", ("carat",)), SpokenToken("1903", ("nineteen oh three",), ("one nine zero three",)),
+    )), SpeechCase("y", "Ask the IRS.", (SpokenToken("IRS", ("i r s",)),))]
+    worded = {"A 2 ct. ring from 1903.": "A two carat ring from one nine zero three.", "Ask the IRS.": "Ask the IRS."}
+    report = evaluate_speech(cases, lambda text: ("\n".join(worded[t] for t in text.split("\n")), 0.5))
+    assert report["metrics"]["natural_rate"] == 2 / 3, report
+    assert report["metrics"]["acceptable_rate"] == 1.0, report
+    slower = dict(report, metrics=dict(report["metrics"], latency_ms_p50=report["metrics"]["latency_ms_p50"] + 5000))
+    worse = dict(report, metrics=dict(report["metrics"], acceptable_rate=0.9))
+    assert compare_speech_reports(report, report) == []
+    assert [p.split()[0] for p in compare_speech_reports(report, worse)] == ["acceptable_rate"]
+    assert [p.split()[0] for p in compare_speech_reports(report, slower)] == ["latency_ms_p50"]
+    # Time is compared only between versions that both have the context step.
+    assert compare_speech_reports(dict(report, context_step=False), slower) == []
+    print("- speech wording scores readings and flags worse metrics")
+
+    # Voice check: word error rate between the words sent and the words heard.
+    from jarvisrag.evaluation.voice import compare_voice_reports, voice_report, word_error_rate
+
+    assert word_error_rate("won in 1903 again", "won in 1903 again") == 0.0
+    assert word_error_rate("won in 1903 again", "won in again") == 0.25  # a dropped word
+    # The same words written in another notation are not an error.
+    assert word_error_rate("henry the 8th married", "henry viii married") == 0.0
+    assert word_error_rate("world war 2 ended", "world war ii ended") == 0.0
+    assert compare_voice_reports(voice_report("chatterbox", [("x", 0.0)]), voice_report("chatterbox", [("x", 0.0), ("y", 0.0)]))[0].startswith("sentence sets differ")
+    base = voice_report("chatterbox", [("x", 0.0), ("y", 0.1)])
+    assert compare_voice_reports(base, voice_report("chatterbox", [("x", 0.05), ("y", 0.1)])) == []
+    drifted = voice_report("chatterbox", [("x", 0.5), ("y", 0.6)])
+    assert [p.split()[0] for p in compare_voice_reports(base, drifted)] == ["mean_wer"]
+    assert compare_voice_reports(base, voice_report("kokoro", [("x", 0.0)]))[0].startswith("engine differs")
+    print("- voice check scores dropped words and flags drift")
 
 
 if __name__ == "__main__":
