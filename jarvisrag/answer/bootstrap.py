@@ -26,7 +26,7 @@ from llama_index.core.settings import Settings
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from llama_index.llms.ollama import Ollama
 
-from jarvisrag.config import debug_print, short_text_qa_template
+from jarvisrag.config import PROJECT_ROOT, STORAGE_DIR, debug_print, short_text_qa_template
 from jarvisrag.embeddings import bound_mps_embedding_shapes
 from jarvisrag.speech import TTSManager, _SilentTTS
 from jarvisrag.speech.chatterbox import ChatterboxTTSClient, _CLIENT_LOG
@@ -45,13 +45,12 @@ from jarvisrag.retrieval import build_hybrid_retriever
 from jarvisrag.iotools import Spinner, _is_port_open
 from jarvisrag.mcp.connector import load_mcp_registry
 from jarvisrag.docsync import load_document_sources
-from jarvisrag.answer.answer import QueryRuntime
+from jarvisrag.answer.runtime import QueryRuntime
 
 
-PERSIST_DIR = os.path.abspath(os.path.expanduser(os.environ.get(
-    "JARVIS_PERSIST_DIR",
-    os.path.join(os.path.dirname(__file__), "jarvis_storage"),
-)))
+# Read here, not in config: evaluation scripts set JARVIS_PERSIST_DIR just
+# before importing this module.
+PERSIST_DIR = os.path.abspath(os.path.expanduser(os.environ.get("JARVIS_PERSIST_DIR", STORAGE_DIR)))
 EXTRACTION_CACHE_DIR = os.path.join(PERSIST_DIR, "extraction_cache")
 
 # Measured on the retrieval evaluation set: widening past this added candidate
@@ -441,11 +440,7 @@ def _build_chatterbox_tts():
         )
         return TTSManager()
 
-    worker = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-        "scripts",
-        "chatterbox_tts_worker.py",
-    )
+    worker = os.path.join(PROJECT_ROOT, "scripts", "chatterbox_tts_worker.py")
 
     def _optional_float(name):
         raw = os.environ.get(name, "").strip()

@@ -18,7 +18,8 @@ from jarvisrag.evaluation import (
     evaluate_retrieval,
     load_retrieval_cases,
 )
-from scripts.evaluate_retrieval import _mode_retrievers, _parse_modes, _private_runtime_output
+from jarvisrag.evaluation.privacy import private_runtime_output
+from scripts.evaluate_retrieval import _mode_retrievers, _parse_modes
 
 
 def run_tests() -> None:
@@ -174,7 +175,7 @@ def run_tests() -> None:
     hidden_stdout = io.StringIO()
     hidden_stderr = io.StringIO()
     with redirect_stdout(hidden_stdout), redirect_stderr(hidden_stderr):
-        with _private_runtime_output(False):
+        with private_runtime_output(False):
             print("private extracted text")
             print("private warning", file=sys.stderr)
             logging.getLogger("jarvis-test").warning("private log")

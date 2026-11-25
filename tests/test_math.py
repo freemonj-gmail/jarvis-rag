@@ -9,7 +9,8 @@ ROOT = os.path.dirname(os.path.dirname(__file__))
 sys.path.insert(0, ROOT)
 
 from jarvisrag.answer.math import MathQueryRouter, suggest_math_correction
-from jarvisrag.answer.answer import QueryRuntime, handle_query
+from jarvisrag.answer.pipeline import handle_query
+from jarvisrag.answer.runtime import QueryRuntime
 from jarvisrag.speech import _spoken_response_text
 
 

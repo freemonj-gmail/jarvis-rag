@@ -1028,7 +1028,7 @@ class MailCitationTests(unittest.TestCase):
         return TextNode(text="body", metadata=metadata)
 
     def test_email_evidence_cites_subject_sender_and_date(self):
-        from jarvisrag.answer.answer import _domain_reference_lines
+        from jarvisrag.answer.pipeline import _domain_reference_lines
 
         node = self._node(
             file_name="3f8a1c9e2b7d4a6f8c0e1d2b3a4c5d6e7f8a9b0c.emlx",
@@ -1047,7 +1047,7 @@ class MailCitationTests(unittest.TestCase):
         self.assertIn("3f8a1c9e2b7d4a6f8c0e1d2b3a4c5d6e7f8a9b0c.emlx", superseded)
 
     def test_non_email_domain_evidence_keeps_its_file_label(self):
-        from jarvisrag.answer.answer import _domain_reference_lines
+        from jarvisrag.answer.pipeline import _domain_reference_lines
 
         node = self._node(file_name="OPM_C050.pdf")
         lines = ["- OPM_C050.pdf, page 40: components of the basic annuity"]
@@ -1056,7 +1056,7 @@ class MailCitationTests(unittest.TestCase):
         )
 
     def test_a_message_without_a_subject_is_still_never_cited_by_filename(self):
-        from jarvisrag.answer.answer import _domain_reference_lines
+        from jarvisrag.answer.pipeline import _domain_reference_lines
 
         node = self._node(file_name="abc123.emlx", email_subject="", email_from="a@example.com")
         references, superseded = _domain_reference_lines(["- abc123.emlx: body"], [node])
@@ -1064,7 +1064,7 @@ class MailCitationTests(unittest.TestCase):
         self.assertIn("abc123.emlx", superseded)
 
     def test_only_delivered_evidence_is_cited(self):
-        from jarvisrag.answer import answer as answer_module
+        from jarvisrag.answer import pipeline as answer_module
 
         # The domain cap now follows JARVIS_MAX_EVIDENCE_LINES (default 30) so it
         # never sits tighter than the retriever's own output. Pin a small cap here
@@ -1084,7 +1084,7 @@ class MailCitationTests(unittest.TestCase):
         self.assertNotIn(f'Email: "Subject {cap}"', references)
 
     def test_every_routed_domain_is_represented_under_the_shared_cap(self):
-        from jarvisrag.answer import answer as answer_module
+        from jarvisrag.answer import pipeline as answer_module
 
         cap = 6
         first = [f"- a{i}.pdf: alpha {i}" for i in range(20)]
@@ -1106,7 +1106,7 @@ class MailCitationTests(unittest.TestCase):
         self.assertEqual(single, first[:cap], "a single domain keeps its own order")
 
     def test_a_failing_domain_does_not_block_the_others(self):
-        from jarvisrag.answer import answer as answer_module
+        from jarvisrag.answer import pipeline as answer_module
 
         good = [f"- g{i}.pdf: good {i}" for i in range(3)]
 
@@ -1121,7 +1121,7 @@ class MailCitationTests(unittest.TestCase):
         self.assertEqual(delivered, good)
 
     def test_references_survive_when_the_model_cites_nothing_in_prose(self):
-        from jarvisrag.answer.answer import _format_response_for_display
+        from jarvisrag.answer.pipeline import _format_response_for_display
 
         rendered = _format_response_for_display(
             "The budget was approved.", None, ['Email: "Quarterly budget review"']
@@ -1130,7 +1130,7 @@ class MailCitationTests(unittest.TestCase):
         self.assertIn('Email: "Quarterly budget review"', rendered)
 
     def test_domain_lookup_failure_yields_no_evidence_and_no_references(self):
-        from jarvisrag.answer.answer import _retrieve_domain_evidence
+        from jarvisrag.answer.pipeline import _retrieve_domain_evidence
 
         self.assertEqual(_retrieve_domain_evidence("question", None), ([], [], set()))
 
@@ -1138,7 +1138,7 @@ class MailCitationTests(unittest.TestCase):
         """A sha1(Message-ID).emlx name must not survive into the spoken or the
         printed answer, and must not reappear as its own References entry once a
         Subject/From/Date reference has replaced it."""
-        from jarvisrag.answer.answer import _format_response_for_display
+        from jarvisrag.answer.pipeline import _format_response_for_display
         from jarvisrag.speech import _strip_inline_citations, _strip_source_filenames_for_speech
 
         name = "3f8a1c9e2b7d4a6f8c0e1d2b3a4c5d6e7f8a9b0c.emlx"
@@ -1266,7 +1266,7 @@ class AnswerBudgetTests(unittest.TestCase):
     """
 
     def _run_with_empty_synthesis(self, budget):
-        from jarvisrag.answer import answer as answer_module
+        from jarvisrag.answer import pipeline as answer_module
 
         evidence = ["- doc.pdf: The 2026 elective deferral limit is $24,500."]
         distill_calls = {"n": 0}
@@ -1313,7 +1313,7 @@ class RunawayGenerationTests(unittest.TestCase):
             return resp
 
     def test_capped_synthesis_is_discarded(self):
-        from jarvisrag.answer.answer import _ANSWER_MAX_TOKENS, _synthesize_evidence_answer
+        from jarvisrag.answer.pipeline import _ANSWER_MAX_TOKENS, _synthesize_evidence_answer
         evidence = ["- doc.pdf: The limit is $1,000."]
         runaway = self._CapLLM("length")
         self.assertEqual(_synthesize_evidence_answer("What is the limit?", evidence, runaway), "")
@@ -1323,7 +1323,7 @@ class RunawayGenerationTests(unittest.TestCase):
         self.assertTrue(_synthesize_evidence_answer("What is the limit?", evidence, finished))
 
     def test_runaway_refinement_keeps_the_earlier_draft(self):
-        from jarvisrag.answer import answer as answer_module
+        from jarvisrag.answer import pipeline as answer_module
         draft = "The limit is $1,000."
         reviewer = lambda *_a, **_k: (False, "the answer is too generic")
         with patch.object(answer_module, "_synthesize_evidence_answer", side_effect=[draft, ""]), \
@@ -1347,7 +1347,7 @@ class ReviewerCorroborationTests(unittest.TestCase):
     ]
 
     def _run(self, answer_text):
-        from jarvisrag.answer import answer as answer_module
+        from jarvisrag.answer import pipeline as answer_module
 
         reviewer = lambda *_a, **_k: (False, "these values are not present in the evidence")
         with patch.object(answer_module, "_synthesize_evidence_answer", return_value=answer_text), \
@@ -1371,7 +1371,7 @@ class ReviewerCorroborationTests(unittest.TestCase):
         self.assertTrue(ok)
 
     def test_value_extraction_normalizes_formatting(self):
-        from jarvisrag.answer.answer import _unsupported_answer_values
+        from jarvisrag.answer.pipeline import _unsupported_answer_values
 
         self.assertEqual(_unsupported_answer_values("Limits: $7,500, $24,500.", self.EVIDENCE), set())
         self.assertEqual(_unsupported_answer_values("A rise of 12% to $1,234.50.", self.EVIDENCE), {"12", "1234.5"})
@@ -1383,7 +1383,7 @@ class ReviewerCorroborationTests(unittest.TestCase):
         self.assertEqual(_unsupported_answer_values("It cost $1,000, then $24,500.", ["$1,000 and $24,500"]), set())
 
     def test_passed_answer_with_an_invented_value_is_sent_back(self):
-        from jarvisrag.answer import answer as answer_module
+        from jarvisrag.answer import pipeline as answer_module
 
         drafts = iter(["The cumulative GPA is 2.731.", "The cumulative GPA is 2.54."])
         feedback = []
@@ -1401,8 +1401,37 @@ class ReviewerCorroborationTests(unittest.TestCase):
         self.assertTrue(ok)
         self.assertIn("2.731", feedback[1])
 
+    def _failed_review_run(self, draft, distilled):
+        from jarvisrag.answer import pipeline as answer_module
+
+        # Review fails for a reason that is not about invented content, so the
+        # loop falls back to distillation and then to the draft itself.
+        with patch.object(answer_module, "_synthesize_evidence_answer", return_value=draft), \
+                patch.object(answer_module, "_review_answer_against_evidence", return_value=(False, "does not answer the question")), \
+                patch.object(answer_module, "_distill_answer_from_evidence", return_value=distilled), \
+                patch.object(answer_module, "_forced_extractive_summary_from_evidence", return_value="EXTRACTIVE"):
+            return answer_module._answer_with_review_loop(
+                "What cumulative averages appear?", ["- transcript.pdf: Cumulative 2.731"], object()
+            )
+
+    def test_distilled_answer_with_an_invented_value_is_not_returned(self):
+        answer, _, _ = self._failed_review_run("Cumulative 2.731.", "The cumulative average is 2.54.")
+        # The invented distillation is dropped; the grounded draft is surfaced instead.
+        self.assertTrue(answer.startswith("Cumulative 2.731."))
+        self.assertNotIn("2.54", answer)
+
+    def test_unverified_draft_with_an_invented_value_is_not_surfaced(self):
+        answer, ok, _ = self._failed_review_run("The cumulative average is 2.54.", "")
+        self.assertEqual(answer, "EXTRACTIVE")
+        self.assertTrue(ok)
+
+    def test_grounded_distillation_is_still_used(self):
+        answer, _, reason = self._failed_review_run("Cumulative 2.731.", "The cumulative average is 2.731.")
+        self.assertEqual(answer, "The cumulative average is 2.731.")
+        self.assertIn("distilled", reason)
+
     def test_values_from_the_question_are_not_invented(self):
-        from jarvisrag.answer import answer as answer_module
+        from jarvisrag.answer import pipeline as answer_module
 
         with patch.object(answer_module, "_synthesize_evidence_answer", return_value="The evidence has no 2031 figure."), \
                 patch.object(answer_module, "_review_answer_against_evidence", return_value=(True, "ok")):
@@ -1413,7 +1442,7 @@ class ReviewerCorroborationTests(unittest.TestCase):
         self.assertTrue(ok)
 
     def test_source_references_are_not_claims(self):
-        from jarvisrag.answer.answer import _unsupported_answer_values
+        from jarvisrag.answer.pipeline import _unsupported_answer_values
 
         # Page numbers and file names cite a source; they are not stated values.
         cited = "The IRA limit is $7,500 (Notice_2026-66.pdf, page 05); see also page 12 and pp. 3-4."
@@ -1437,7 +1466,7 @@ class ValueQuestionSynthesisTests(unittest.TestCase):
     ]
 
     def test_value_question_goes_to_the_review_loop(self):
-        import jarvisrag.answer.answer as ans
+        import jarvisrag.answer.pipeline as ans
         runtime = ans.QueryRuntime(all_docs=[], llm=Mock(), doc_retriever=object(), domain_retrievers=[])
         loop = Mock(return_value=("SYNTHESIZED ANSWER", True, "ok"))
         with patch.object(
@@ -1583,7 +1612,7 @@ class EvidenceBudgetTests(unittest.TestCase):
         return [f"- {tag}{i}.pdf: {tag} evidence {i}" for i in range(n)]
 
     def test_domain_is_never_truncated_even_when_ranked_deep(self):
-        from jarvisrag.answer.answer import _budget_combined_evidence
+        from jarvisrag.answer.pipeline import _budget_combined_evidence
 
         mcp = self._lines("mcp", 1)
         domain = self._lines("dom", 30)  # answer sits at domain position 21 (index 20)
@@ -1595,7 +1624,7 @@ class EvidenceBudgetTests(unittest.TestCase):
         self.assertLessEqual(len(out), 40)
 
     def test_main_is_reserved_when_a_domain_routed(self):
-        from jarvisrag.answer.answer import _budget_combined_evidence
+        from jarvisrag.answer.pipeline import _budget_combined_evidence
 
         out = _budget_combined_evidence(self._lines("mcp", 1), self._lines("dom", 30),
                                         self._lines("main", 30), budget=40, main_reserve=6)
@@ -1603,7 +1632,7 @@ class EvidenceBudgetTests(unittest.TestCase):
         self.assertEqual(len(main_kept), 6)  # main capped to the reserve, not flooding
 
     def test_authoritative_over_budget_is_kept_and_main_dropped(self):
-        from jarvisrag.answer.answer import _budget_combined_evidence
+        from jarvisrag.answer.pipeline import _budget_combined_evidence
 
         # MCP(12) + domain(30) = 42 authoritative lines > budget 40
         out = _budget_combined_evidence(self._lines("mcp", 12), self._lines("dom", 30),
@@ -1612,7 +1641,7 @@ class EvidenceBudgetTests(unittest.TestCase):
         self.assertFalse([l for l in out if l.startswith("- main")])  # main dropped to fit
 
     def test_no_domain_leaves_main_untouched(self):
-        from jarvisrag.answer.answer import _budget_combined_evidence
+        from jarvisrag.answer.pipeline import _budget_combined_evidence
 
         out = _budget_combined_evidence([], [], self._lines("main", 30), budget=40, main_reserve=6)
         self.assertEqual(len(out), 30)  # single-corpus path unchanged, no reserve applied
@@ -1627,7 +1656,7 @@ class PeriodClarificationTests(unittest.TestCase):
         return [f"- src{y}.pdf: the limit for {y} is a value" for y in years]
 
     def test_asks_year_when_quantity_query_lacks_year_and_evidence_spans_years(self):
-        from jarvisrag.answer.answer import _period_clarification_from_evidence
+        from jarvisrag.answer.pipeline import _period_clarification_from_evidence
 
         q = _period_clarification_from_evidence(
             "what is the contribution limit for people over 50", self._ev(2024, 2025, 2026)
@@ -1637,7 +1666,7 @@ class PeriodClarificationTests(unittest.TestCase):
         self.assertIn("2024", q)
 
     def test_silent_when_query_already_names_a_year(self):
-        from jarvisrag.answer.answer import _period_clarification_from_evidence
+        from jarvisrag.answer.pipeline import _period_clarification_from_evidence
 
         self.assertEqual(
             _period_clarification_from_evidence(
@@ -1647,14 +1676,14 @@ class PeriodClarificationTests(unittest.TestCase):
         )
 
     def test_silent_when_evidence_spans_one_year(self):
-        from jarvisrag.answer.answer import _period_clarification_from_evidence
+        from jarvisrag.answer.pipeline import _period_clarification_from_evidence
 
         self.assertEqual(
             _period_clarification_from_evidence("what is the limit", self._ev(2026)), ""
         )
 
     def test_silent_for_non_quantity_question(self):
-        from jarvisrag.answer.answer import _period_clarification_from_evidence
+        from jarvisrag.answer.pipeline import _period_clarification_from_evidence
 
         self.assertEqual(
             _period_clarification_from_evidence(
@@ -1664,7 +1693,7 @@ class PeriodClarificationTests(unittest.TestCase):
         )
 
     def test_currency_symbol_counts_as_quantity_intent(self):
-        from jarvisrag.answer.answer import _period_clarification_from_evidence
+        from jarvisrag.answer.pipeline import _period_clarification_from_evidence
 
         q = _period_clarification_from_evidence(
             "is the $8,000 the same for everyone", self._ev(2025, 2026)
@@ -1681,14 +1710,14 @@ class FallbackConcisionTests(unittest.TestCase):
         return [f"- Doc{i}.pdf: " + ("word " * 800) for i in range(n)]
 
     def test_forced_summary_is_capped_in_items_and_length(self):
-        from jarvisrag.answer.answer import _forced_extractive_summary_from_evidence
+        from jarvisrag.answer.pipeline import _forced_extractive_summary_from_evidence
 
         out = _forced_extractive_summary_from_evidence("what is the limit", self._long_lines(10))
         self.assertLessEqual(out.count("\n- "), 3)          # at most 3 snippet bullets
         self.assertLess(len(out), 2000)                     # nowhere near the old ~8KB dump
 
     def test_summary_respects_env_budget(self):
-        from jarvisrag.answer.answer import _forced_extractive_summary_from_evidence
+        from jarvisrag.answer.pipeline import _forced_extractive_summary_from_evidence
         import os
 
         os.environ["JARVIS_FALLBACK_SUMMARY_ITEMS"] = "2"
@@ -1776,7 +1805,7 @@ class SynthesisBoundedOutputTests(unittest.TestCase):
             return resp
 
     def _run(self):
-        from jarvisrag.answer.answer import _synthesize_evidence_answer
+        from jarvisrag.answer.pipeline import _synthesize_evidence_answer
         llm = self._CapturingLLM()
         out = _synthesize_evidence_answer(
             "What is the RMA number?",
@@ -1791,7 +1820,7 @@ class SynthesisBoundedOutputTests(unittest.TestCase):
         self.assertIn("ANSWER SHAPE", prompt)
 
     def test_status_fidelity_rule_applies_to_any_question(self):
-        from jarvisrag.answer.answer import _STATUS_FIDELITY_RULE
+        from jarvisrag.answer.pipeline import _STATUS_FIDELITY_RULE
         _out, prompt = self._run()
         self.assertIn(_STATUS_FIDELITY_RULE.strip(), prompt)
 
@@ -1811,7 +1840,7 @@ class RoutingTermTests(unittest.TestCase):
             self.assertTrue(routing_term_matches(term, text), (term, text))
 
     def test_connector_and_domain_routing_share_the_rule(self):
-        from jarvisrag.answer.answer import _domains_for_turn
+        from jarvisrag.answer.pipeline import _domains_for_turn
         from jarvisrag.mcp.connector import MCPConnector
         connector = MCPConnector(name="tax", enabled=True, transport="http", url="", match_any=["irs", "tax"])
         self.assertFalse(connector.matches("Who was the first person to walk on Mars?"))
@@ -1834,18 +1863,18 @@ class DomainCascadeTests(unittest.TestCase):
         return [{"name": "mail", "retriever": object(), "match_any": ["email"]}]
 
     def test_no_unconsulted_domains_returns_none(self):
-        from jarvisrag.answer.answer import _cascade_domain_answer
+        from jarvisrag.answer.pipeline import _cascade_domain_answer
         self.assertIsNone(_cascade_domain_answer("q", [], [], llm=Mock()))
 
     def test_no_domain_evidence_returns_none(self):
-        import jarvisrag.answer.answer as ans
+        import jarvisrag.answer.pipeline as ans
         with patch.object(ans, "_retrieve_domain_evidence", return_value=([], [], set())):
             self.assertIsNone(
                 ans._cascade_domain_answer("q", self._domains(), [], llm=Mock())
             )
 
     def test_supported_answer_is_adopted(self):
-        import jarvisrag.answer.answer as ans
+        import jarvisrag.answer.pipeline as ans
         with patch.object(
             ans,
             "_retrieve_domain_evidence",
@@ -1861,7 +1890,7 @@ class DomainCascadeTests(unittest.TestCase):
         self.assertTrue(out["evidence_lines"])
 
     def test_dismissive_resynthesis_returns_none(self):
-        import jarvisrag.answer.answer as ans
+        import jarvisrag.answer.pipeline as ans
         with patch.object(
             ans,
             "_retrieve_domain_evidence",
@@ -1876,7 +1905,7 @@ class DomainCascadeTests(unittest.TestCase):
             )
 
     def test_failed_review_returns_none(self):
-        import jarvisrag.answer.answer as ans
+        import jarvisrag.answer.pipeline as ans
         with patch.object(
             ans,
             "_retrieve_domain_evidence",
@@ -1901,7 +1930,7 @@ class DomainCascadeTests(unittest.TestCase):
     def test_each_domain_is_retrieved_in_isolation(self):
         # Pooled retrieval let one corpus fill the shared cap and starve the
         # next; every retrieval call must carry exactly one domain.
-        import jarvisrag.answer.answer as ans
+        import jarvisrag.answer.pipeline as ans
         calls = []
 
         def record(query, domains):
@@ -1915,7 +1944,7 @@ class DomainCascadeTests(unittest.TestCase):
         self.assertEqual(sorted(calls), [["mail"], ["reference"]])
 
     def test_falls_through_to_domain_that_answers(self):
-        import jarvisrag.answer.answer as ans
+        import jarvisrag.answer.pipeline as ans
 
         def answer(query, evidence, llm):
             if any("mail" in line for line in evidence):
@@ -1934,7 +1963,7 @@ class DomainCascadeTests(unittest.TestCase):
         self.assertFalse(any("reference" in line for line in out["evidence_lines"]))
 
     def test_most_relevant_domain_is_tried_first(self):
-        import jarvisrag.answer.answer as ans
+        import jarvisrag.answer.pipeline as ans
         order = []
 
         def record(query, domains):
@@ -1953,7 +1982,7 @@ class DomainCascadeTests(unittest.TestCase):
     def test_attachment_passages_join_evidence_before_one_synthesis(self):
         # Attachments are read BEFORE synthesis, not by a retry keyed on the
         # answer's hedge wording (which missed "is not provided").
-        import jarvisrag.answer.answer as ans
+        import jarvisrag.answer.pipeline as ans
         seen = []
 
         def synth(query, evidence, llm):
@@ -1972,7 +2001,7 @@ class DomainCascadeTests(unittest.TestCase):
         self.assertEqual(out["response_text"], "The tracking code is ZX-1.")
 
     def test_complete_answer_from_later_domain_beats_earlier_partial(self):
-        import jarvisrag.answer.answer as ans
+        import jarvisrag.answer.pipeline as ans
         order = []
 
         def answer(query, evidence, llm):
@@ -1995,7 +2024,7 @@ class DomainCascadeTests(unittest.TestCase):
         self.assertEqual(out["completeness"], ans.ANSWER_COMPLETE)
 
     def test_first_partial_is_kept_when_no_domain_answers_fully(self):
-        import jarvisrag.answer.answer as ans
+        import jarvisrag.answer.pipeline as ans
         with patch.object(
             ans, "_retrieve_domain_evidence", side_effect=self._per_domain_evidence
         ), patch.object(
@@ -2010,7 +2039,7 @@ class DomainCascadeTests(unittest.TestCase):
     def test_long_non_answer_is_not_adopted_whatever_its_wording(self):
         # Longer than the dismissive-length guard and free of hedge markers, so
         # only the meaning-based verdict can reject it.
-        import jarvisrag.answer.answer as ans
+        import jarvisrag.answer.pipeline as ans
         non_answer = (
             "These records cover retirement plan contribution limits, survivor annuities and "
             "earnings tests for several years; a lamp return and its tracking number are "
@@ -2047,16 +2076,16 @@ class AnswerCompletenessTests(unittest.TestCase):
     _PARAPHRASED = "Your blender order number is BX-1042. The delivery date isn't listed in these records."
 
     def _verdict(self, reply, answer=_PARAPHRASED, error=None):
-        from jarvisrag.answer.answer import _answer_completeness
+        from jarvisrag.answer.pipeline import _answer_completeness
         llm = self._VerdictLLM(reply, error)
         return _answer_completeness("What is the order number and delivery date?", answer, llm), llm
 
     def test_unanswered_is_not_mistaken_for_answered(self):
-        from jarvisrag.answer.answer import ANSWER_UNANSWERED
+        from jarvisrag.answer.pipeline import ANSWER_UNANSWERED
         self.assertEqual(self._verdict("UNANSWERED")[0], ANSWER_UNANSWERED)
 
     def test_partial_and_answered_verdicts(self):
-        from jarvisrag.answer.answer import ANSWER_COMPLETE, ANSWER_PARTIAL
+        from jarvisrag.answer.pipeline import ANSWER_COMPLETE, ANSWER_PARTIAL
         self.assertEqual(self._verdict("PARTIAL")[0], ANSWER_PARTIAL)
         self.assertEqual(self._verdict(" answered.\n")[0], ANSWER_COMPLETE)
 
@@ -2066,14 +2095,14 @@ class AnswerCompletenessTests(unittest.TestCase):
         self.assertIn(self._PARAPHRASED, llm.prompts[0])
 
     def test_empty_or_dismissive_answer_needs_no_model_call(self):
-        from jarvisrag.answer.answer import ANSWER_UNANSWERED
+        from jarvisrag.answer.pipeline import ANSWER_UNANSWERED
         for answer in ("", "I could not find that."):
             verdict, llm = self._verdict("ANSWERED", answer=answer)
             self.assertEqual(verdict, ANSWER_UNANSWERED)
             self.assertEqual(llm.prompts, [])
 
     def test_unavailable_model_falls_back_to_phrase_markers(self):
-        from jarvisrag.answer.answer import ANSWER_COMPLETE, ANSWER_PARTIAL
+        from jarvisrag.answer.pipeline import ANSWER_COMPLETE, ANSWER_PARTIAL
         hedged = "The order number is BX-1042, but the evidence does not state a delivery date."
         self.assertEqual(self._verdict(None, answer=hedged, error=RuntimeError("down"))[0], ANSWER_PARTIAL)
         self.assertEqual(self._verdict("maybe", answer="The order number is BX-1042.")[0], ANSWER_COMPLETE)
@@ -2096,7 +2125,7 @@ class CascadeTriggerTests(unittest.TestCase):
     )
 
     def _run(self, completeness, cascade_result=None):
-        import jarvisrag.answer.answer as ans
+        import jarvisrag.answer.pipeline as ans
         runtime = ans.QueryRuntime(
             all_docs=[],
             llm=Mock(),
@@ -2118,7 +2147,7 @@ class CascadeTriggerTests(unittest.TestCase):
         return turn, cascade, judge
 
     def test_paraphrased_partial_answer_cascades_and_adopts(self):
-        import jarvisrag.answer.answer as ans
+        import jarvisrag.answer.pipeline as ans
         adopted = {
             "response_text": "The return tracking number is ZX-1.",
             "review_reason": "ok",
@@ -2135,14 +2164,14 @@ class CascadeTriggerTests(unittest.TestCase):
         self.assertEqual(judge.call_count, 1)  # cascade's verdict is reused, not recomputed
 
     def test_complete_answer_never_cascades(self):
-        import jarvisrag.answer.answer as ans
+        import jarvisrag.answer.pipeline as ans
         turn, cascade, judge = self._run(ans.ANSWER_COMPLETE)
         cascade.assert_not_called()
         self.assertEqual(turn["response_text"], self._PRIMARY)
         self.assertEqual(judge.call_count, 1)
 
     def test_partial_answer_is_kept_when_cascade_finds_nothing(self):
-        import jarvisrag.answer.answer as ans
+        import jarvisrag.answer.pipeline as ans
         turn, cascade, judge = self._run(ans.ANSWER_PARTIAL, None)
         cascade.assert_called_once()
         self.assertEqual(turn["response_text"], self._PRIMARY)
@@ -2190,6 +2219,15 @@ class SpeechContextTests(unittest.TestCase):
         # The reply miscounts: "carat" is keyed to the number's marker.
         llm = self._FakeLLM('{"1|ct.": "carat", "2|1903": "nineteen oh three"}')
         self.assertEqual(_resolve_spoken_tokens("A 2 ct. stone.", llm), "A 2 ct. stone.")
+
+    def test_message_ids_cited_from_source_labels_are_not_spoken(self):
+        from jarvisrag.speech import _spoken_response_text
+
+        labels = ["7c41d0e9b2fa4e6d8a13c5f0.emlx", "e5a2b9c07d3f61a84b2e9d17.emlx"]
+        spoken = _spoken_response_text(
+            "The insurer sent a renewal notice (7c41d0e9b2fa4e6d8a13c5f0, e5a2b9c07d3f61a84b2e9d17) in (2026).", labels
+        )
+        self.assertEqual(spoken, "The insurer sent a renewal notice in (2026).")
 
     def test_readings_survive_a_malformed_reply(self):
         from jarvisrag.speech import _resolve_spoken_tokens
@@ -2242,7 +2280,7 @@ class SpeechContextTests(unittest.TestCase):
         self.assertGreater(llm.copies[0].additional_kwargs["num_predict"], 0)
 
     def test_answer_is_worded_on_the_speech_thread_only_when_spoken(self):
-        import jarvisrag.answer.answer as ans
+        import jarvisrag.answer.pipeline as ans
 
         tts = Mock()
         with patch.object(ans, "_resolve_spoken_tokens", return_value="worded") as resolve:
@@ -2264,7 +2302,7 @@ class EvidenceTopicTests(unittest.TestCase):
     ]
 
     def _run(self, review, on_topic, completeness=None):
-        import jarvisrag.answer.answer as ans
+        import jarvisrag.answer.pipeline as ans
         runtime = ans.QueryRuntime(all_docs=[], llm=Mock(), doc_retriever=object())
         topic = Mock(return_value=on_topic)
         with patch.object(
@@ -2295,14 +2333,14 @@ class EvidenceTopicTests(unittest.TestCase):
         self.assertIn("policy.pdf", turn["response_text"])
 
     def test_passed_non_answer_over_unrelated_evidence_is_replaced(self):
-        import jarvisrag.answer.answer as ans
+        import jarvisrag.answer.pipeline as ans
         non_answer = "The provided evidence describes insurance endorsements and a resume, not Nobel laureates."
         turn, topic, _, _ = self._run((non_answer, True, "ok"), False, ans.ANSWER_UNANSWERED)
         self.assertEqual(turn["response_text"], "GENERAL: Marie Curie, 1903.")
         topic.assert_called_once()
 
     def test_answered_question_skips_the_check(self):
-        import jarvisrag.answer.answer as ans
+        import jarvisrag.answer.pipeline as ans
         turn, topic, _, _ = self._run(("Marie Curie (resume.docx).", True, "ok"), False, ans.ANSWER_COMPLETE)
         self.assertEqual(turn["response_text"], "Marie Curie (resume.docx).")
         topic.assert_not_called()
@@ -2385,7 +2423,7 @@ class EmailAttachmentPointerTests(unittest.TestCase):
             self.assertEqual(handle.read(), "Embedded memo text.")
 
     def test_attachment_text_is_dereferenced_on_demand_and_cites_its_email(self):
-        import jarvisrag.answer.answer as ans
+        import jarvisrag.answer.pipeline as ans
         import jarvisrag.answer.bootstrap as boot
 
         cache = os.path.join(self.work.name, "cache")
@@ -2398,13 +2436,13 @@ class EmailAttachmentPointerTests(unittest.TestCase):
         self.assertTrue(os.listdir(cache))  # extraction went to the on-disk cache, not the index
 
     def test_emails_outside_the_domain_corpus_are_ignored(self):
-        import jarvisrag.answer.answer as ans
+        import jarvisrag.answer.pipeline as ans
 
         other = {"name": "mail", "corpus_dir": os.path.join(self.work.name, "elsewhere")}
         self.assertEqual(ans._evidence_email_paths([f"- {self.stem}.emlx: text"], [other]), [])
 
     def test_identical_attachment_on_two_emails_is_read_once(self):
-        import jarvisrag.answer.answer as ans
+        import jarvisrag.answer.pipeline as ans
         import jarvisrag.answer.bootstrap as boot
 
         twin_stem = "f" * 24
@@ -2420,7 +2458,7 @@ class EmailAttachmentPointerTests(unittest.TestCase):
         self.assertTrue(tracking[0].startswith(f"- {self.stem}.emlx: "))  # kept from the higher-ranked email
 
     def test_unrelated_attachment_is_not_added_to_evidence(self):
-        import jarvisrag.answer.answer as ans
+        import jarvisrag.answer.pipeline as ans
         import jarvisrag.answer.bootstrap as boot
 
         domain = {"name": "mail", "corpus_dir": os.path.abspath(self.corpus)}

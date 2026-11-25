@@ -29,7 +29,7 @@ os.environ.setdefault("JARVIS_ENABLE_TTS", "0")
 from pydantic import BaseModel, Field
 
 from scripts.bench_mail_embedding import load_sample
-from scripts.evaluate_retrieval import _private_runtime_output
+from jarvisrag.evaluation.privacy import private_runtime_output
 
 _EXCERPT_CHARS = 2000
 _QUOTE_CHARS = 320
@@ -100,7 +100,7 @@ def _find_quote(text: str, locator: str) -> str:
 
 
 def _validated_case(draft: DraftQuestion, sources, case_id: str, style: str):
-    from jarvisrag.evaluation.answers import AnswerCase
+    from jarvisrag.evaluation.answer_quality import AnswerCase
 
     if "email" not in draft.query.lower():
         raise ValueError("question does not route to mail")
@@ -140,12 +140,12 @@ def main(argv=None) -> int:
     parser.add_argument("--draft-timeout", type=float, default=90.0)
     args = parser.parse_args(argv)
 
-    from jarvisrag.answer.answer import _llm_output_budget
+    from jarvisrag.answer.pipeline import _llm_output_budget
     from jarvisrag.answer.bootstrap import EXTRACTION_CACHE_DIR, _build_llm
     from jarvisrag.iotools import time_limit
 
     print(f"Reading {args.sample} staged messages from the local cache...", flush=True)
-    with _private_runtime_output(False):
+    with private_runtime_output(False):
         documents, corpus_count = load_sample(
             args.corpus_dir.resolve(), Path(EXTRACTION_CACHE_DIR), args.sample, args.seed,
         )
@@ -181,7 +181,7 @@ def main(argv=None) -> int:
         started, verified = time.perf_counter(), False
         for attempt in range(args.attempts):
             try:
-                with _private_runtime_output(False), _llm_output_budget(llm, 700), \
+                with private_runtime_output(False), _llm_output_budget(llm, 700), \
                         time_limit(args.draft_timeout, "case draft"):
                     reply = llm.complete(
                         _INSTRUCTIONS.format(style=_STYLES[style], sources=payload)

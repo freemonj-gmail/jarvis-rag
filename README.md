@@ -360,7 +360,7 @@ make answer-eval ARGS='"/path/to/corpus" "jarvis_storage/evaluation/answer_cases
 
 # Regression gate: run the same cases before and after a change and compare. The
 # report also measures hallucinated figures (values absent from the answer's own
-# evidence), time to answer, answer and spoken length, follow-up handling in
+# evidence), startup time, time to answer, answer and spoken length, follow-up handling in
 # multi-turn "conversations" from the case file, and memory (process peak and
 # growth across the run, lowest free system memory, swap added during the run). --baseline exits 1 when
 # any metric is worse than the saved report and stays worse in an automatic second
@@ -403,7 +403,7 @@ development, not day-to-day use.
 | --- | --- | --- |
 | `JARVIS_VECTOR_BACKEND` | `milvus` | The single, extensible vector-store selector: `milvus`, `local`, or `memory` |
 | `JARVIS_REQUIRE_MILVUS` | `1` | When the backend is `milvus`, require it — error if unreachable rather than silently using a local store. Set `0` to allow local fallback |
-| `JARVIS_PERSIST_DIR` | packaged runtime storage | Location of local index metadata + extraction cache; point at an ignored directory to isolate evaluations |
+| `JARVIS_PERSIST_DIR` | `jarvis_storage/` (repository root) | Location of local index metadata + extraction cache; point at an ignored directory to isolate evaluations |
 | `JARVIS_REBUILD_INDEX` | `0` | Force a full re-embed of the corpus |
 | `JARVIS_SYNC_EXISTING_INDEX` | `0` | Reconcile the persistent index against the current corpus on load |
 | `JARVIS_DISABLE_EXTRACTION_CACHE` | `0` | Bypass the per-file extraction cache (always re-extract) |
@@ -752,6 +752,9 @@ jarvisrag/             # Umbrella package (organized by function)
   vectorstore/         # Milvus vector store
   retrieval/           # Hybrid retrieval + fusion
   answer/              # Answer synthesis + runtime bootstrap
+    pipeline.py        #   handle_query: the question-to-answer pipeline
+    runtime.py         #   QueryRuntime: the session's shared runtime objects
+    bootstrap.py       #   builds the runtime at startup (models, indexes, voice)
     math/              #   deterministic calculation lane (arithmetic, %, stats, probability)
   speech/              # TTS / speech
   mcp/                 # MCP connector layer (OAuth + keyless stdio, PII guard)
@@ -762,5 +765,6 @@ jarvisrag/             # Umbrella package (organized by function)
 scripts/               # Evaluation CLIs (evaluate_retrieval.py, evaluate_answers.py, evaluate_speech.py, evaluate_voice.py),
                        # benchmarks, and the out-of-process Chatterbox TTS worker
 tests/                 # Unit + smoke + Milvus tests
-jarvis_storage/        # Generated extraction cache + persistent index (gitignored)
+jarvis_storage/        # Generated data, outside the code package (gitignored): persistent index,
+                       # extraction cache, synced corpora, evaluation files, MCP tokens
 ```

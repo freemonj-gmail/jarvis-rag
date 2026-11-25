@@ -22,9 +22,7 @@ spoken length, follow-up handling, refusals, empty answers, errors, or memory
 from __future__ import annotations
 
 import argparse
-import contextlib
 import json
-import logging
 import os
 import sys
 import time
@@ -37,6 +35,7 @@ os.environ.setdefault("JARVIS_ENABLE_TTS", "0")
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+from jarvisrag.evaluation.privacy import private_runtime_output
 from jarvisrag.evaluation import (
     compare_answer_reports,
     confirm_regressions,
@@ -44,23 +43,6 @@ from jarvisrag.evaluation import (
     load_answer_cases,
     load_answer_conversations,
 )
-
-
-@contextlib.contextmanager
-def _private_runtime_output(verbose: bool):
-    """Hide pipeline logs and printed answers, which contain private text."""
-
-    if verbose:
-        yield
-        return
-    previous_disable = logging.root.manager.disable
-    logging.disable(logging.CRITICAL)
-    try:
-        with open(os.devnull, "w", encoding="utf-8") as null_stream:
-            with contextlib.redirect_stdout(null_stream), contextlib.redirect_stderr(null_stream):
-                yield
-    finally:
-        logging.disable(previous_disable)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -108,7 +90,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.persist_dir:
         os.environ["JARVIS_PERSIST_DIR"] = os.path.abspath(os.path.expanduser(args.persist_dir))
 
-    from jarvisrag.answer.answer import (
+    from jarvisrag.answer.pipeline import (
         _evidence_source_labels,
         _response_is_dismissive,
         _unsupported_answer_values,
@@ -130,7 +112,7 @@ def main(argv: list[str] | None = None) -> int:
 
     print("Building answer runtime...", flush=True)
     startup_started = time.perf_counter()
-    with _private_runtime_output(args.verbose):
+    with private_runtime_output(args.verbose):
         runtime = build_runtime(args.corpus)
     startup_seconds = time.perf_counter() - startup_started
 
@@ -141,7 +123,7 @@ def main(argv: list[str] | None = None) -> int:
             return 2
 
     def ask(query: str, prior: dict | None) -> tuple[dict, dict]:
-        with _private_runtime_output(args.verbose):
+        with private_runtime_output(args.verbose):
             turn = handle_query(query, runtime, prior)
         answer = str(turn.get("response_text") or "")
         evidence = list(turn.get("evidence_lines") or [])
@@ -205,7 +187,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.output:
         with open(args.output, "w", encoding="utf-8") as handle:
             handle.write(serialized + "\n")
-        print(f"Answer evaluation report written ({len(cases)} aggregate cases).")
+        print(f"Answer evaluation report written ({len(cases)} aggregate cases; startup {startup_seconds:.1f} s).")
     else:
         print(serialized)
 

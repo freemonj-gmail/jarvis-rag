@@ -676,13 +676,3 @@ def open_pdf(file_path: str):
     except Exception as e:
         logger.info(f"PyMuPDF could not open {file_path}: {e}")
         return None
-
-
-def region_metadata(region: Region) -> dict:
-    """Provenance/confidence metadata for a region, merged into Document metadata."""
-    return {
-        "extracted_by": region.source,
-        "region_type": region.region_type,
-        "ocr_confidence": round(float(region.confidence), 4),
-        "reading_order_index": region.reading_order,
-    }

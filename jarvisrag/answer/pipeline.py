@@ -3,11 +3,10 @@
 Owns everything that turns retrieved evidence into a user-facing answer:
 dismissive-answer detection, the extractive
 value/reasoning/summary fallbacks, the LLM synthesis + review loop, corpus and
-source-detail previews, display formatting, chat-memory purge, the chunked
-map-reduce query engines, and the ``QueryRuntime`` dataclass + ``handle_query``
-entry point. This is the orchestration layer that sits on top of
-``jarvis_query`` (analysis), ``jarvis_retrieval`` (evidence), and
-``jarvis_speech`` (display/TTS).
+source-detail previews, display formatting, and the ``handle_query`` entry
+point. This is the orchestration layer that sits on top of ``text.query``
+(analysis), ``retrieval`` (evidence), and ``speech`` (display/TTS); the runtime
+it uses is ``answer.runtime.QueryRuntime``.
 """
 
 import hashlib
@@ -15,10 +14,8 @@ import os
 import re
 import time
 from contextlib import contextmanager
-from dataclasses import dataclass
-from typing import Any, List, Optional
+from typing import Any
 
-from llama_index.core import VectorStoreIndex
 from llama_index.core.base.llms.types import ChatMessage, MessageRole
 from llama_index.core.schema import Document
 from llama_index.llms.ollama import Ollama
@@ -35,7 +32,7 @@ from jarvisrag.speech import (
     _resolve_spoken_tokens,
     _spoken_response_text,
 )
-from jarvisrag.extraction.indexing import chunk_documents, split_large_docs
+from jarvisrag.answer.runtime import QueryRuntime
 from jarvisrag.mcp.connector import fetch_mcp_evidence, routing_term_matches
 from jarvisrag.text.query import (
     _best_detail_candidate,
@@ -139,92 +136,6 @@ def _response_is_dismissive(response_text: str) -> bool:
         return True
 
     return False
-
-
-def _salvage_answer_from_sources(user_query: str, response: object, llm_client: Ollama) -> str:
-    source_nodes = getattr(response, "source_nodes", None) or []
-    if not source_nodes:
-        return ""
-
-    excerpts = []
-    for idx, node in enumerate(source_nodes[:6], start=1):
-        try:
-            node_text = (node.get_content() or "").strip()
-        except Exception:
-            node_text = ""
-        if not node_text:
-            continue
-        if is_low_information_text(node_text):
-            continue
-        compact_text = " ".join(node_text.split())
-        excerpts.append(f"EXCERPT {idx}: {compact_text[:900]}")
-
-    if not excerpts:
-        return ""
-
-    salvage_prompt = (
-        "Extract any useful facts from these excerpts. Do not claim the page is blank unless excerpts are truly empty. "
-        "Prefer concrete details such as names, dates, amounts, account/form numbers, addresses, and organizations. "
-        "If facts are limited, return whatever is available and note limits briefly.\n\n"
-        f"Question: {user_query}\n\n"
-        f"Excerpts:\n{os.linesep.join(excerpts)}"
-    )
-
-    try:
-        salvage_response = llm_client.chat([
-            ChatMessage(role=MessageRole.USER, content=salvage_prompt)
-        ])
-        return (salvage_response.message.content or "").strip()
-    except Exception:
-        return ""
-
-
-def _build_evidence_preview(response: object, max_items: int = 4) -> str:
-    source_nodes = getattr(response, "source_nodes", None) or []
-    if not source_nodes:
-        return ""
-
-    lines = [
-        "I retrieved matching content but could not synthesize a clean answer. Here are direct evidence snippets:",
-    ]
-
-    added = 0
-    for node in source_nodes:
-        if added >= max_items:
-            break
-        try:
-            node_text = (node.get_content() or "").strip()
-        except Exception:
-            node_text = ""
-        if not node_text:
-            continue
-        if is_low_information_text(node_text):
-            continue
-
-        metadata = getattr(node, "metadata", {}) or {}
-        file_name = metadata.get("file_name") or metadata.get("file_path") or "unknown file"
-        page_number = metadata.get("page_number")
-        score = getattr(node, "score", None)
-
-        compact = " ".join(normalize_text(node_text).split())
-        snippet = compact[:1600].rstrip()
-        if len(compact) > 1600:
-            snippet += "..."
-
-        label = f"- {file_name}"
-        if page_number is not None:
-            label += f" (page {page_number})"
-        if JARVIS_DEBUG and score is not None:
-            try:
-                label += f" [score={float(score):.3f}]"
-            except Exception:
-                pass
-
-        lines.append(label)
-        lines.append(f"  {snippet}")
-        added += 1
-
-    return "\n".join(lines) if added else ""
 
 
 # A comma groups thousands only before exactly three digits: "1,234,567" is one
@@ -717,6 +628,23 @@ def _answer_with_review_loop(
         for another model call it does not have time for."""
         return time.monotonic() - loop_started < answer_time_budget
 
+    def _states_only_supported_values(text: str) -> bool:
+        """Every figure in model-written ``text`` appears in the evidence, the
+        question, or the answer being refined. Applied to every model-written
+        answer this loop returns, not only to drafts that passed review."""
+        unsupported = _unsupported_answer_values(text, [*evidence_lines, user_query, prior_answer])
+        if unsupported:
+            debug_print(f"[debug] Discarded a model answer stating values absent from the evidence: {sorted(unsupported)}.")
+        return not unsupported
+
+    def _grounded_distillation() -> str:
+        """The LLM-distilled answer, or "" when the turn budget is spent or the
+        distillation states a figure the evidence does not give."""
+        if not _answer_budget_left():
+            return ""
+        distilled = _distill_answer_from_evidence(user_query, evidence_lines, llm_client)
+        return distilled if distilled and _states_only_supported_values(distilled) else ""
+
     review_feedback = ""
     last_review_reason = ""
     best_answer = ""
@@ -761,7 +689,7 @@ def _answer_with_review_loop(
                 # multi-minute generation behind a slow synthesis.
                 if _answer_budget_left():
                     spin.update("Distilling")
-                    distilled = _distill_answer_from_evidence(user_query, evidence_lines, llm_client)
+                    distilled = _grounded_distillation()
                     if distilled:
                         debug_print(f"[debug] Used LLM distillation fallback on attempt {attempt}.")
                         return distilled, True, "answered with LLM-distilled evidence fallback"
@@ -848,7 +776,7 @@ def _answer_with_review_loop(
                 extractive = (
                     _extractive_reasoning_answer_from_evidence(user_query, evidence_lines)
                     or _extractive_summary_answer_from_evidence(user_query, evidence_lines)
-                    or (_distill_answer_from_evidence(user_query, evidence_lines, llm_client) if _answer_budget_left() else "")
+                    or _grounded_distillation()
                     or _forced_extractive_summary_from_evidence(user_query, evidence_lines)
                 )
             if extractive:
@@ -863,10 +791,15 @@ def _answer_with_review_loop(
             if reasoning_answer:
                 debug_print("[debug] Used extractive reasoning answer instead of value-shaped distillation.")
                 return reasoning_answer, True, f"reasoning extractor (review failed): {last_review_reason}"
-        distilled = _distill_answer_from_evidence(user_query, evidence_lines, llm_client) if _answer_budget_left() else ""
+        distilled = _grounded_distillation()
         if distilled:
             debug_print("[debug] Used LLM-distilled evidence answer instead of unverified best answer.")
             return distilled, True, f"distilled answer (review failed): {last_review_reason}"
+        if not _states_only_supported_values(best_answer):
+            forced = _forced_extractive_summary_from_evidence(user_query, evidence_lines)
+            if forced:
+                return forced, True, f"forced extractive summary (draft stated unsupported values): {last_review_reason}"
+            return "", False, last_review_reason
         debug_print("[debug] All review attempts failed and distillation empty; returning best LLM reasoning with caveat.")
         caveat = (
             "Note: the reviewer was not fully satisfied this answer is strictly grounded in the indexed evidence; "
@@ -886,7 +819,7 @@ def _answer_with_review_loop(
             debug_print("[debug] Returning extractive reasoning answer as final safety net.")
             return reasoning_answer, True, f"reasoning extractor (review never passed): {last_review_reason or 'no answer produced'}"
     else:
-        distilled = _distill_answer_from_evidence(user_query, evidence_lines, llm_client) if _answer_budget_left() else ""
+        distilled = _grounded_distillation()
         if distilled:
             debug_print("[debug] Returning LLM-distilled evidence answer as final safety net.")
             return distilled, True, f"distilled answer (review never passed): {last_review_reason or 'no answer produced'}"
@@ -1738,92 +1671,9 @@ def _build_corpus_details_preview(documents: list[Document], max_items: int = 8)
     return "\n".join(lines)
 
 
-def build_chunk_query_engines(
-    documents: List[Document],
-    docs_per_chunk: int = 40,
-    llm: Optional[Any] = None,
-    short_text_qa_template: Optional[Any] = None,
-) -> List[Any]:
-    if not documents:
-        return []
-    documents = split_large_docs(documents)
-    doc_chunks = chunk_documents(documents, docs_per_chunk=docs_per_chunk)
-    chunk_engines = []
-    for chunk_idx, chunk_docs in enumerate(doc_chunks, 1):
-        if not chunk_docs:
-            continue
-        index = VectorStoreIndex.from_documents(chunk_docs)
-        query_engine = index.as_query_engine(
-            llm=llm,
-            similarity_top_k=3,
-            response_mode="compact",
-            text_qa_template=short_text_qa_template,
-        )
-        chunk_engines.append((f"chunk_{chunk_idx}", query_engine, len(chunk_docs)))
-    return chunk_engines
-
-
-def summarize_partial_responses(query: str, partial_responses: List[str], llm: Any) -> str:
-    combined_text = "\n\n".join(
-        [f"PARTIAL ANSWER {idx + 1}:\n{response}" for idx, response in enumerate(partial_responses)]
-    )
-    summary_prompt = (
-        f"You are an assistant that condenses multiple partial answers into a concise summary of the evidence. "
-        f"The original question is: {query}\n\n"
-        f"Here are the partial answers:\n\n{combined_text}\n\n"
-        "Summarize the key facts, findings, and any disagreements or uncertainties. "
-        "Do not answer the question yet; only return a clear, compact summary of the content."
-    )
-    summary_response = llm.chat([
-        ChatMessage(role=MessageRole.USER, content=summary_prompt)
-    ])
-    return summary_response.message.content or ""
-
-
-def stitch_chunk_responses(query: str, partial_responses: List[str], llm: Any) -> str:
-    if not partial_responses:
-        return ""
-    if len(partial_responses) == 1:
-        return partial_responses[0]
-
-    evidence_summary = summarize_partial_responses(query, partial_responses, llm)
-    final_prompt = (
-        f"You are an assistant that produces a final answer using summarized evidence from document chunks. "
-        f"The original question is: {query}\n\n"
-        f"Here is the summarized evidence from the partial answers:\n\n{evidence_summary}\n\n"
-        "Provide one concise and coherent final answer based on this evidence. "
-        "If the evidence is incomplete, note what is missing. If there are contradictions, explain them briefly."
-    )
-    final_response = llm.chat([
-        ChatMessage(role=MessageRole.USER, content=final_prompt)
-    ])
-    return final_response.message.content or ""
-
-
 # ---------------------------------------------------------------------------
 # Query handling pipeline
 # ---------------------------------------------------------------------------
-@dataclass
-class QueryRuntime:
-    """Bundle of the initialized runtime objects `handle_query` needs.
-
-    The main application (`Jarvis.py`) builds the index/retriever/LLM/TTS once at
-    startup and passes them in here, keeping the entry script thin while the full
-    RAG + fallback pipeline lives in this helpers module."""
-    all_docs: list
-    llm: object
-    doc_retriever: object | None
-    doc_chat_engine: object | None = None
-    doc_index: object | None = None
-    storage_context: object | None = None
-    response_mode: str = "query"
-    tts: object | None = None
-    persist_dir: str = "jarvis_storage"
-    home_corpus_dir: str | None = None
-    home_indexed_files: list[str] | None = None
-    home_excluded_files: list[str] | None = None
-    mcp_registry: object | None = None
-    domain_retrievers: list | None = None
 
 
 # Domain evidence is capped at the SAME budget the retriever already applies to

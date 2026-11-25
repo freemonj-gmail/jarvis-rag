@@ -459,6 +459,8 @@ def compare_answer_reports(
     memory_tolerance: float = 0.25,
     memory_growth_floor_mb: float = 256.0,
     swap_growth_mb: float = 512.0,
+    startup_tolerance: float = 0.25,
+    startup_slack_seconds: float = 3.0,
     available_drop_pct: float = 10.0,
 ) -> tuple[list[str], list[str]]:
     """Return ``(regressions, warnings)`` for ``current`` against ``baseline``.
@@ -540,6 +542,14 @@ def compare_answer_reports(
                 f"memory_rss_mb_growth rose {base['memory_rss_mb_growth']:.0f} -> "
                 f"{cur['memory_rss_mb_growth']:.0f} MB across the run (possible leak)"
             )
+    # Startup (building the runtime: models, indexes, retrievers) varies with
+    # disk-cache warmth by a second or two, so it must be clearly slower to count.
+    base_start = (baseline.get("metadata") or {}).get("startup_seconds")
+    cur_start = (current.get("metadata") or {}).get("startup_seconds")
+    if base_start and cur_start and cur_start > max(
+        base_start * (1 + startup_tolerance), base_start + startup_slack_seconds
+    ):
+        regressions.append(f"startup_seconds rose {base_start:.1f} -> {cur_start:.1f}")
     if both("swap_mb_growth") and cur["swap_mb_growth"] > base["swap_mb_growth"] + swap_growth_mb:
         regressions.append(
             f"swap_mb_growth rose {base['swap_mb_growth']:.0f} -> {cur['swap_mb_growth']:.0f} MB during the run"

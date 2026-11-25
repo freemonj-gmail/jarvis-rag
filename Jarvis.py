@@ -20,7 +20,8 @@ if os.environ.get("JARVIS_DEBUG_HTTP", "0") != "1":
     logging.getLogger("httpx").setLevel(logging.WARNING)
 
 from jarvisrag.answer.bootstrap import build_runtime, release_llm
-from jarvisrag.answer.answer import QueryRuntime, handle_query
+from jarvisrag.answer.pipeline import handle_query
+from jarvisrag.answer.runtime import QueryRuntime
 from jarvisrag.iotools import read_user_query
 
 

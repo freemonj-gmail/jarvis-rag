@@ -261,6 +261,10 @@ def run_regression_tests(cases, answers) -> None:
     ):
         regressions, _ = compare_answer_reports(baseline, report_with(**worse))
         assert any(metric in r for r in regressions), (metric, regressions)
+    # Startup must be clearly slower to count: a second of cache warmth is noise.
+    timed = lambda seconds: dict(baseline, metadata={"llm_model": "m", "startup_seconds": seconds})
+    assert compare_answer_reports(timed(4.0), timed(5.5))[0] == []
+    assert any("startup_seconds" in r for r in compare_answer_reports(timed(4.0), timed(9.0))[0])
     # Swap left over from before the run is not a regression; swap the run adds is.
     assert compare_answer_reports(baseline, report_with(swap_mb_max=1800.0))[0] == []
     baseline_cases = dict(baseline, cases=[{"id": "a", "pass_rate": 1.0}, {"id": "b", "pass_rate": 1.0}])

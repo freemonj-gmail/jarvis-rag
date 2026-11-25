@@ -11,6 +11,12 @@ import os
 from llama_index.core.prompts import PromptTemplate, PromptType
 
 logger = logging.getLogger("jarvis")
+
+# Generated data (indexes, extraction cache, synced corpora, evaluation files,
+# MCP tokens) lives in jarvis_storage/ at the repository root, outside the code
+# package, so moving or renaming code never moves the data.
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+STORAGE_DIR = os.path.join(PROJECT_ROOT, "jarvis_storage")
 INDEX_MANIFEST_FILE = "jarvis_index_manifest.json"
 INDEX_MANIFEST_VERSION = 2
 
@@ -52,7 +58,7 @@ JARVIS_MCP_TIMEOUT = float(os.environ.get("JARVIS_MCP_TIMEOUT", "20"))
 # authenticate via OAuth (e.g. taxmcp.io) do a one-time browser sign-in, then
 # reuse/refresh the cached token from here on every later run.
 JARVIS_MCP_TOKEN_CACHE = os.environ.get(
-    "JARVIS_MCP_TOKEN_CACHE", os.path.join("jarvis_storage", ".mcp_tokens.json")
+    "JARVIS_MCP_TOKEN_CACHE", os.path.join(STORAGE_DIR, ".mcp_tokens.json")
 )
 # Outbound PII guard for MCP requests. Only the user's question text ever leaves
 # the machine (it is substituted into the MCP call arguments); local documents

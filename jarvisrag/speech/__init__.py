@@ -719,7 +719,10 @@ def _strip_label_citations(text: str, label_words: frozenset[str]) -> str:
     has no file extension or page for ``_strip_inline_citations`` to key on. A
     parenthetical is dropped when one of its comma- or semicolon-separated parts
     consists only of words from those labels and contains a word, not just a
-    number; parentheses that say something else are kept.
+    number; parentheses that say something else are kept. A label token that
+    mixes letters and digits counts as a word, so a message or file id such as
+    "7c41d0e9b2fa" cited without its extension is dropped too, while "(2026)"
+    or "(17)" stays.
     """
     if not text or not label_words:
         return text
@@ -727,7 +730,7 @@ def _strip_label_citations(text: str, label_words: frozenset[str]) -> str:
     def is_citation(match: "re.Match[str]") -> bool:
         for part in re.split(r"[,;]", match.group(1)):
             words = re.findall(r"[a-z0-9]+", part.lower())
-            if words and any(w.isalpha() for w in words) and all(w in label_words for w in words):
+            if words and any(not w.isdigit() for w in words) and all(w in label_words for w in words):
                 return True
         return False
 

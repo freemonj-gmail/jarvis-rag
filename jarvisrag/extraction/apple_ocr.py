@@ -182,11 +182,6 @@ def _assemble(annotations) -> Tuple[str, float]:
     return text, confidence
 
 
-def apple_ocr_available() -> bool:
-    """True when Apple Vision OCR is enabled, on macOS, and importable."""
-    return AppleOCREngine._ensure_available()
-
-
 def apple_ocr(image) -> Tuple[str, float]:
     """Verbatim-transcribe a PIL image with Apple Vision; ``(text, confidence)``."""
     return AppleOCREngine.recognize(image)

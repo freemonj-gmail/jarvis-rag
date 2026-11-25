@@ -9,7 +9,6 @@ from __future__ import annotations
 import argparse
 import contextlib
 import json
-import logging
 import os
 import sys
 import time
@@ -23,6 +22,7 @@ sys.path.insert(0, str(ROOT))
 os.environ.setdefault("JARVIS_ENABLE_TTS", "0")
 
 from jarvisrag.evaluation import evaluate_retrieval, load_retrieval_cases
+from jarvisrag.evaluation.privacy import private_runtime_output
 
 
 def _directory_size(path: str) -> int:
@@ -118,23 +118,6 @@ def _parse_modes(value: str) -> list[str]:
     return list(dict.fromkeys(modes))
 
 
-@contextlib.contextmanager
-def _private_runtime_output(verbose: bool):
-    """Hide bootstrap/retrieval logs that can contain private document text."""
-
-    if verbose:
-        yield
-        return
-    previous_disable = logging.root.manager.disable
-    logging.disable(logging.CRITICAL)
-    try:
-        with open(os.devnull, "w", encoding="utf-8") as null_stream:
-            with contextlib.redirect_stdout(null_stream), contextlib.redirect_stderr(null_stream):
-                yield
-    finally:
-        logging.disable(previous_disable)
-
-
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
@@ -182,7 +165,7 @@ def main(argv: list[str] | None = None) -> int:
 
     print("Building isolated retrieval runtime...", flush=True)
     startup_started = time.perf_counter()
-    with _private_runtime_output(args.verbose):
+    with private_runtime_output(args.verbose):
         runtime = build_runtime(args.corpus)
     startup_seconds = time.perf_counter() - startup_started
     if runtime.doc_retriever is None:
@@ -191,7 +174,7 @@ def main(argv: list[str] | None = None) -> int:
 
     def retriever_for(mode_retriever: Any):
         def retrieve(query: str) -> list[str]:
-            with _private_runtime_output(args.verbose):
+            with private_runtime_output(args.verbose):
                 evidence, _ = _retrieve_query_supported_evidence(
                     query,
                     mode_retriever,

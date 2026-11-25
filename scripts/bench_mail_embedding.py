@@ -34,7 +34,7 @@ os.environ["TRANSFORMERS_OFFLINE"] = "1"
 os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
 os.environ["JARVIS_DEBUG"] = "0"
 
-from scripts.evaluate_retrieval import _private_runtime_output
+from jarvisrag.evaluation.privacy import private_runtime_output
 
 
 class AlignedTokenizer:
@@ -226,14 +226,14 @@ def pipeline_pilot(args):
     if not _is_port_open("127.0.0.1", "19530", timeout=2.0):
         raise RuntimeError("Pipeline pilot requires local Milvus on 127.0.0.1:19530.")
     started = time.perf_counter()
-    with _private_runtime_output(False):
+    with private_runtime_output(False):
         documents, corpus_count = load_sample(
             args.corpus_dir.resolve(), args.cache_dir or Path(EXTRACTION_CACHE_DIR), args.sample, args.seed,
         )
     report = {"sample_messages": args.sample, "corpus_messages": corpus_count, "cache_load_seconds": time.perf_counter() - started}
     print("Loading cached BGE-M3 for the isolated pipeline pilot...", flush=True)
     started = time.perf_counter()
-    with _private_runtime_output(False):
+    with private_runtime_output(False):
         embed_model = _build_embed_model()
     report["model_load_seconds"] = time.perf_counter() - started
     report["device"] = embed_model._device
@@ -241,7 +241,7 @@ def pipeline_pilot(args):
     report["embedding_dtype"] = str(next(embed_model._model.parameters()).dtype)
     collection = "jarvis_mail_pilot_" + uuid.uuid4().hex
     store = create_milvus_vector_store(collection_name=collection, host="127.0.0.1", port="19530")
-    with _private_runtime_output(False):
+    with private_runtime_output(False):
         if store.has_collection():
             raise RuntimeError("Refusing to reuse an existing pilot collection.")
     try:
@@ -249,7 +249,7 @@ def pipeline_pilot(args):
             root = Path(directory, "corpus")
             persist = str(Path(directory, "index"))
             started = time.perf_counter()
-            with _private_runtime_output(False):
+            with private_runtime_output(False):
                 copied = copy_sample(documents, args.corpus_dir, root)
                 batches, prepared_count = prepare_batches([document.model_copy(deep=True) for document in copied], 64)
                 baseline = [node for batch in batches for node in batch]
@@ -273,7 +273,7 @@ def pipeline_pilot(args):
                     torch.mps.synchronize()
                     if name == "cold_build":
                         torch.mps.empty_cache()
-                with _private_runtime_output(False), measure_pipeline(embed_model) as metrics:
+                with private_runtime_output(False), measure_pipeline(embed_model) as metrics:
                     write = MilvusVectorStore.add
 
                     def partial_write(active_store, nodes, **kwargs):
@@ -307,7 +307,7 @@ def pipeline_pilot(args):
                     raise AssertionError("Pilot node content, metadata or vector completeness differs from the reference.")
 
             index, _ = build_stage("cold_build", copied)
-            with _private_runtime_output(False):
+            with private_runtime_output(False):
                 require_parity(index, baseline)
             report["exact_embedding_input_and_metadata_parity"] = True
             store._client.close()
@@ -321,7 +321,7 @@ def pipeline_pilot(args):
             if not candidates:
                 raise ValueError("Pilot needs a multi-chunk message to verify a partial-write recovery.")
             selected_path = Path(candidates[0][1])
-            with _private_runtime_output(False):
+            with private_runtime_output(False):
                 updated = revise_sample_message(selected_path, root)
                 if not updated:
                     raise ValueError("Copied revision did not produce an extracted document.")
@@ -340,7 +340,7 @@ def pipeline_pilot(args):
                 raise AssertionError("Interrupted update did not reuse all checkpointed embeddings.")
             if not report["stages"]["resume_update"]["inserted_vectors"]:
                 raise AssertionError("Pilot recovery did not complete a partial vector write.")
-            with _private_runtime_output(False):
+            with private_runtime_output(False):
                 changed_batches, _ = prepare_batches([document.model_copy(deep=True) for document in changed], 64)
                 require_parity(index, [node for batch in changed_batches for node in batch])
                 selected_path.unlink()
@@ -348,7 +348,7 @@ def pipeline_pilot(args):
             index, _ = build_stage("source_deletion", remaining)
             if report["stages"]["source_deletion"]["embedded_texts"]:
                 raise AssertionError("Source deletion unexpectedly re-embedded unchanged messages.")
-            with _private_runtime_output(False):
+            with private_runtime_output(False):
                 remaining_batches, _ = prepare_batches([document.model_copy(deep=True) for document in remaining], 64)
                 require_parity(index, [node for batch in remaining_batches for node in batch])
             report["source_change_resume_and_deletion_verified"] = True
@@ -356,7 +356,7 @@ def pipeline_pilot(args):
             report["cold_sample_scaled_hours_not_full_build_eta"] = report["stages"]["cold_build"]["wall_seconds"] * corpus_count / args.sample / 3600
             report["scope"] = "Copied text-only sample with real BGE-M3 and local Milvus. Warm reload and injected partial-write recovery reconnect the client, not the process/server. Excludes full-corpus inventory/summary costs, BM25, answer accuracy, attachments/images and concurrent-load variability. Scaling is not a promised build time."
     finally:
-        with _private_runtime_output(False):
+        with private_runtime_output(False):
             if store._client is not None:
                 try:
                     if store._client.has_collection(collection):
@@ -461,7 +461,7 @@ def main(argv=None):
 
     print("Reading cached sample and applying existing transformations...", flush=True)
     started = time.perf_counter()
-    with _private_runtime_output(False):
+    with private_runtime_output(False):
         documents, corpus_count = load_sample(
             args.corpus_dir.resolve(), args.cache_dir or Path(EXTRACTION_CACHE_DIR), args.sample, args.seed,
         )
@@ -474,7 +474,7 @@ def main(argv=None):
         raise ValueError("No embedding inputs survived existing preparation.")
 
     print("Loading cached embedding model (offline)...", flush=True)
-    with _private_runtime_output(False):
+    with private_runtime_output(False):
         embed_model = _build_embed_model()
         if args.compare_padding and embed_model.max_length % args.compare_padding:
             raise ValueError("Padding multiple must divide the model token limit.")
@@ -519,7 +519,7 @@ def main(argv=None):
                 patch.object(transformer, "tokenizer", AlignedTokenizer(transformer.tokenizer, args.compare_padding))
                 if name == "aligned_padding" else contextlib.nullcontext()
             )
-            with _private_runtime_output(False), tokenizer_context:
+            with private_runtime_output(False), tokenizer_context:
                 elapsed, vectors, allocations = measure(
                     embed_model, texts, schedules[name], release_cache=name == "release_cache",
                 )

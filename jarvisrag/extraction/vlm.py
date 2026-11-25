@@ -162,10 +162,6 @@ class VLMEngine:
         return cls._run(image, _CAPTION_PROMPT)
 
 
-def vlm_available() -> bool:
-    return VLMEngine.available()
-
-
 def vlm_ocr(image) -> str:
     return VLMEngine.ocr(image)
 

@@ -503,7 +503,7 @@ def run_tests():
     # The model verdict decides by meaning where the wording rules cannot: an
     # "it" that points inside the same message, and a follow-up with no marker.
     from types import SimpleNamespace
-    from jarvisrag.answer.answer import _turn_continues_previous
+    from jarvisrag.answer.pipeline import _turn_continues_previous
 
     class _VerdictLLM:
         def __init__(self, reply=None, error=None):
@@ -592,7 +592,7 @@ def run_tests():
     assert "the document" in lowered_spoken
     # Citations written with the words of the answer's own source labels are not
     # read aloud; parentheses that say something else are.
-    from jarvisrag.answer.answer import _evidence_source_labels
+    from jarvisrag.answer.pipeline import _evidence_source_labels
     labels = _evidence_source_labels([
         "[MCP · example.org (Code/Regulations/Agency — cited) · live authoritative source · search-tool] ## Result 1 ...",
         "- Rate_Notice_2026.pdf, page 3: The 2026 rate is $2,000.",

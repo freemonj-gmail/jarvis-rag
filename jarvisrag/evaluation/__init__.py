@@ -1,6 +1,6 @@
 """Local, privacy-safe evaluation helpers for Jarvis experiments."""
 
-from jarvisrag.evaluation.answers import (
+from jarvisrag.evaluation.answer_quality import (
     AnswerCase,
     AnswerConversation,
     compare_answer_reports,
