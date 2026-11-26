@@ -753,6 +753,16 @@ jarvisrag/             # Umbrella package (organized by function)
   retrieval/           # Hybrid retrieval + fusion
   answer/              # Answer synthesis + runtime bootstrap
     pipeline.py        #   handle_query: the question-to-answer pipeline
+    synthesis.py       #   answer drafting, review-and-refine loop, authoring
+    verdicts.py        #   model verdicts: non-answer, completeness, on-topic evidence, follow-up
+    grounding.py       #   stated-figure check and the evidence reviewer
+    fallbacks.py       #   extractive, distilled, and general-knowledge fallback answers
+    clarify.py         #   clarifying questions when one detail is missing
+    domains.py         #   domain corpora: selection, evidence, attachments, cascade
+    evidence.py        #   combining and budgeting evidence across sources
+    previews.py        #   topic, source, and corpus preview answers
+    display.py         #   answer body and References block for printing
+    generation.py      #   output token budgets and the runaway cap
     runtime.py         #   QueryRuntime: the session's shared runtime objects
     bootstrap.py       #   builds the runtime at startup (models, indexes, voice)
     math/              #   deterministic calculation lane (arithmetic, %, stats, probability)

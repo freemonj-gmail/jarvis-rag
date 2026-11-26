@@ -90,12 +90,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.persist_dir:
         os.environ["JARVIS_PERSIST_DIR"] = os.path.abspath(os.path.expanduser(args.persist_dir))
 
-    from jarvisrag.answer.pipeline import (
-        _evidence_source_labels,
-        _response_is_dismissive,
-        _unsupported_answer_values,
-        handle_query,
-    )
+    from jarvisrag.answer.verdicts import _response_is_dismissive
+    from jarvisrag.answer.grounding import _unsupported_answer_values
+    from jarvisrag.answer.evidence import _evidence_source_labels
+    from jarvisrag.answer.pipeline import handle_query
     from jarvisrag.speech import _spoken_response_text
     import psutil
 

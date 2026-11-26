@@ -143,25 +143,31 @@ from jarvisrag.retrieval import (
 )
 
 from jarvisrag.answer.runtime import QueryRuntime
-from jarvisrag.answer.pipeline import (
+from jarvisrag.answer.verdicts import _response_is_dismissive
+from jarvisrag.answer.generation import _llm_output_budget
+from jarvisrag.answer.grounding import _review_answer_against_evidence
+from jarvisrag.answer.fallbacks import (
     _answer_from_general_knowledge,
+    _distill_answer_from_evidence,
+    _evidence_present_fallback,
+    _extractive_reasoning_answer_from_evidence,
+    _extractive_summary_answer_from_evidence,
+    _forced_extractive_summary_from_evidence,
+    _not_found_answer,
+)
+from jarvisrag.answer.synthesis import (
     _answer_with_review_loop,
+    _reasoning_guidance,
+    _synthesize_evidence_answer,
+)
+from jarvisrag.answer.display import (
+    _extract_source_references,
+    _format_response_for_display,
+)
+from jarvisrag.answer.previews import (
     _build_corpus_details_preview,
     _build_source_details_preview,
     _build_topic_details_preview,
     _canonical_detail_file_key,
-    _distill_answer_from_evidence,
-    _evidence_present_fallback,
-    _extract_source_references,
-    _extractive_reasoning_answer_from_evidence,
-    _extractive_summary_answer_from_evidence,
-    _forced_extractive_summary_from_evidence,
-    _format_response_for_display,
-    _llm_output_budget,
-    _not_found_answer,
-    _reasoning_guidance,
-    _response_is_dismissive,
-    _review_answer_against_evidence,
-    _synthesize_evidence_answer,
-    handle_query,
 )
+from jarvisrag.answer.pipeline import handle_query

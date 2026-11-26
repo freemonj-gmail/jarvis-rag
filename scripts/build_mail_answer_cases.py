@@ -140,7 +140,7 @@ def main(argv=None) -> int:
     parser.add_argument("--draft-timeout", type=float, default=90.0)
     args = parser.parse_args(argv)
 
-    from jarvisrag.answer.pipeline import _llm_output_budget
+    from jarvisrag.answer.generation import _llm_output_budget
     from jarvisrag.answer.bootstrap import EXTRACTION_CACHE_DIR, _build_llm
     from jarvisrag.iotools import time_limit
 
