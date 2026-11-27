@@ -654,6 +654,13 @@ def build_hybrid_retriever(
         return dense_retriever
 
 
+# Specific-word matches an anchor-free chunk needs (and they must be most of the
+# question's specific words). Measured on fed-benefits questions: 3 lets general
+# IRS limit tables answer "TSP" and "IRA" limit questions, while 2 let Social
+# Security survivor pages displace OPM pages for a 2-word FERS survivor question.
+_ANCHORLESS_MIN_SPECIFIC_HITS = 3
+
+
 def _query_candidate_score(
     text: str,
     terms: list[str],
@@ -667,13 +674,20 @@ def _query_candidate_score(
 
     lowered = compact.lower()
     anchor_hits = sum(1 for term in anchor_terms if term in lowered)
-    if require_anchors and anchor_terms and anchor_hits == 0:
-        return 0
-
     topic_terms = _query_topic_terms(terms, anchor_terms)
     topic_hits = sum(1 for term in topic_terms if _term_family_hit(lowered, term))
     specific_terms = _specific_query_terms(terms, anchor_terms)
     specific_hits = sum(1 for term in specific_terms if _term_family_hit(lowered, term))
+    # A chunk can answer without the subject's name: another source may name it
+    # differently ("Thrift Savings Plan" for "TSP") or state the rule for every
+    # plan at once. It still qualifies when it matches most of the question's
+    # other specific words, and at least _ANCHORLESS_MIN_SPECIFIC_HITS of them.
+    covers_without_anchor = (
+        specific_hits >= _ANCHORLESS_MIN_SPECIFIC_HITS and specific_hits * 2 > len(specific_terms)
+    )
+    if require_anchors and anchor_terms and anchor_hits == 0 and not covers_without_anchor:
+        return 0
+
     value_hits = len(set(_value_numbers(compact)))
 
     if require_value and value_hits == 0:

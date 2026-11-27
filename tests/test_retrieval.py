@@ -317,5 +317,37 @@ class HomeReserveSemanticOrderTests(unittest.TestCase):
         R._TEXT_EMBEDDING_CACHE.clear()
 
 
+class AnchorlessCoverageTests(unittest.TestCase):
+    """A chunk that never names the question's subject still qualifies when it
+    matches most of the question's other specific words (at least three), so a
+    general limits table can answer a plan-specific question, while two shared
+    words are not enough to pull in another subject's material."""
+
+    def _score(self, question, chunk):
+        from jarvisrag.retrieval import _query_candidate_score
+        from jarvisrag.text.query import _query_anchor_terms, _query_requests_values, _query_terms
+
+        terms = _query_terms(question)
+        return _query_candidate_score(chunk, terms, _query_anchor_terms(question, terms), _query_requests_values(question))
+
+    def test_general_table_answers_a_subject_it_does_not_name(self):
+        question = "What is the 2031 Harbor plan elective deferral limit and the catch-up amount?"
+        table = (
+            "For 2031 the elective deferral limit for defined contribution plans is $31,000 "
+            "and the catch-up contribution limit for participants age 50 and over is $9,500."
+        )
+        self.assertGreater(self._score(question, table), 0)
+
+    def test_anchored_chunk_still_outscores_an_equally_matching_anchorless_one(self):
+        question = "What is the 2031 Harbor plan elective deferral limit and the catch-up amount?"
+        body = "For 2031 the elective deferral limit is $31,000 and the catch-up limit is $9,500."
+        self.assertGreater(self._score(question, f"Harbor plan: {body}"), self._score(question, body))
+
+    def test_two_shared_words_do_not_admit_another_subject(self):
+        question = "What does Harbor pay a surviving spouse?"
+        other = "Social Security pays a surviving spouse a monthly benefit of $1,200 at full retirement age."
+        self.assertEqual(self._score(question, other), 0)
+
+
 if __name__ == "__main__":
     unittest.main()
