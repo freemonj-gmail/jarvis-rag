@@ -758,7 +758,8 @@ jarvisrag/             # Umbrella package (organized by function)
   vectorstore/         # Milvus vector store
   retrieval/           # Hybrid retrieval + fusion
   answer/              # Answer synthesis + runtime bootstrap
-    pipeline.py        #   handle_query: the question-to-answer pipeline
+    pipeline.py        #   handle_query: the question-to-answer pipeline, as named steps
+    turn.py            #   Turn: one question's state as it moves through those steps
     synthesis.py       #   answer drafting, review-and-refine loop, authoring
     verdicts.py        #   model verdicts: non-answer, completeness, on-topic evidence, follow-up
     grounding.py       #   stated-figure check and the evidence reviewer
@@ -769,7 +770,7 @@ jarvisrag/             # Umbrella package (organized by function)
     previews.py        #   topic, source, and corpus preview answers
     display.py         #   answer body and References block for printing
     generation.py      #   output token budgets and the runaway cap
-    runtime.py         #   QueryRuntime: the session's shared runtime objects
+    runtime.py         #   QueryRuntime + Domain: the session's shared runtime objects
     bootstrap.py       #   builds the runtime at startup (models, indexes, voice)
     math/              #   deterministic calculation lane (arithmetic, %, stats, probability)
   speech/              # TTS / speech
