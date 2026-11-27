@@ -16,6 +16,7 @@ from jarvisrag.retrieval import (
 )
 from jarvisrag.text.query import _query_anchor_terms, _query_requests_values, _query_terms
 from jarvisrag.text.textproc import is_low_information_text
+from jarvisrag.answer.runtime import Domain
 from jarvisrag.answer.verdicts import _answer_completeness, ANSWER_COMPLETE, ANSWER_UNANSWERED
 from jarvisrag.answer.synthesis import _answer_with_review_loop
 from jarvisrag.answer.evidence import (
@@ -41,8 +42,8 @@ _DEFAULT_DOMAIN_EVIDENCE_LINES = 30
 
 
 def _domains_for_turn(
-    query: str, domain_retrievers: list | None, prior_domain_names: list | None = None
-) -> tuple[list, list]:
+    query: str, domains: list[Domain] | None, prior_domain_names: list | None = None
+) -> tuple[list[Domain], list[Domain]]:
     """Select the domain corpora to consult this turn.
 
     Keyword matches take priority (an explicit on-topic query, or a topic switch).
@@ -50,17 +51,17 @@ def _domains_for_turn(
     turn used, so a follow-up that drops the subject keyword still reaches the
     right corpus. The sticky domain's own relevance gate then decides whether it
     actually applies. Returns (active_domains, keyword_matched_domains)."""
-    if not domain_retrievers:
+    if not domains:
         return [], []
     keyword_matched = [
-        d for d in domain_retrievers
-        if any(routing_term_matches(str(term), query) for term in (d.get("match_any") or []) if term)
+        d for d in domains
+        if any(routing_term_matches(str(term), query) for term in (d.match_any or []) if term)
     ]
     if keyword_matched:
         return keyword_matched, keyword_matched
     if prior_domain_names:
         prior = set(prior_domain_names)
-        return [d for d in domain_retrievers if d.get("name") in prior], []
+        return [d for d in domains if d.name in prior], []
     return [], []
 
 
@@ -147,7 +148,7 @@ def _domain_reference_lines(
 
 
 def _retrieve_domain_evidence(
-    query: str, domains: list | None
+    query: str, domains: list[Domain] | None
 ) -> tuple[list[str], list[str], set[str]]:
     """Retrieve evidence from the already-selected domain corpora.
 
@@ -166,11 +167,11 @@ def _retrieve_domain_evidence(
     nodes: list = []
     for domain in domains:
         try:
-            evidence, source_nodes = _retrieve_query_supported_evidence(query, domain["retriever"])
+            evidence, source_nodes = _retrieve_query_supported_evidence(query, domain.retriever)
             per_domain.append(list(evidence))
             nodes.extend(source_nodes or [])
         except Exception as exc:  # noqa: BLE001 - never let a domain lookup break a turn
-            debug_print(f"[domain] {domain.get('name')} retrieval failed ({exc}); skipping.")
+            debug_print(f"[domain] {domain.name} retrieval failed ({exc}); skipping.")
     # Interleave the domains' ranked lines (A1, B1, A2, B2, ...) under the one cap.
     # Filling the cap in domain order let the first domain's lines starve every
     # later domain, which was then never even searched. One domain = its own order.
@@ -196,7 +197,7 @@ _ATTACHMENT_MAX_FILES = 5
 _ATTACHMENT_MAX_BYTES = 25_000_000
 
 
-def _evidence_email_paths(evidence_lines: list[str], domains: list) -> list[tuple[str, str]]:
+def _evidence_email_paths(evidence_lines: list[str], domains: list[Domain]) -> list[tuple[str, str]]:
     """(evidence label, staged path) for each distinct email in evidence order.
 
     Evidence is already relevance-ranked, so the first emails are the likeliest
@@ -205,7 +206,7 @@ def _evidence_email_paths(evidence_lines: list[str], domains: list) -> list[tupl
     and reference-corpus lines are ignored."""
     from jarvisrag.extraction.cache import _EMAIL_EXTENSIONS
 
-    corpus_dirs = [d.get("corpus_dir") for d in domains or [] if d.get("corpus_dir")]
+    corpus_dirs = [d.corpus_dir for d in domains or [] if d.corpus_dir]
     found: list[tuple[str, str]] = []
     seen: set[str] = set()
     for line in evidence_lines:
@@ -224,7 +225,7 @@ def _evidence_email_paths(evidence_lines: list[str], domains: list) -> list[tupl
     return found
 
 
-def _attachment_evidence_lines(query: str, evidence_lines: list[str], domains: list) -> list[str]:
+def _attachment_evidence_lines(query: str, evidence_lines: list[str], domains: list[Domain]) -> list[str]:
     """Dereference the attachments of the top evidence emails into evidence lines.
 
     The runtime half of the attachment pointer design: attachment content is
@@ -307,7 +308,7 @@ def _attachment_evidence_lines(query: str, evidence_lines: list[str], domains: l
     return lines
 
 
-def _with_attachment_evidence(query: str, domain_lines: list[str], domains: list) -> list[str]:
+def _with_attachment_evidence(query: str, domain_lines: list[str], domains: list[Domain]) -> list[str]:
     """Domain evidence with the top emails' relevant attachment passages added.
 
     Runs BEFORE synthesis, not as a retry triggered by the answer's wording: a
@@ -324,7 +325,7 @@ def _with_attachment_evidence(query: str, domain_lines: list[str], domains: list
 
 def _cascade_domain_answer(
     query: str,
-    unconsulted_domains: list,
+    unconsulted_domains: list[Domain],
     mcp_evidence: list[str],
     llm,
 ) -> dict | None:
@@ -365,7 +366,7 @@ def _cascade_domain_answer(
         return None
     ordered = sorted(
         unconsulted_domains,
-        key=lambda d: _corpus_relevance(query, d.get("index")),
+        key=lambda d: _corpus_relevance(query, d.index),
         reverse=True,
     )
     first_partial = None
@@ -390,14 +391,14 @@ def _cascade_domain_answer(
                 "evidence_lines": combined,
                 "refs": casc_refs,
                 "superseded": casc_superseded,
-                "domain_names": [domain.get("name")],
+                "domain_names": [domain.name],
                 "completeness": completeness,
             }
             if completeness == ANSWER_COMPLETE:
                 return result
             if first_partial is None:
                 first_partial = result
-            debug_print(f"[debug] Domain cascade: '{domain.get('name')}' answered in part; trying next.")
+            debug_print(f"[debug] Domain cascade: '{domain.name}' answered in part; trying next.")
             continue
-        debug_print(f"[debug] Domain cascade: '{domain.get('name')}' did not answer; trying next.")
+        debug_print(f"[debug] Domain cascade: '{domain.name}' did not answer; trying next.")
     return first_partial

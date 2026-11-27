@@ -45,7 +45,7 @@ from jarvisrag.retrieval import build_hybrid_retriever
 from jarvisrag.iotools import Spinner, _is_port_open
 from jarvisrag.mcp.registry import load_mcp_registry
 from jarvisrag.docsync.sources import load_document_sources
-from jarvisrag.answer.runtime import QueryRuntime
+from jarvisrag.answer.runtime import Domain, QueryRuntime
 
 
 # Read here, not in config: evaluation scripts set JARVIS_PERSIST_DIR just
@@ -493,7 +493,7 @@ def _partition_home_files(input_dir: str, indexed_docs: list) -> tuple[list[str]
     return indexed, excluded
 
 
-def _build_domain_retrievers(embed_model, llm) -> list:
+def _build_domains(embed_model, llm) -> list[Domain]:
     """Build gated, SEPARATE retrievers for volatile domain corpora (e.g.
     federal-benefits PDFs) declared in document_sources.json.
 
@@ -510,7 +510,7 @@ def _build_domain_retrievers(embed_model, llm) -> list:
         return []
 
     top_k = int(os.environ.get("JARVIS_RETRIEVAL_TOP_K", DEFAULT_RETRIEVAL_TOP_K))
-    domains: list = []
+    domains: list[Domain] = []
     for doc_set in sets:
         if not doc_set.match_any or not os.path.isdir(doc_set.corpus_dir):
             continue
@@ -551,14 +551,14 @@ def _build_domain_retrievers(embed_model, llm) -> list:
         retriever = build_hybrid_retriever(
             domain_index, dense_top_k=top_k, bm25_top_k=top_k, fusion_top_k=top_k, llm=llm,
         )
-        domains.append({
-            "name": doc_set.name,
-            "retriever": retriever,
-            "index": domain_index,
-            "match_any": doc_set.match_any,
-            "label": doc_set.label or doc_set.name,
-            "corpus_dir": os.path.abspath(doc_set.corpus_dir),
-        })
+        domains.append(Domain(
+            name=doc_set.name,
+            retriever=retriever,
+            index=domain_index,
+            match_any=doc_set.match_any,
+            label=doc_set.label or doc_set.name,
+            corpus_dir=os.path.abspath(doc_set.corpus_dir),
+        ))
         print(f"[jarvis] Domain corpus '{doc_set.name}' loaded ({len(docs)} docs); routes on {doc_set.match_any}.")
     return domains
 
@@ -633,7 +633,7 @@ def build_runtime(input_dir: str) -> QueryRuntime:
         )
 
     mcp_registry = load_mcp_registry()
-    domain_retrievers = _build_domain_retrievers(embed_model, llm)
+    domains = _build_domains(embed_model, llm)
 
     # The speech worker loads on a background thread so it overlaps with the work
     # above; join it here so its readiness notice lands before the REPL prompt
@@ -655,5 +655,5 @@ def build_runtime(input_dir: str) -> QueryRuntime:
         home_indexed_files=home_indexed_files,
         home_excluded_files=home_excluded_files,
         mcp_registry=mcp_registry,
-        domain_retrievers=domain_retrievers,
+        domains=domains,
     )

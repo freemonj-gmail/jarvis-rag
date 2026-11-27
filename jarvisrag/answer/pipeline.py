@@ -209,10 +209,10 @@ def handle_query(
         # drops the subject keyword STICKS to the previous turn's domain, but only
         # when that domain is MORE relevant to the query than the main index —
         # otherwise it is a real topic change and we fall back to normal routing.
-        domain_retrievers = getattr(runtime, "domain_retrievers", None)
+        domains = getattr(runtime, "domains", None)
         prior_domain_names = last_turn.get("domain_names")
         active_domains, keyword_domains = _domains_for_turn(
-            effective_user_query, domain_retrievers, prior_domain_names
+            effective_user_query, domains, prior_domain_names
         )
         domain_routed = False
         routed_domain_names: list = []
@@ -221,21 +221,21 @@ def handle_query(
         domain_superseded: set[str] = set()
         if keyword_domains:
             domain_routed = True
-            routed_domain_names = [d.get("name") for d in keyword_domains]
+            routed_domain_names = [d.name for d in keyword_domains]
             domain_evidence, domain_refs, domain_superseded = _retrieve_domain_evidence(
                 effective_user_query, keyword_domains
             )
             domain_evidence = _with_attachment_evidence(effective_user_query, domain_evidence, keyword_domains)
         elif active_domains:
             domain_rel = max(
-                (_corpus_relevance(effective_user_query, d.get("index")) for d in active_domains),
+                (_corpus_relevance(effective_user_query, d.index) for d in active_domains),
                 default=0.0,
             )
             main_rel = _corpus_relevance(effective_user_query, runtime.doc_index)
             debug_print(f"[debug] sticky arbitration: domain_rel={domain_rel:.4f} main_rel={main_rel:.4f}")
             if domain_rel > main_rel:
                 domain_routed = True
-                routed_domain_names = [d.get("name") for d in active_domains]
+                routed_domain_names = [d.name for d in active_domains]
                 domain_evidence, domain_refs, domain_superseded = _retrieve_domain_evidence(
                     effective_user_query, active_domains
                 )
@@ -360,7 +360,7 @@ def handle_query(
         # successful adoption, so a partial primary answer is preserved when the
         # cascade finds nothing.
         unconsulted = [
-            d for d in (domain_retrievers or []) if d.get("name") not in routed_domain_names
+            d for d in (domains or []) if d.name not in routed_domain_names
         ]
         cascade_possible = bool(unconsulted) and not (
             is_follow_up and last_turn.get("awaiting_clarification")

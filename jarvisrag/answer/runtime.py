@@ -7,9 +7,22 @@ can import it without importing each other.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from jarvisrag.config import STORAGE_DIR
+
+
+@dataclass
+class Domain:
+    """One domain corpus kept separate from the main index (e.g. federal
+    benefits, personal mail), consulted when a question routes to it or as a
+    cascade when the main sources do not answer."""
+    name: str
+    retriever: object = None
+    index: object = None
+    match_any: list[str] = field(default_factory=list)
+    label: str = ""
+    corpus_dir: str = ""
 
 
 @dataclass
@@ -32,4 +45,4 @@ class QueryRuntime:
     home_indexed_files: list[str] | None = None
     home_excluded_files: list[str] | None = None
     mcp_registry: object | None = None
-    domain_retrievers: list | None = None
+    domains: list[Domain] | None = None

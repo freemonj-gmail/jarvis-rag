@@ -17,6 +17,7 @@ ROOT = os.path.dirname(os.path.dirname(__file__))
 sys.path.insert(0, ROOT)
 
 from tests.helpers import _patch_answer
+from jarvisrag.answer.runtime import Domain
 
 
 class AnswerBudgetTests(unittest.TestCase):
@@ -233,7 +234,7 @@ class ValueQuestionSynthesisTests(unittest.TestCase):
 
     def test_value_question_goes_to_the_review_loop(self):
         import jarvisrag.answer.pipeline as ans
-        runtime = ans.QueryRuntime(all_docs=[], llm=Mock(), doc_retriever=object(), domain_retrievers=[])
+        runtime = ans.QueryRuntime(all_docs=[], llm=Mock(), doc_retriever=object(), domains=[])
         loop = Mock(return_value=("SYNTHESIZED ANSWER", True, "ok"))
         with _patch_answer("_retrieve_query_supported_evidence", return_value=(list(self.EVIDENCE), [])
         ), _patch_answer("fetch_mcp_evidence", return_value=[]), _patch_answer("_answer_with_review_loop", loop
@@ -431,10 +432,10 @@ class RoutingTermTests(unittest.TestCase):
         connector = MCPConnector(name="tax", enabled=True, transport="http", url="", match_any=["irs", "tax"])
         self.assertFalse(connector.matches("Who was the first person to walk on Mars?"))
         self.assertTrue(connector.matches("When are taxes due?"))
-        domains = [{"name": "benefits", "retriever": object(), "match_any": ["opm", "fers"]}]
+        domains = [Domain(name="benefits", retriever=object(), match_any=["opm", "fers"])]
         self.assertEqual(_domains_for_turn("Summarize the development plan and the offers", domains), ([], []))
         active, matched = _domains_for_turn("What does OPM say about FERS?", domains)
-        self.assertEqual([d["name"] for d in matched], ["benefits"])
+        self.assertEqual([d.name for d in matched], ["benefits"])
 
 
 class DomainCascadeTests(unittest.TestCase):
@@ -446,7 +447,7 @@ class DomainCascadeTests(unittest.TestCase):
 
     @staticmethod
     def _domains():
-        return [{"name": "mail", "retriever": object(), "match_any": ["email"]}]
+        return [Domain(name="mail", retriever=object(), match_any=["email"])]
 
     def test_no_unconsulted_domains_returns_none(self):
         from jarvisrag.answer.domains import _cascade_domain_answer
@@ -495,13 +496,13 @@ class DomainCascadeTests(unittest.TestCase):
     @staticmethod
     def _two_domains():
         return [
-            {"name": "reference", "retriever": object(), "index": "ref-index"},
-            {"name": "mail", "retriever": object(), "index": "mail-index"},
+            Domain(name="reference", retriever=object(), index="ref-index"),
+            Domain(name="mail", retriever=object(), index="mail-index"),
         ]
 
     @staticmethod
     def _per_domain_evidence(query, domains):
-        name = domains[0]["name"]
+        name = domains[0].name
         return ([f"- {name}.doc: {name} text ({name}.doc)"], [f"{name}.doc"], set())
 
     def test_each_domain_is_retrieved_in_isolation(self):
@@ -511,7 +512,7 @@ class DomainCascadeTests(unittest.TestCase):
         calls = []
 
         def record(query, domains):
-            calls.append([d["name"] for d in domains])
+            calls.append([d.name for d in domains])
             return self._per_domain_evidence(query, domains)
 
         with _patch_answer("_retrieve_domain_evidence", side_effect=record), _patch_answer("_answer_with_review_loop", return_value=("The evidence does not contain it.", True, "ok")
@@ -541,7 +542,7 @@ class DomainCascadeTests(unittest.TestCase):
         order = []
 
         def record(query, domains):
-            order.append(domains[0]["name"])
+            order.append(domains[0].name)
             return self._per_domain_evidence(query, domains)
 
         with _patch_answer("_retrieve_domain_evidence", side_effect=record), _patch_answer("_answer_with_review_loop", return_value=("The RMA number is ECR-1.", True, "ok")
@@ -694,7 +695,7 @@ class CascadeTriggerTests(unittest.TestCase):
             all_docs=[],
             llm=Mock(),
             doc_retriever=object(),
-            domain_retrievers=[{"name": "mail", "retriever": object(), "match_any": ["email"]}],
+            domains=[Domain(name="mail", retriever=object(), match_any=["email"])],
         )
         cascade = Mock(return_value=cascade_result)
         judge = Mock(return_value=completeness)
@@ -720,7 +721,7 @@ class CascadeTriggerTests(unittest.TestCase):
         }
         turn, cascade, judge = self._run(answer_verdicts.ANSWER_PARTIAL, adopted)
         cascade.assert_called_once()
-        self.assertEqual([d["name"] for d in cascade.call_args.args[1]], ["mail"])
+        self.assertEqual([d.name for d in cascade.call_args.args[1]], ["mail"])
         self.assertEqual(turn["response_text"], "The return tracking number is ZX-1.")
         self.assertEqual(judge.call_count, 1)  # cascade's verdict is reused, not recomputed
 

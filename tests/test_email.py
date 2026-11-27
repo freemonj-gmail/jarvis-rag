@@ -39,6 +39,7 @@ from llama_index.core.vector_stores.types import VectorStoreQuery
 from jarvisrag.extraction import indexing, owned_index, persistence
 from scripts.bench_mail_embedding import AlignedTokenizer, copy_sample, embedding_order, measure_pipeline, padded_tokens, revise_sample_message
 from tests.helpers import _patch_answer
+from jarvisrag.answer.runtime import Domain
 
 # An exported JARVIS_MAIL_ACCOUNTS scopes the walk to one real account, which
 # would reject every synthetic fixture and trip the empty-scan guard instead.
@@ -64,7 +65,7 @@ class MailStartupTests(unittest.TestCase):
                     patch.object(bootstrap, "_load_corpus_documents", side_effect=AssertionError("loaded the corpus")), \
                     patch.dict(os.environ, {}, clear=False):
                 os.environ.pop("JARVIS_BUILD_MAIL_INDEX", None)
-                self.assertEqual(bootstrap._build_domain_retrievers(Mock(), Mock()), [])
+                self.assertEqual(bootstrap._build_domains(Mock(), Mock()), [])
 
             ledger = Path(persist, "domains", "mail")
             ledger.mkdir(parents=True)
@@ -74,7 +75,7 @@ class MailStartupTests(unittest.TestCase):
                     patch.object(bootstrap, "_load_corpus_documents", return_value=[Document(text="Synthetic staged message.")]), \
                     patch.object(bootstrap, "_build_index", return_value=(Mock(), Mock(), "query", "milvus")) as build, \
                     patch.object(bootstrap, "build_hybrid_retriever", return_value=Mock()):
-                self.assertEqual(len(bootstrap._build_domain_retrievers(Mock(), Mock())), 1)
+                self.assertEqual(len(bootstrap._build_domains(Mock(), Mock())), 1)
             self.assertEqual(build.call_args.kwargs["owned_corpus_dir"], corpus)
 
     def test_explicit_opt_in_builds_the_mail_index(self):
@@ -88,7 +89,7 @@ class MailStartupTests(unittest.TestCase):
                     patch.object(bootstrap, "_build_index", return_value=(Mock(), Mock(), "query", "milvus")) as build, \
                     patch.object(bootstrap, "build_hybrid_retriever", return_value=Mock()), \
                     patch.dict(os.environ, {"JARVIS_BUILD_MAIL_INDEX": "1"}):
-                self.assertEqual(len(bootstrap._build_domain_retrievers(Mock(), Mock())), 1)
+                self.assertEqual(len(bootstrap._build_domains(Mock(), Mock())), 1)
             self.assertEqual(build.call_args.kwargs["owned_corpus_dir"], corpus)
 
     def test_only_mail_sets_request_owned_indexing(self):
@@ -102,7 +103,7 @@ class MailStartupTests(unittest.TestCase):
                     patch.object(bootstrap, "_build_index", return_value=(Mock(), Mock(), "query", "milvus")) as build, \
                     patch.object(bootstrap, "build_hybrid_retriever", return_value=Mock()), \
                     patch.dict(os.environ, {"JARVIS_BUILD_MAIL_INDEX": "1"}):
-                self.assertEqual(len(bootstrap._build_domain_retrievers(Mock(), Mock())), 2)
+                self.assertEqual(len(bootstrap._build_domains(Mock(), Mock())), 2)
             self.assertEqual(build.call_args_list[0].kwargs["owned_corpus_dir"], directory)
             self.assertNotIn("owned_corpus_dir", build.call_args_list[1].kwargs)
 
@@ -905,7 +906,7 @@ class MailCitationTests(unittest.TestCase):
         with patch.dict(os.environ, {"JARVIS_MAX_EVIDENCE_LINES": str(cap)}), \
                 _patch_answer("_retrieve_query_supported_evidence", return_value=(lines, nodes)):
             delivered, references, superseded = answer_module._retrieve_domain_evidence(
-                "what did the email say", [{"name": "mail", "retriever": object()}]
+                "what did the email say", [Domain(name="mail", retriever=object())]
             )
         self.assertEqual(len(delivered), cap)
         self.assertEqual(len(references), cap)
@@ -925,7 +926,7 @@ class MailCitationTests(unittest.TestCase):
         def retrieve(_query, retriever, **_kwargs):
             return by_retriever[id(retriever)], []
 
-        domains = [{"name": name, "retriever": retriever} for name, retriever in retrievers.items()]
+        domains = [Domain(name=name, retriever=retriever) for name, retriever in retrievers.items()]
         with patch.dict(os.environ, {"JARVIS_MAX_EVIDENCE_LINES": str(cap)}), \
                 _patch_answer("_retrieve_query_supported_evidence", side_effect=retrieve):
             delivered, _refs, _superseded = answer_module._retrieve_domain_evidence("question", domains)
@@ -945,7 +946,7 @@ class MailCitationTests(unittest.TestCase):
                 raise RuntimeError("synthetic lookup failure")
             return good, []
 
-        domains = [{"name": "broken", "retriever": "broken"}, {"name": "good", "retriever": "good"}]
+        domains = [Domain(name="broken", retriever="broken"), Domain(name="good", retriever="good")]
         with _patch_answer("_retrieve_query_supported_evidence", side_effect=retrieve):
             delivered, _refs, _superseded = answer_module._retrieve_domain_evidence("question", domains)
         self.assertEqual(delivered, good)
@@ -1227,7 +1228,7 @@ class EmailAttachmentPointerTests(unittest.TestCase):
         import jarvisrag.answer.bootstrap as boot
 
         cache = os.path.join(self.work.name, "cache")
-        domain = {"name": "mail", "corpus_dir": os.path.abspath(self.corpus)}
+        domain = Domain(name="mail", corpus_dir=os.path.abspath(self.corpus))
         evidence = [f"- {self.stem}.emlx: See attached.", "- other.pdf: unrelated text"]
         with patch.object(boot, "EXTRACTION_CACHE_DIR", cache), contextlib.redirect_stdout(io.StringIO()):
             lines = answer_domains._attachment_evidence_lines("What is the tracking code?", evidence, [domain])
@@ -1239,7 +1240,7 @@ class EmailAttachmentPointerTests(unittest.TestCase):
         import jarvisrag.answer.pipeline as ans
         from jarvisrag.answer import domains as answer_domains
 
-        other = {"name": "mail", "corpus_dir": os.path.join(self.work.name, "elsewhere")}
+        other = Domain(name="mail", corpus_dir=os.path.join(self.work.name, "elsewhere"))
         self.assertEqual(answer_domains._evidence_email_paths([f"- {self.stem}.emlx: text"], [other]), [])
 
     def test_identical_attachment_on_two_emails_is_read_once(self):
@@ -1250,7 +1251,7 @@ class EmailAttachmentPointerTests(unittest.TestCase):
         twin_stem = "f" * 24
         shutil.copyfile(self.staged, os.path.join(self.corpus, f"{twin_stem}.emlx"))
         shutil.copytree(self.mirror, os.path.join(docsync_mail.mail_attachment_dir(self.corpus), twin_stem))
-        domain = {"name": "mail", "corpus_dir": os.path.abspath(self.corpus)}
+        domain = Domain(name="mail", corpus_dir=os.path.abspath(self.corpus))
         evidence = [f"- {self.stem}.emlx: See attached.", f"- {twin_stem}.emlx: See attached."]
         with patch.object(boot, "EXTRACTION_CACHE_DIR", os.path.join(self.work.name, "cache")), \
                 contextlib.redirect_stdout(io.StringIO()):
@@ -1264,7 +1265,7 @@ class EmailAttachmentPointerTests(unittest.TestCase):
         from jarvisrag.answer import domains as answer_domains
         import jarvisrag.answer.bootstrap as boot
 
-        domain = {"name": "mail", "corpus_dir": os.path.abspath(self.corpus)}
+        domain = Domain(name="mail", corpus_dir=os.path.abspath(self.corpus))
         evidence = [f"- {self.stem}.emlx: See attached."]
         with patch.object(boot, "EXTRACTION_CACHE_DIR", os.path.join(self.work.name, "cache")), \
                 contextlib.redirect_stdout(io.StringIO()):
