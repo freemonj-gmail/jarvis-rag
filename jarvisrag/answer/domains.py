@@ -10,8 +10,10 @@ from jarvisrag.config import debug_print
 from jarvisrag.iotools import Spinner
 from jarvisrag.mcp.registry import routing_term_matches
 from jarvisrag.retrieval import (
+    _max_evidence_lines,
     _query_evidence_is_supported,
     _query_focused_snippet,
+    _query_snippet_chars,
     _retrieve_query_supported_evidence,
 )
 from jarvisrag.text.query import _query_anchor_terms, _query_requests_values, _query_terms
@@ -19,26 +21,13 @@ from jarvisrag.text.textproc import is_low_information_text
 from jarvisrag.answer.runtime import Domain
 from jarvisrag.answer.verdicts import _answer_completeness, ANSWER_COMPLETE, ANSWER_UNANSWERED
 from jarvisrag.answer.synthesis import _answer_with_review_loop
-from jarvisrag.answer.evidence import (
-    _budget_combined_evidence,
-    _DEFAULT_MAIN_INDEX_RESERVE,
-    _DEFAULT_SYNTHESIS_EVIDENCE_BUDGET,
-)
+from jarvisrag.answer.evidence import _budget_combined_evidence, _evidence_budget
 
 
 # ---------------------------------------------------------------------------
 # Query handling pipeline
 # ---------------------------------------------------------------------------
 
-
-# Domain evidence is capped at the SAME budget the retriever already applies to
-# the main index (JARVIS_MAX_EVIDENCE_LINES). A tighter, separate cap here (was
-# 15) silently discarded up to HALF the ranked lines the domain retriever had
-# already selected and deduped -- and for a cross-document answer the pieces that
-# rank lower are exactly a value phrased in different vocabulary than the query
-# (e.g. a $-figure in a "402(g) elective deferral" chunk vs a Roth/IRA question),
-# so the tighter cap cut precisely the evidence needed to link the answer.
-_DEFAULT_DOMAIN_EVIDENCE_LINES = 30
 
 
 def _domains_for_turn(
@@ -162,7 +151,14 @@ def _retrieve_domain_evidence(
     those references replace."""
     if not domains:
         return [], [], set()
-    cap = max(1, int(os.environ.get("JARVIS_MAX_EVIDENCE_LINES", str(_DEFAULT_DOMAIN_EVIDENCE_LINES))))
+    # Domain evidence is capped at the SAME budget the retriever already applies to
+    # the main index (JARVIS_MAX_EVIDENCE_LINES). A tighter, separate cap here (was
+    # 15) silently discarded up to HALF the ranked lines the domain retriever had
+    # already selected and deduped -- and for a cross-document answer the pieces that
+    # rank lower are exactly a value phrased in different vocabulary than the query
+    # (e.g. a $-figure in a "402(g) elective deferral" chunk vs a Roth/IRA question),
+    # so the tighter cap cut precisely the evidence needed to link the answer.
+    cap = _max_evidence_lines()
     per_domain: list[list[str]] = []
     nodes: list = []
     for domain in domains:
@@ -241,7 +237,7 @@ def _attachment_evidence_lines(query: str, evidence_lines: list[str], domains: l
     from jarvisrag.extraction.extractors import load_documents_with_cache
     from jarvisrag.extraction.mail import staged_email_attachments
 
-    snippet_chars = int(os.environ.get("JARVIS_QUERY_SNIPPET_CHARS", "6000"))
+    snippet_chars = _query_snippet_chars()
     terms = _query_terms(query)
     anchors = _query_anchor_terms(query, terms)
     require_value = _query_requests_values(query)
@@ -379,8 +375,7 @@ def _cascade_domain_answer(
             mcp_evidence,
             casc_evidence,
             [],
-            budget=int(os.environ.get("JARVIS_SYNTHESIS_EVIDENCE_BUDGET", str(_DEFAULT_SYNTHESIS_EVIDENCE_BUDGET))),
-            main_reserve=int(os.environ.get("JARVIS_MAIN_INDEX_RESERVE", str(_DEFAULT_MAIN_INDEX_RESERVE))),
+            **_evidence_budget(),
         )
         text, passed, reason = _answer_with_review_loop(query, combined, llm)
         completeness = _answer_completeness(query, text, llm) if passed else ANSWER_UNANSWERED

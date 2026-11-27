@@ -1,6 +1,8 @@
 """Combining evidence from the main index, domain corpora, and MCP sources.
 """
 
+import os
+
 from jarvisrag.text.query import _source_label_from_evidence_line
 
 
@@ -14,6 +16,15 @@ _DEFAULT_SYNTHESIS_EVIDENCE_BUDGET = 40
 # When a domain routed, the general (main) index is usually noise for that
 # domain-specific question, so its contribution is reserved to a small share.
 _DEFAULT_MAIN_INDEX_RESERVE = 6
+
+
+def _evidence_budget() -> dict[str, int]:
+    """The global evidence ceiling and the main-index reserve, as the keyword
+    arguments of ``_budget_combined_evidence``. Read when used."""
+    return {
+        "budget": int(os.environ.get("JARVIS_SYNTHESIS_EVIDENCE_BUDGET", str(_DEFAULT_SYNTHESIS_EVIDENCE_BUDGET))),
+        "main_reserve": int(os.environ.get("JARVIS_MAIN_INDEX_RESERVE", str(_DEFAULT_MAIN_INDEX_RESERVE))),
+    }
 
 
 def _evidence_source_labels(evidence_lines: list[str]) -> list[str]:

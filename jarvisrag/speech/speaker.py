@@ -12,6 +12,11 @@ import os
 from jarvisrag.config import logger
 
 
+def _tts_debug_enabled() -> bool:
+    """JARVIS_TTS_DEBUG=1 turns on detailed speech diagnostics (read when used)."""
+    return os.environ.get("JARVIS_TTS_DEBUG", "0") == "1"
+
+
 class Speaker:
     """Base for the speech engines: speak, say_goodbye, cleanup."""
 
@@ -45,7 +50,7 @@ class Speaker:
         self._render(text)
 
     def _wording_failed(self, error: Exception) -> None:
-        if os.environ.get("JARVIS_TTS_DEBUG", "0") == "1":
+        if _tts_debug_enabled():
             logger.debug(f"Failed to word speech: {error}")
 
     def _render(self, text: str) -> None:

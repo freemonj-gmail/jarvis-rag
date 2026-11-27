@@ -17,7 +17,7 @@ import numpy as np
 from jarvisrag.config import logger
 from jarvisrag.iotools import suppress_external_output, suppress_external_stderr
 from jarvisrag.speech.playback import _audio_player_command, _resolve_audio_player
-from jarvisrag.speech.speaker import Speaker
+from jarvisrag.speech.speaker import _tts_debug_enabled, Speaker
 from jarvisrag.speech.wording import _normalize_spoken_semantics
 
 
@@ -87,7 +87,7 @@ class KokoroSpeaker(Speaker):
             #   * Kokoro 'Defaulting repo_id' warning (resolved by passing
             #     repo_id explicitly below)
             #   * phonemizer 'words count mismatch' warnings on every speak()
-            tts_debug = os.environ.get("JARVIS_TTS_DEBUG", "0") == "1"
+            tts_debug = _tts_debug_enabled()
             if not tts_debug:
                 import warnings
                 warnings.filterwarnings("ignore", category=UserWarning, module="torch")
@@ -167,14 +167,14 @@ class KokoroSpeaker(Speaker):
         if not getattr(self, 'enabled', True):
             return False
         if not getattr(self, 'tts_available', False):
-            if os.environ.get("JARVIS_TTS_DEBUG", "0") == "1":
+            if _tts_debug_enabled():
                 logger.debug("TTS is unavailable, cannot speak text.")
             return False
         return True
 
     def _render(self, text):
         try:
-            tts_debug = os.environ.get("JARVIS_TTS_DEBUG", "0") == "1"
+            tts_debug = _tts_debug_enabled()
             clean_text = self.clean_text(text)
             if not clean_text:
                 return
@@ -247,5 +247,5 @@ class KokoroSpeaker(Speaker):
                 elif tts_debug:
                     logger.debug(f"Left TTS temp file for inspection: {tmp_file.name}")
         except Exception as e:
-            if os.environ.get("JARVIS_TTS_DEBUG", "0") == "1":
+            if _tts_debug_enabled():
                 logger.debug(f"Failed to generate or play speech: {e}")

@@ -38,6 +38,23 @@ from jarvisrag.text.query import (
 _RRF_K = 60
 
 
+# Retrieval sizes shared with the answer layer (domain corpora, source previews).
+# Read when used, so each has one default and a changed setting applies everywhere.
+def _max_evidence_lines() -> int:
+    """Evidence lines delivered per source: the main index, or one domain corpus."""
+    return max(1, int(os.environ.get("JARVIS_MAX_EVIDENCE_LINES", "30")))
+
+
+def _query_snippet_chars() -> int:
+    """Characters of each passage kept around the question's terms."""
+    return int(os.environ.get("JARVIS_QUERY_SNIPPET_CHARS", "6000"))
+
+
+def _source_hint_chunk_chars() -> int:
+    """Characters of a chunk kept whole when the user names its file."""
+    return int(os.environ.get("JARVIS_SOURCE_HINT_CHUNK_CHARS", "16000"))
+
+
 def _node_identity(node: object) -> object:
     """Stable identity for a retrieved node, used to aggregate its relevance
     across query variants and to look that relevance back up when ranking
@@ -164,7 +181,7 @@ def _source_nodes_to_query_evidence_lines(
     # figure could be trimmed out even though its chunk was selected and cited.
     # Overridable like its siblings above so the budget can be measured, not
     # guessed. Enumeration and source-hint paths keep their own larger budgets.
-    query_snippet_chars = int(os.environ.get("JARVIS_QUERY_SNIPPET_CHARS", "6000"))
+    query_snippet_chars = _query_snippet_chars()
     hint_basenames = {os.path.basename(h).lower() for h in (source_hints or []) if h}
     node_relevance = node_relevance or {}
     home_root = (os.path.abspath(home_corpus_dir).lower() + os.sep) if home_corpus_dir else None
@@ -217,9 +234,9 @@ def _source_nodes_to_query_evidence_lines(
 
         if is_source_hinted:
             # Bypass score filter for user-named files; send the full chunk text
-            # (capped at JARVIS_SOURCE_HINT_CHUNK_CHARS, default 4000) so employer
+            # (capped at JARVIS_SOURCE_HINT_CHUNK_CHARS, default 16000) so employer
             # names, dates, and lists aren't severed mid-word.
-            max_chars = int(os.environ.get("JARVIS_SOURCE_HINT_CHUNK_CHARS", "16000"))
+            max_chars = _source_hint_chunk_chars()
             snippet = " ".join(node_text.split())[:max_chars].rstrip()
             if len(node_text) > max_chars:
                 snippet += "..."
@@ -384,7 +401,7 @@ def _retrieve_query_supported_evidence(
     home_corpus_dir: str | None = None,
 ) -> tuple[list[str], list[object]]:
     max_queries = 20  # fixed ceiling on query paraphrases; the generator yields far fewer
-    max_evidence = max(1, int(os.environ.get("JARVIS_MAX_EVIDENCE_LINES", "30")))
+    max_evidence = _max_evidence_lines()
     all_nodes = []
     seen_node_ids = set()
     # Aggregate each node's relevance across all query paraphrases with RRF so a

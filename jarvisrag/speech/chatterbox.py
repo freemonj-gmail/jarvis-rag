@@ -31,7 +31,7 @@ from datetime import datetime
 
 from jarvisrag.config import logger
 from jarvisrag.speech.playback import _audio_player_command, _resolve_audio_player
-from jarvisrag.speech.speaker import Speaker
+from jarvisrag.speech.speaker import _tts_debug_enabled, Speaker
 from jarvisrag.speech.wording import _normalize_spoken_semantics
 
 # Startup is a model load plus a warmup generation; measured ~31s on Apple
@@ -79,17 +79,13 @@ def _notice(message):
             handle.write(f"{datetime.now():%Y-%m-%d %H:%M:%S} {message}\n")
     except Exception:
         pass
-    if not _debug_enabled():
+    if not _tts_debug_enabled():
         return
     try:
         sys.stdout.write(f"\n\n{message}\n\n{_REPL_PROMPT}")
         sys.stdout.flush()
     except Exception:
         pass
-
-
-def _debug_enabled() -> bool:
-    return os.environ.get("JARVIS_TTS_DEBUG", "0") == "1"
 
 
 def _concatenate_wavs(paths):
@@ -259,7 +255,7 @@ class ChatterboxSpeaker(Speaker):
             # Keep the worker's stderr on disk rather than discarding it, so a
             # mid-answer death can be diagnosed after the fact.
             self._stderr_log = (
-                sys.stderr if _debug_enabled()
+                sys.stderr if _tts_debug_enabled()
                 else open(_WORKER_LOG, "w")  # noqa: SIM115 - closed in cleanup()
             )
             self._process = subprocess.Popen(
@@ -349,7 +345,7 @@ class ChatterboxSpeaker(Speaker):
         state = "still running but silent" if code is None else f"exited with code {code}"
         tail = ""
         try:
-            if not _debug_enabled() and os.path.exists(_WORKER_LOG):
+            if not _tts_debug_enabled() and os.path.exists(_WORKER_LOG):
                 with open(_WORKER_LOG, "r", errors="replace") as handle:
                     lines = [ln.strip() for ln in handle.readlines() if ln.strip()]
                 if lines:

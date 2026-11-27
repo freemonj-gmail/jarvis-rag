@@ -45,12 +45,7 @@ from jarvisrag.answer.previews import (
     _build_source_details_preview,
     _build_topic_details_preview,
 )
-from jarvisrag.answer.evidence import (
-    _budget_combined_evidence,
-    _DEFAULT_MAIN_INDEX_RESERVE,
-    _DEFAULT_SYNTHESIS_EVIDENCE_BUDGET,
-    _evidence_source_labels,
-)
+from jarvisrag.answer.evidence import _budget_combined_evidence, _evidence_budget, _evidence_source_labels
 from jarvisrag.answer.domains import (
     _cascade_domain_answer,
     _corpus_relevance,
@@ -312,8 +307,7 @@ def _gather_evidence(turn: Turn, runtime: QueryRuntime) -> None:
         turn.mcp_evidence,
         turn.domain_evidence,
         main_evidence,
-        budget=int(os.environ.get("JARVIS_SYNTHESIS_EVIDENCE_BUDGET", str(_DEFAULT_SYNTHESIS_EVIDENCE_BUDGET))),
-        main_reserve=int(os.environ.get("JARVIS_MAIN_INDEX_RESERVE", str(_DEFAULT_MAIN_INDEX_RESERVE))),
+        **_evidence_budget(),
     )
     debug_print(f"[debug] Retrieved source chunks: {len(source_nodes)}")
     debug_print(f"[debug] Query-supported evidence lines: {len(turn.evidence_lines)}")

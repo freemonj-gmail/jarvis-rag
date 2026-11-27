@@ -12,6 +12,7 @@ from jarvisrag.retrieval import (
     _query_candidate_score,
     _query_evidence_is_supported,
     _query_focused_snippet,
+    _source_hint_chunk_chars,
 )
 from jarvisrag.text.query import (
     _best_detail_candidate,
@@ -135,11 +136,11 @@ def _build_source_details_preview(user_query: str, documents: list[Document], ll
         )
 
     # When the user explicitly names a file, send full chunk text (capped at
-    # JARVIS_SOURCE_HINT_CHUNK_CHARS, default 4000) ordered by chunk_index so
+    # JARVIS_SOURCE_HINT_CHUNK_CHARS, default 16000) ordered by chunk_index so
     # sections like "Certifications" that sit mid-chunk aren't cropped out by
     # the generic detail-density scorer. Matches the source-hint force-include
     # behavior in _source_nodes_to_query_evidence_lines.
-    max_chars = int(os.environ.get("JARVIS_SOURCE_HINT_CHUNK_CHARS", "16000"))
+    max_chars = _source_hint_chunk_chars()
     ordered: list[tuple[tuple[str, int, int], str]] = []
     for doc in matching_docs:
         text = doc.text or ""
