@@ -773,13 +773,14 @@ jarvisrag/             # Umbrella package (organized by function)
     bootstrap.py       #   builds the runtime at startup (models, indexes, voice)
     math/              #   deterministic calculation lane (arithmetic, %, stats, probability)
   speech/              # TTS / speech
-    kokoro.py          #   Kokoro engine (TTSManager) + engine-independent spoken semantics
-    chatterbox.py      #   Chatterbox engine client
-    wording.py         #   fixed wording rules (numerals, units, dates, addresses)
+    speaker.py         #   Speaker interface every engine presents + SilentSpeaker
+    kokoro.py          #   Kokoro engine (KokoroSpeaker)
+    chatterbox.py      #   Chatterbox engine client (ChatterboxSpeaker)
+    wording.py         #   wording rules (numerals, units, dates, addresses) + engine-independent spoken semantics
     context.py         #   context-aware token readings (one model call)
     citations.py       #   citation patterns and their removal before speaking
     spoken.py          #   the text to speak for an answer
-    playback.py        #   platform audio player + silent fallback
+    playback.py        #   platform audio player
   mcp/                 # MCP connector layer (OAuth + keyless stdio, PII guard)
     connector.py       #   fetches MCP evidence for a question; `make mcp-login` entry point
     registry.py        #   connector definitions and routing rules

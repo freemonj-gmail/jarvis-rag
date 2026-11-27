@@ -78,7 +78,7 @@ def _render_chatterbox(texts: list[str]) -> list[tuple[list, int]]:
 def _render_kokoro(texts: list[str]) -> list[tuple[list, int]]:
     import numpy as np
 
-    manager = speech.TTSManager()
+    manager = speech.KokoroSpeaker()
     audio = []
     for text in texts:
         clips = []
@@ -94,7 +94,7 @@ def _spoken_for(engine: str, text: str) -> str:
     """The words the engine is actually given for ``text``."""
     if engine == "chatterbox":
         return _expand_numbers_to_words(speech._normalize_spoken_semantics(text))
-    return speech.TTSManager.clean_text(speech.TTSManager.__new__(speech.TTSManager), text)
+    return speech.KokoroSpeaker.clean_text(speech.KokoroSpeaker.__new__(speech.KokoroSpeaker), text)
 
 
 def main() -> int:

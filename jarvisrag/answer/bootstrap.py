@@ -28,8 +28,8 @@ from llama_index.llms.ollama import Ollama
 
 from jarvisrag.config import PROJECT_ROOT, STORAGE_DIR, debug_print, short_text_qa_template
 from jarvisrag.embeddings import bound_mps_embedding_shapes
-from jarvisrag.speech import TTSManager, _SilentTTS
-from jarvisrag.speech.chatterbox import ChatterboxTTSClient, _CLIENT_LOG
+from jarvisrag.speech import KokoroSpeaker, SilentSpeaker
+from jarvisrag.speech.chatterbox import ChatterboxSpeaker, _CLIENT_LOG
 from jarvisrag.extraction.extractors import (
     file_extractor,
     has_files_with_extensions,
@@ -414,10 +414,10 @@ def _build_index(all_docs: list, embed_model, persist_dir=None, collection_name=
 def _build_tts():
     """Construct the TTS manager, or a silent stub when TTS is disabled."""
     if os.environ.get("JARVIS_ENABLE_TTS", "1") != "1":
-        return _SilentTTS()
+        return SilentSpeaker()
     if os.environ.get("JARVIS_TTS_ENGINE", "kokoro").strip().lower() == "chatterbox":
         return _build_chatterbox_tts()
-    return TTSManager()
+    return KokoroSpeaker()
 
 
 def _build_chatterbox_tts():
@@ -438,7 +438,7 @@ def _build_chatterbox_tts():
             "[jarvis] JARVIS_TTS_ENGINE=chatterbox needs JARVIS_CHATTERBOX_PYTHON "
             "(or JARVIS_CHATTERBOX_DIR) and JARVIS_CHATTERBOX_REF_WAV; using Kokoro."
         )
-        return TTSManager()
+        return KokoroSpeaker()
 
     worker = os.path.join(PROJECT_ROOT, "scripts", "chatterbox_tts_worker.py")
 
@@ -454,14 +454,14 @@ def _build_chatterbox_tts():
         f"[tts] Speech engine -> chatterbox (voice: {os.path.basename(ref_wav)}); "
         f"loading in the background. Speech logs: {_CLIENT_LOG}"
     )
-    return ChatterboxTTSClient(
+    return ChatterboxSpeaker(
         python,
         worker,
         ref_wav,
         exaggeration=_optional_float("JARVIS_CHATTERBOX_EXAGGERATION"),
         cfg_weight=_optional_float("JARVIS_CHATTERBOX_CFG_WEIGHT"),
         silence_ms=int(silence_ms) if silence_ms.isdigit() else None,
-        fallback_factory=TTSManager,
+        fallback_factory=KokoroSpeaker,
     )
 
 

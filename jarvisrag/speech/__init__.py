@@ -1,18 +1,20 @@
 """Speech synthesis and spoken-text normalization for Jarvis.
 
 Owns everything on the spoken-output path, split by job:
-  * ``kokoro`` -- ``TTSManager``, the Kokoro pipeline wrapper that runs synthesis
-    on a single background worker thread, and the engine-independent
-    spoken-semantics pass (money, percentages, abbreviations, URLs).
-  * ``wording`` -- fixed rules that rewrite written forms into spoken words.
+  * ``speaker`` -- ``Speaker``, the interface every engine presents (speak on one
+    background thread, say_goodbye, cleanup), and ``SilentSpeaker``, the no-op
+    speaker used when a runtime has no speech engine attached.
+  * ``kokoro`` -- ``KokoroSpeaker``, the Kokoro engine.
+  * ``chatterbox`` -- ``ChatterboxSpeaker``, the Chatterbox engine client.
+  * ``wording`` -- fixed rules that rewrite written forms into spoken words, and
+    the engine-independent spoken-semantics pass (money, percentages,
+    abbreviations, URLs).
   * ``context`` -- context-aware readings for tokens whose spoken form depends
     on the sentence (one model call, number-preserving acceptance).
   * ``citations`` -- citation regexes and their removal before speaking; the
     regexes are also consumed by the printed-display formatter.
   * ``spoken`` -- the text to speak for an answer (summary or full prose).
-  * ``playback`` -- the platform audio player and ``_SilentTTS``, the no-op
-    fallback used when a runtime has no TTS attached.
-  * ``chatterbox`` -- the Chatterbox engine client.
+  * ``playback`` -- the platform audio player.
 
 This package re-exports the names callers use, so ``from jarvisrag.speech
 import ...`` keeps working.
@@ -37,6 +39,7 @@ from jarvisrag.speech.wording import (  # noqa: F401
     _MONTH_YEAR_RANGE,
     _NON_NAME_BEFORE_ROMAN,
     _normalize_for_speech,
+    _normalize_spoken_semantics,
     _PER_SLASH_RE,
     _PER_UNITS,
     _ROMAN_NAME_ORDINALS,
@@ -70,12 +73,6 @@ from jarvisrag.speech.spoken import (  # noqa: F401
     _spoken_response_text,
     _summarize_for_speech,
 )
-from jarvisrag.speech.playback import (  # noqa: F401
-    _audio_player_command,
-    _resolve_audio_player,
-    _SilentTTS,
-)
-from jarvisrag.speech.kokoro import (  # noqa: F401
-    _normalize_spoken_semantics,
-    TTSManager,
-)
+from jarvisrag.speech.playback import _audio_player_command, _resolve_audio_player  # noqa: F401
+from jarvisrag.speech.speaker import SilentSpeaker, Speaker  # noqa: F401
+from jarvisrag.speech.kokoro import KokoroSpeaker  # noqa: F401

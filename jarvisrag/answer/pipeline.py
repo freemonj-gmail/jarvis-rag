@@ -15,7 +15,7 @@ from jarvisrag.answer.runtime import QueryRuntime
 from jarvisrag.config import debug_print
 from jarvisrag.mcp.connector import fetch_mcp_evidence
 from jarvisrag.retrieval import _evidence_lines_for_turn, _retrieve_query_supported_evidence
-from jarvisrag.speech import _resolve_spoken_tokens, _SilentTTS, _spoken_response_text
+from jarvisrag.speech import _resolve_spoken_tokens, SilentSpeaker, _spoken_response_text
 from jarvisrag.text.query import (
     _effective_query_for_turn,
     _is_negative_evidence_feedback,
@@ -85,7 +85,7 @@ def handle_query(
     loop, smoke tests) can chain turns themselves. Uses the cached
     index/retriever/LLM carried on `runtime` — no re-initialization."""
     last_turn: dict[str, object] = dict(prior_turn) if prior_turn else {}
-    tts = runtime.tts or _SilentTTS()
+    tts = runtime.tts or SilentSpeaker()
     # Set only when this turn ENDS by asking the user for a missing detail. The
     # next turn reads it to (a) link the reply back to this question no matter how
     # tersely it is phrased, and (b) refuse to ask a second time.

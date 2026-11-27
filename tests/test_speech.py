@@ -126,7 +126,7 @@ class SpeechContextTests(unittest.TestCase):
             resolve.assert_not_called()
             deferred = tts.speak.call_args.args[0]
             self.assertEqual(deferred(), "worded")
-            ans._speak_answer(ans._SilentTTS(), object(), "Built in 1903.")
+            ans._speak_answer(ans.SilentSpeaker(), object(), "Built in 1903.")
         resolve.assert_called_once()
 
 

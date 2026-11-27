@@ -28,7 +28,7 @@ from jarvis_helpers import (
     _looks_like_follow_up,
     _spoken_response_text,
     jpeg_extractor,
-    TTSManager,
+    KokoroSpeaker,
 )
 
 # Frozen public API contract for jarvis_helpers. The package refactor relocates
@@ -43,7 +43,7 @@ _PUBLIC_API_SURFACE = (
     "QueryRuntime",
     "handle_query",
     # Speech / TTS
-    "TTSManager",
+    "KokoroSpeaker",
     "_spoken_response_text",
     "_summarize_for_speech",
     "_speech_text_for_response",
@@ -613,19 +613,19 @@ def run_tests():
     # and speak it in the right order, instead of dropping it or stranding it
     # after "dollars". Regression for "$4 million" -> "4 dollars million" and
     # "$96k" -> "96 dollars".
-    _speak = TTSManager.__new__(TTSManager)
-    assert TTSManager.clean_text(_speak, "saved $4 million in costs") == (
+    _speak = KokoroSpeaker.__new__(KokoroSpeaker)
+    assert KokoroSpeaker.clean_text(_speak, "saved $4 million in costs") == (
         "saved 4 million dollars in costs"
     )
-    assert TTSManager.clean_text(_speak, "saved $96k/year") == (
+    assert KokoroSpeaker.clean_text(_speak, "saved $96k/year") == (
         "saved 96 thousand dollars per year"
     )
-    assert TTSManager.clean_text(_speak, "a $2.3 billion market") == (
+    assert KokoroSpeaker.clean_text(_speak, "a $2.3 billion market") == (
         "a 2 point 3 billion dollars market"
     )
     # Plain amounts are spelled out so an engine never reads a 4-digit figure as
     # a year (e.g. "$1,250" as "twelve fifty").
-    assert TTSManager.clean_text(_speak, "a $1,250.75 balance") == (
+    assert KokoroSpeaker.clean_text(_speak, "a $1,250.75 balance") == (
         "a one thousand two hundred and fifty dollars and seventy five cents balance"
     )
     print("- TTS money-scale wording OK")
@@ -648,7 +648,7 @@ def run_tests():
     # respawned into the same pressure; Chatterbox retires for the session so
     # Kokoro speaks instead of the machine thrashing. Dormant when no kill
     # happens, so a machine with headroom is unaffected.
-    from jarvisrag.speech.chatterbox import ChatterboxTTSClient, _MAX_WORKER_RESTARTS
+    from jarvisrag.speech.chatterbox import ChatterboxSpeaker, _MAX_WORKER_RESTARTS
 
     class _FakeProc:
         def __init__(self, code):
@@ -657,21 +657,21 @@ def run_tests():
         def poll(self):
             return self._code
 
-    killed = ChatterboxTTSClient.__new__(ChatterboxTTSClient)
+    killed = ChatterboxSpeaker.__new__(ChatterboxSpeaker)
     killed._disabled_for_session = False
     killed._restart_attempts = 0
     killed._process = _FakeProc(-9)  # SIGKILL / out-of-memory reap
     assert killed._restart_worker() is False
     assert killed._disabled_for_session is True
 
-    alive = ChatterboxTTSClient.__new__(ChatterboxTTSClient)
+    alive = ChatterboxSpeaker.__new__(ChatterboxSpeaker)
     alive._disabled_for_session = False
     alive._restart_attempts = 0
     alive._process = _FakeProc(None)  # still running
     assert alive._restart_worker() is True
     assert alive._disabled_for_session is False
 
-    flaky = ChatterboxTTSClient.__new__(ChatterboxTTSClient)
+    flaky = ChatterboxSpeaker.__new__(ChatterboxSpeaker)
     flaky._disabled_for_session = False
     flaky._restart_attempts = _MAX_WORKER_RESTARTS  # restart budget exhausted
     flaky._process = _FakeProc(1)

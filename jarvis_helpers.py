@@ -40,11 +40,11 @@ from jarvisrag.text.textproc import (
 )
 
 from jarvisrag.speech import (
-    TTSManager,
+    KokoroSpeaker,
     _CITATION_FILE_EXT,
     _INLINE_CITATION_RE,
     _SOURCE_REFERENCE_RE,
-    _SilentTTS,
+    SilentSpeaker,
     _normalize_for_speech,
     _speech_text_for_response,
     _spell_digits,

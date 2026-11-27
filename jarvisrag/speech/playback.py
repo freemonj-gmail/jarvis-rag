@@ -1,4 +1,4 @@
-"""Audio output: the platform audio player and the silent fallback speaker.
+"""Audio output: the platform's command-line audio player.
 """
 
 import shutil
@@ -21,17 +21,3 @@ def _audio_player_command(player, path):
     if sys.platform == "win32":
         return [player, "-c", f"(New-Object Media.SoundPlayer '{path}').PlaySync();"]
     return [player, path]
-
-
-class _SilentTTS:
-    """Fallback no-op TTS used when a runtime has no speech manager attached or
-    when speech is disabled via JARVIS_ENABLE_TTS=0 (e.g. smoke tests)."""
-
-    def speak(self, _text: str) -> None:  # pragma: no cover - trivial
-        pass
-
-    def say_goodbye(self) -> None:  # pragma: no cover - trivial
-        pass
-
-    def cleanup(self) -> None:  # pragma: no cover - trivial
-        pass

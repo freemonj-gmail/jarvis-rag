@@ -3,9 +3,9 @@
 Chatterbox pins ``transformers==5.2.0`` / ``torch==2.6.0``, which cannot
 co-resolve with Jarvis's dependency set, so synthesis runs under a separate
 interpreter (see ``scripts/chatterbox_tts_worker.py``) and this class speaks to
-it over stdin/stdout. It presents the same ``speak`` / ``say_goodbye`` /
-``cleanup`` surface as :class:`~jarvisrag.speech.TTSManager`, so the answer
-pipeline needs no engine-specific branches.
+it over stdin/stdout. Like every engine it is a
+:class:`~jarvisrag.speech.speaker.Speaker`, so the answer pipeline needs no
+engine-specific branches.
 
 The worker synthesizes in chunks (runs of whole sentences) and delivers a wav
 for each, but they are joined here and played through a single player call, so
@@ -30,11 +30,9 @@ import threading
 from datetime import datetime
 
 from jarvisrag.config import logger
-from jarvisrag.speech import (
-    _audio_player_command,
-    _normalize_spoken_semantics,
-    _resolve_audio_player,
-)
+from jarvisrag.speech.playback import _audio_player_command, _resolve_audio_player
+from jarvisrag.speech.speaker import Speaker
+from jarvisrag.speech.wording import _normalize_spoken_semantics
 
 # Startup is a model load plus a warmup generation; measured ~31s on Apple
 # Silicon, so the handshake needs a far more generous budget than a normal IPC.
@@ -201,7 +199,7 @@ class _SpawnedPlayer:
             pass
 
 
-class ChatterboxTTSClient:
+class ChatterboxSpeaker(Speaker):
     """Speaks answers in a cloned voice via the external Chatterbox worker."""
 
     def __init__(self, python, worker_script, ref_wav, *, exaggeration=None,
@@ -403,24 +401,13 @@ class ChatterboxTTSClient:
         except Exception:
             return False
 
-    def speak(self, text):
-        if self._closed or not text:
-            return
-        try:
-            self.executor.submit(self._speak_async, text)
-        except RuntimeError:
-            pass  # executor already shut down
+    def _accepting(self):
+        return not self._closed
 
-    def _speak_async(self, text):
-        # Deferred wording runs here, on the speech thread, not the REPL's.
-        if callable(text):
-            try:
-                text = text()
-            except Exception as error:
-                _notice(f"[tts] could not word the answer for speech: {error}")
-                return
-            if not text:
-                return
+    def _wording_failed(self, error):
+        _notice(f"[tts] could not word the answer for speech: {error}")
+
+    def _render(self, text):
         self._ready.wait(_READY_TIMEOUT_SECONDS)
         if self._disabled_for_session or self._start_failed or not self._worker_alive():
             # A worker reaped by the OS while idle means the machine is out of
@@ -524,7 +511,7 @@ class ChatterboxTTSClient:
         """Delegate to Kokoro, which applies its own spoken-text normalization.
 
         Chatterbox is fed the engine-agnostic prose directly, while Kokoro needs
-        the orthographic scrubbing in ``TTSManager.clean_text`` -- so the raw
+        the orthographic scrubbing in ``KokoroSpeaker.clean_text`` -- so the raw
         text is handed over rather than anything shaped for Chatterbox.
         """
         engine = self._ensure_fallback()
@@ -541,14 +528,6 @@ class ChatterboxTTSClient:
         return self._fallback
 
     # -- shutdown -----------------------------------------------------------
-
-    def say_goodbye(self):
-        if os.environ.get("JARVIS_TTS_GOODBYE", "0") != "1":
-            return
-        try:
-            self.speak("Goodbye!")
-        except Exception as error:
-            logger.error(f"Error during goodbye: {error}")
 
     def cleanup(self):
         if self._closed:

@@ -1,7 +1,7 @@
-"""The Kokoro speech engine and the engine-independent spoken-semantics pass.
+"""The Kokoro speech engine.
 
-``TTSManager`` runs Kokoro synthesis on one background worker thread and plays
-the audio through the platform player.
+``KokoroSpeaker`` runs Kokoro synthesis on one background worker thread and
+plays the audio through the platform player.
 """
 
 import asyncio
@@ -16,16 +16,12 @@ import numpy as np
 
 from jarvisrag.config import logger
 from jarvisrag.iotools import suppress_external_output, suppress_external_stderr
-from jarvisrag.speech.wording import (
-    _cardinal_words,
-    _DOLLAR_SCALE_SUFFIX,
-    _normalize_for_speech,
-    _SCALE_WORDS,
-)
 from jarvisrag.speech.playback import _audio_player_command, _resolve_audio_player
+from jarvisrag.speech.speaker import Speaker
+from jarvisrag.speech.wording import _normalize_spoken_semantics
 
 
-class TTSManager:
+class KokoroSpeaker(Speaker):
     # Curated Kokoro voice list (en-US + en-GB). Daniel is the default
     # British male voice requested by the user.
     _KOKORO_VOICES = (
@@ -139,47 +135,6 @@ class TTSManager:
             self.executor = None
             self.pipeline = None
 
-    # Words that, when present in the same sentence as a comma-grouped number,
-    # strongly imply the number is a dollar amount and should be spoken as such.
-    _TTS_MONEY_KEYWORDS = (
-        "income", "wages", "salary", "salaries", "tax", "taxes", "withheld",
-        "withholding", "deduction", "deductions", "credit", "credits", "refund",
-        "refunds", "paid", "payment", "payments", "balance", "due", "owed",
-        "owing", "amount", "amounts", "total", "totals", "subtotal", "fee",
-        "fees", "cost", "costs", "price", "expense", "expenses", "revenue",
-        "revenues", "earnings", "compensation", "interest", "dividend",
-        "dividends", "contribution", "contributions", "agi", "gross",
-        "adjusted", "exemption", "exemptions", "loan", "principal", "mortgage",
-        "premium", "rebate", "value", "values", "dollars", "dollar",
-    )
-
-    @classmethod
-    def _add_dollar_sign_in_financial_context(cls, text: str) -> str:
-        """Prepend `$` to comma-grouped numbers (e.g. `453,172`, `8,577.50`)
-        when their sentence mentions a money keyword. This lets the existing
-        `$N` -> 'N dollars' rule fire so the spoken output says 'dollars'
-        instead of just reading a bare number.
-
-        We only touch comma-grouped numbers (>= 1,000 with thousands separator)
-        to avoid mangling years, line numbers, phone digits, dates, etc. Numbers
-        already written with the word "dollar(s)" are skipped so we don't produce
-        "dollars dollars"."""
-        money_pattern = re.compile(
-            r"(?<![\w$,])(\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?)(?!\w)(?![,\d])(?!\s*[Dd]ollars?\b)"
-        )
-        keywords = cls._TTS_MONEY_KEYWORDS
-        # Split on sentence boundaries while keeping the boundary characters so
-        # we can rejoin without altering pause cues.
-        parts = re.split(r"(?<=[.!?])\s+", text)
-        rewritten: list[str] = []
-        for sentence in parts:
-            lowered = sentence.lower()
-            has_money_word = any(kw in lowered for kw in keywords)
-            if has_money_word:
-                sentence = money_pattern.sub(r"$\1", sentence)
-            rewritten.append(sentence)
-        return " ".join(rewritten)
-
     def clean_text(self, text):
         cleaned = _normalize_spoken_semantics(text)
         cleaned = re.sub(r"[\u2010-\u2015\-]+", " ", cleaned)
@@ -195,35 +150,6 @@ class TTSManager:
         cleaned = re.sub(r"\s+", " ", cleaned).strip()
         return cleaned
 
-    @staticmethod
-    def _spoken_dollar_amount(match):
-        whole = match.group(1).replace(",", "")
-        frac = match.group(2) or ""
-        scale_word = _SCALE_WORDS.get(
-            (match.group("abbr") or match.group("word") or "").lower(), ""
-        )
-        if scale_word:
-            # A scaled amount: the decimal is a fractional multiplier, not cents
-            # ("$4.5 million" -> "4 point 5 million dollars").
-            number = f"{whole} point {frac}" if frac else whole
-            return f"{number} {scale_word} dollars"
-        cents_raw = frac.ljust(2, "0")[:2]
-        cents = int(cents_raw) if cents_raw else 0
-        # Spell the amount out so the engine never reads a 4-digit figure as a year.
-        dollars = _cardinal_words(whole)
-        if cents:
-            return f"{dollars} dollars and {_cardinal_words(str(cents))} cents"
-        return f"{dollars} dollars"
-
-    def say_goodbye(self):
-        if not getattr(self, 'initialized', False):
-            return
-        if os.environ.get("JARVIS_TTS_GOODBYE", "0") != "1":
-            return
-        try:
-            self.speak("Goodbye!")
-        except Exception as e:
-            logger.error(f"Error during goodbye: {e}")
 
     def cleanup(self):
         if not getattr(self, 'initialized', False):
@@ -237,28 +163,18 @@ class TTSManager:
         except Exception as e:
             logger.error(f"Error during cleanup: {e}")
 
-    def speak(self, text):
+    def _accepting(self):
         if not getattr(self, 'enabled', True):
-            return
+            return False
         if not getattr(self, 'tts_available', False):
             if os.environ.get("JARVIS_TTS_DEBUG", "0") == "1":
                 logger.debug("TTS is unavailable, cannot speak text.")
-            return
-        executor = getattr(self, 'executor', None)
-        if executor is None:
-            return
-        try:
-            executor.submit(self._speak_async, text)
-        except RuntimeError:
-            # Executor already shut down; ignore.
-            pass
+            return False
+        return True
 
-    def _speak_async(self, text):
+    def _render(self, text):
         try:
             tts_debug = os.environ.get("JARVIS_TTS_DEBUG", "0") == "1"
-            # Deferred wording runs here, on the speech thread, not the REPL's.
-            if callable(text):
-                text = text()
             clean_text = self.clean_text(text)
             if not clean_text:
                 return
@@ -333,42 +249,3 @@ class TTSManager:
         except Exception as e:
             if os.environ.get("JARVIS_TTS_DEBUG", "0") == "1":
                 logger.debug(f"Failed to generate or play speech: {e}")
-
-
-def _normalize_spoken_semantics(text: str) -> str:
-    """Rewrite text into the words a speech engine should actually say.
-
-    Covers what a listener would otherwise hear wrong regardless of engine:
-    context-dependent abbreviations (Dr., Jr., III), URLs, money, percentages
-    and decimals. Purely orthographic scrubbing -- stripping apostrophes and
-    punctuation -- is deliberately excluded, because that is a Kokoro/espeak
-    front-end requirement and degrades engines that use punctuation for phrasing.
-    """
-    cleaned = str(text or "")
-    # Expand abbreviations before any punctuation/hyphen stripping downstream, so
-    # the rules can still see periods and hyphens ("Dr.", "J-R", "I-I-I").
-    cleaned = _normalize_for_speech(cleaned)
-    cleaned = re.sub(r"https?://\S+", " link omitted ", cleaned)
-    # Recognize money-shaped numbers in financial sentences (no `$` needed).
-    cleaned = TTSManager._add_dollar_sign_in_financial_context(cleaned)
-    cleaned = re.sub(
-        r"\$\s*(\d[\d,]*)(?:\.(\d{1,2}))?" + _DOLLAR_SCALE_SUFFIX,
-        TTSManager._spoken_dollar_amount,
-        cleaned,
-    )
-    cleaned = re.sub(
-        r"\b(\d[\d,]*)\.(\d+)\s*%",
-        lambda m: f"{m.group(1).replace(',', '')} point {m.group(2)} percent",
-        cleaned,
-    )
-    cleaned = re.sub(
-        r"\b(\d[\d,]*)\s*%",
-        lambda m: f"{m.group(1).replace(',', '')} percent",
-        cleaned,
-    )
-    # Drop only thousands separators: in "Jan 29,2003" the comma separates a
-    # day from a year, and removing it would read one large number.
-    cleaned = re.sub(r"(?<=\d),(?=\d{3}(?!\d))", "", cleaned)
-    cleaned = re.sub(r"(?<=\d),(?=\d)", ", ", cleaned)
-    cleaned = re.sub(r"(?<=\d)\.(?=\d)", " point ", cleaned)
-    return cleaned

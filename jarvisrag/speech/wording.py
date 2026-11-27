@@ -352,3 +352,104 @@ def _normalize_for_speech(text: str, roman_numerals: bool = True) -> str:
     #    rate-slash rule, whose units never follow a date's slash.
     s = _expand_slash_dates(s)
     return s
+
+
+# Words that, when present in the same sentence as a comma-grouped number,
+# strongly imply the number is a dollar amount and should be spoken as such.
+_TTS_MONEY_KEYWORDS = (
+    "income", "wages", "salary", "salaries", "tax", "taxes", "withheld",
+    "withholding", "deduction", "deductions", "credit", "credits", "refund",
+    "refunds", "paid", "payment", "payments", "balance", "due", "owed",
+    "owing", "amount", "amounts", "total", "totals", "subtotal", "fee",
+    "fees", "cost", "costs", "price", "expense", "expenses", "revenue",
+    "revenues", "earnings", "compensation", "interest", "dividend",
+    "dividends", "contribution", "contributions", "agi", "gross",
+    "adjusted", "exemption", "exemptions", "loan", "principal", "mortgage",
+    "premium", "rebate", "value", "values", "dollars", "dollar",
+)
+
+
+def _add_dollar_sign_in_financial_context(text: str) -> str:
+    """Prepend `$` to comma-grouped numbers (e.g. `453,172`, `8,577.50`)
+    when their sentence mentions a money keyword. This lets the existing
+    `$N` -> 'N dollars' rule fire so the spoken output says 'dollars'
+    instead of just reading a bare number.
+
+    We only touch comma-grouped numbers (>= 1,000 with thousands separator)
+    to avoid mangling years, line numbers, phone digits, dates, etc. Numbers
+    already written with the word "dollar(s)" are skipped so we don't produce
+    "dollars dollars"."""
+    money_pattern = re.compile(
+        r"(?<![\w$,])(\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?)(?!\w)(?![,\d])(?!\s*[Dd]ollars?\b)"
+    )
+    keywords = _TTS_MONEY_KEYWORDS
+    # Split on sentence boundaries while keeping the boundary characters so
+    # we can rejoin without altering pause cues.
+    parts = re.split(r"(?<=[.!?])\s+", text)
+    rewritten: list[str] = []
+    for sentence in parts:
+        lowered = sentence.lower()
+        has_money_word = any(kw in lowered for kw in keywords)
+        if has_money_word:
+            sentence = money_pattern.sub(r"$\1", sentence)
+        rewritten.append(sentence)
+    return " ".join(rewritten)
+
+
+def _spoken_dollar_amount(match):
+    whole = match.group(1).replace(",", "")
+    frac = match.group(2) or ""
+    scale_word = _SCALE_WORDS.get(
+        (match.group("abbr") or match.group("word") or "").lower(), ""
+    )
+    if scale_word:
+        # A scaled amount: the decimal is a fractional multiplier, not cents
+        # ("$4.5 million" -> "4 point 5 million dollars").
+        number = f"{whole} point {frac}" if frac else whole
+        return f"{number} {scale_word} dollars"
+    cents_raw = frac.ljust(2, "0")[:2]
+    cents = int(cents_raw) if cents_raw else 0
+    # Spell the amount out so the engine never reads a 4-digit figure as a year.
+    dollars = _cardinal_words(whole)
+    if cents:
+        return f"{dollars} dollars and {_cardinal_words(str(cents))} cents"
+    return f"{dollars} dollars"
+
+
+def _normalize_spoken_semantics(text: str) -> str:
+    """Rewrite text into the words a speech engine should actually say.
+
+    Covers what a listener would otherwise hear wrong regardless of engine:
+    context-dependent abbreviations (Dr., Jr., III), URLs, money, percentages
+    and decimals. Purely orthographic scrubbing -- stripping apostrophes and
+    punctuation -- is deliberately excluded, because that is a Kokoro/espeak
+    front-end requirement and degrades engines that use punctuation for phrasing.
+    """
+    cleaned = str(text or "")
+    # Expand abbreviations before any punctuation/hyphen stripping downstream, so
+    # the rules can still see periods and hyphens ("Dr.", "J-R", "I-I-I").
+    cleaned = _normalize_for_speech(cleaned)
+    cleaned = re.sub(r"https?://\S+", " link omitted ", cleaned)
+    # Recognize money-shaped numbers in financial sentences (no `$` needed).
+    cleaned = _add_dollar_sign_in_financial_context(cleaned)
+    cleaned = re.sub(
+        r"\$\s*(\d[\d,]*)(?:\.(\d{1,2}))?" + _DOLLAR_SCALE_SUFFIX,
+        _spoken_dollar_amount,
+        cleaned,
+    )
+    cleaned = re.sub(
+        r"\b(\d[\d,]*)\.(\d+)\s*%",
+        lambda m: f"{m.group(1).replace(',', '')} point {m.group(2)} percent",
+        cleaned,
+    )
+    cleaned = re.sub(
+        r"\b(\d[\d,]*)\s*%",
+        lambda m: f"{m.group(1).replace(',', '')} percent",
+        cleaned,
+    )
+    # Drop only thousands separators: in "Jan 29,2003" the comma separates a
+    # day from a year, and removing it would read one large number.
+    cleaned = re.sub(r"(?<=\d),(?=\d{3}(?!\d))", "", cleaned)
+    cleaned = re.sub(r"(?<=\d),(?=\d)", ", ", cleaned)
+    cleaned = re.sub(r"(?<=\d)\.(?=\d)", " point ", cleaned)
+    return cleaned
