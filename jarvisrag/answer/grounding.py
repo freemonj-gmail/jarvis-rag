@@ -10,14 +10,15 @@ import re
 from llama_index.core.base.llms.types import ChatMessage, MessageRole
 from llama_index.llms.ollama import Ollama
 
+from jarvisrag.common.numbers import canonical_number, NUMBER_PATTERN
 from jarvisrag.speech import _SOURCE_REFERENCE_RE
 from jarvisrag.text.query import _query_requests_reasoning, _query_requests_refinement
 from jarvisrag.answer.verdicts import _response_is_dismissive
 
 
-# A comma groups thousands only before exactly three digits: "1,234,567" is one
-# number, but "Jan 29,2003" (no space after the comma) is a day and a year.
-_CONCRETE_VALUE_RE = re.compile(r"(?<![\w.])(?:\d{1,3}(?:,\d{3})+(?!\d|,\d)|\d+)(?:\.\d+)?")
+# Not inside a word or after a decimal point; the number itself is read by the
+# shared rule ("1,234,567" is one number, "Jan 29,2003" a day and a year).
+_CONCRETE_VALUE_RE = re.compile(r"(?<![\w.])" + NUMBER_PATTERN)
 
 
 # A page reference without a file name ("page 05", "pp. 3-4"); file names with
@@ -29,14 +30,8 @@ def _concrete_values(text: str) -> set[str]:
     """Numbers, amounts, percentages and years in ``text``, normalized so equal
     numbers compare equal however they are written ("7,500.00" == "7500",
     "2.540" == "2.54", "05" == "5")."""
-    values = set()
-    for raw in _CONCRETE_VALUE_RE.findall(text or ""):
-        value = raw.replace(",", "").rstrip(".")
-        if not value:
-            continue
-        whole, _, fraction = value.partition(".")
-        fraction = fraction.rstrip("0")
-        values.add((whole.lstrip("0") or "0") + (f".{fraction}" if fraction else ""))
+    values = {canonical_number(raw) for raw in _CONCRETE_VALUE_RE.findall(text or "")}
+    values.discard("")
     return values
 
 

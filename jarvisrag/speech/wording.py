@@ -5,6 +5,8 @@ Numerals, units, dates, addresses, state names, and Roman numerals.
 
 import re
 
+from jarvisrag.common.numbers import drop_thousands_commas, INTEGER_PATTERN
+
 
 # --- Spoken-text abbreviation / numeral normalization -----------------------
 # Kokoro (and the espeak/misaki G2P front-end) has no semantic understanding of
@@ -433,23 +435,23 @@ def _normalize_spoken_semantics(text: str) -> str:
     # Recognize money-shaped numbers in financial sentences (no `$` needed).
     cleaned = _add_dollar_sign_in_financial_context(cleaned)
     cleaned = re.sub(
-        r"\$\s*(\d[\d,]*)(?:\.(\d{1,2}))?" + _DOLLAR_SCALE_SUFFIX,
+        r"\$\s*(" + INTEGER_PATTERN + r")(?:\.(\d{1,2}))?" + _DOLLAR_SCALE_SUFFIX,
         _spoken_dollar_amount,
         cleaned,
     )
     cleaned = re.sub(
-        r"\b(\d[\d,]*)\.(\d+)\s*%",
+        r"\b(" + INTEGER_PATTERN + r")\.(\d+)\s*%",
         lambda m: f"{m.group(1).replace(',', '')} point {m.group(2)} percent",
         cleaned,
     )
     cleaned = re.sub(
-        r"\b(\d[\d,]*)\s*%",
+        r"\b(" + INTEGER_PATTERN + r")\s*%",
         lambda m: f"{m.group(1).replace(',', '')} percent",
         cleaned,
     )
     # Drop only thousands separators: in "Jan 29,2003" the comma separates a
     # day from a year, and removing it would read one large number.
-    cleaned = re.sub(r"(?<=\d),(?=\d{3}(?!\d))", "", cleaned)
+    cleaned = drop_thousands_commas(cleaned)
     cleaned = re.sub(r"(?<=\d),(?=\d)", ", ", cleaned)
     cleaned = re.sub(r"(?<=\d)\.(?=\d)", " point ", cleaned)
     return cleaned

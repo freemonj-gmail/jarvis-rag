@@ -7,6 +7,7 @@ reading only when it keeps every number's value.
 import json
 import re
 
+from jarvisrag.common.numbers import drop_thousands_commas
 from jarvisrag.config import debug_print
 from jarvisrag.speech.wording import _normalize_for_speech
 
@@ -150,7 +151,7 @@ def _reading_keeps_numbers(token: str, words: str) -> bool:
         w for w in re.sub(r"[^a-z ]", " ", words.lower().replace("-", " ")).split() if w != "and"
     ) + " "
     # Only a thousands separator joins digits: "29,2003" is a day and a year.
-    plain = re.sub(r"(?<=\d),(?=\d{3}(?!\d))", "", token)
+    plain = drop_thousands_commas(token)
     return all(
         any(f" {reading} " in said for reading in _number_readings(run))
         for run in re.findall(r"\d+", plain)

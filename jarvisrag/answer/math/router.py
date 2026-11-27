@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Callable
 
+from jarvisrag.common.numbers import drop_thousands_commas, NUMBER_PATTERN, number_value
+
 from .lexicon import (
     CHAIN_SPLIT_RE,
     LEADING_OPERATOR_RE,
@@ -28,7 +30,7 @@ from .operations import (
 )
 
 
-_NUMBER = r"[-+]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?"
+_NUMBER = r"[-+]?" + NUMBER_PATTERN
 _NUMBER_RE = re.compile(_NUMBER)
 _DATE_LIKE_RE = re.compile(r"^\d{4}-\d{1,2}-\d{1,2}$")
 _TOKEN_RE = re.compile(r"-?\d+|[a-z]+")
@@ -229,7 +231,7 @@ class _NumericTerm:
 
 
 def _numbers(text: str) -> list[Decimal]:
-    return [to_decimal(match.group(0).replace(",", "")) for match in _NUMBER_RE.finditer(text)]
+    return [number_value(match.group(0)) for match in _NUMBER_RE.finditer(text)]
 
 
 _RATIO_CLEAN_RE = re.compile(r"[$\u20ac\u00a3\u00a5,\s]")
@@ -243,7 +245,7 @@ def _ratio_decimal(token: str) -> Decimal:
 def _numeric_terms(text: str) -> list[_NumericTerm]:
     return [
         _NumericTerm(
-            value=to_decimal(match.group(0).replace(",", "")),
+            value=number_value(match.group(0)),
             start=match.start(),
             end=match.end(),
         )
@@ -626,20 +628,20 @@ _MONTHS_RE = re.compile(rf"({_NUMBER})\s*(?:months?|mos?)\b", re.I)
 
 def _rate_value(query: str) -> Decimal | None:
     match = _RATE_NEAR_PERCENT_RE.search(query)
-    return to_decimal(match.group(1).replace(",", "")) if match else None
+    return number_value(match.group(1)) if match else None
 
 
 def _all_rate_values(query: str) -> list[Decimal]:
-    return [to_decimal(m.group(1).replace(",", "")) for m in _RATE_NEAR_PERCENT_RE.finditer(query)]
+    return [number_value(m.group(1)) for m in _RATE_NEAR_PERCENT_RE.finditer(query)]
 
 
 def _years_value(query: str) -> Decimal | None:
     years = _YEARS_RE.search(query)
     if years is not None:
-        return to_decimal(years.group(1).replace(",", ""))
+        return number_value(years.group(1))
     months = _MONTHS_RE.search(query)
     if months is not None:
-        return ArithmeticOperations.divide(to_decimal(months.group(1).replace(",", "")), 12)
+        return ArithmeticOperations.divide(number_value(months.group(1)), 12)
     return None
 
 
@@ -715,7 +717,7 @@ def _expand_magnitudes(query: str) -> str:
     """Rewrite magnitude shorthand into full numbers before parsing, so a value
     like "$1.5M" is read as 1,500,000 rather than 1.5."""
     def expand(match: re.Match[str]) -> str:
-        scaled = to_decimal(match.group(1).replace(",", "")) * (Decimal(10) ** _MAGNITUDE[match.group(2).lower()])
+        scaled = number_value(match.group(1)) * (Decimal(10) ** _MAGNITUDE[match.group(2).lower()])
         return _plain_number(scaled)
 
     query = _MAGNITUDE_LETTER_RE.sub(expand, query)
@@ -896,7 +898,7 @@ class MathQueryRouter:
             re.I,
         )
         if binomial:
-            probability = to_decimal(binomial.group("probability").replace(",", ""))
+            probability = number_value(binomial.group("probability"))
             if binomial.group("percent"):
                 probability = ArithmeticOperations.divide(probability, 100)
             successes = int(binomial.group("successes"))
@@ -1510,8 +1512,8 @@ class MathQueryRouter:
             match = pattern.fullmatch(core)
             if not match:
                 continue
-            left = to_decimal(match.group("a").replace(",", ""))
-            right = to_decimal(match.group("b").replace(",", ""))
+            left = number_value(match.group("a"))
+            right = number_value(match.group("b"))
             if operation == "subtract_from":
                 value = ArithmeticOperations.subtract(right, left)
                 return _value_result(
@@ -1569,7 +1571,7 @@ class MathQueryRouter:
     def _try_symbolic_arithmetic(self, query: str, currency: str | None = None) -> CalculationResult | None:
         expression = to_operator_symbols(self._strip_prefixes(query))
         expression = expression.strip().rstrip("?.!").strip()
-        expression = re.sub(r"(?<=\d),(?=\d{3}(?:\D|$))", "", expression)
+        expression = drop_thousands_commas(expression)
         if _DATE_LIKE_RE.fullmatch(expression):
             return None
         # A dangling leading operator means the left operand was never supplied.

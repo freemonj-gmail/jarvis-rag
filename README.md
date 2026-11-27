@@ -743,6 +743,8 @@ jarvis_helpers.py      # Facade re-exporting the public API surface
 document_sources.json  # Remote-document + domain-corpus recipe (docsync + routing)
 jarvisrag/             # Umbrella package (organized by function)
   config/              # Settings + env-var configuration
+  common/              # Code shared across packages
+    numbers.py         #   one reading of numbers in text (thousands commas, decimals) for every consumer
   iotools/             # File I/O helpers (named to avoid shadowing stdlib io)
   text/                # Text processing + query parsing
   extraction/          # Extractors + indexing

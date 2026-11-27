@@ -12,6 +12,7 @@ import re
 
 from llama_index.core.schema import Document
 
+from jarvisrag.common.numbers import NUMBER_PATTERN
 from jarvisrag.text.textproc import (
     is_low_information_text,
     normalize_text,
@@ -662,7 +663,7 @@ def _topic_snippet_score(text: str, terms: list[str]) -> int:
 
 def _value_numbers(text: str) -> list[str]:
     normalized_text = text.replace("\\n", " ")
-    numbers = re.findall(r"(?<![\w*/.-])(?:\$\s*)?\d[\d,]*(?:\.\d+)?%?(?![\w/.-])", normalized_text)
+    numbers = re.findall(r"(?<![\w*/.-])(?:\$\s*)?" + NUMBER_PATTERN + r"%?(?![\w/.-])", normalized_text)
     values = []
     for number in numbers:
         stripped = number.strip()

@@ -734,5 +734,49 @@ class SmokeTests(unittest.TestCase):
             raise
 
 
+class SharedNumberReadingTests(unittest.TestCase):
+    """Every number consumer reads a comma as a thousands separator only before
+    exactly three digits, so a date or a list is never read as one large number."""
+
+    def test_comma_groups_thousands_only_before_three_digits(self):
+        import re
+        from jarvisrag.common.numbers import NUMBER_PATTERN
+
+        found = re.findall(NUMBER_PATTERN, "Paid 1,234,567.50 on Jan 29,2003 for samples 5,10,15.")
+        self.assertEqual(found, ["1,234,567.50", "29", "2003", "5", "10", "15"])
+
+    def test_equal_numbers_compare_equal_however_written(self):
+        from jarvisrag.common.numbers import canonical_number
+
+        self.assertEqual({canonical_number(raw) for raw in ("7,500.00", "7500", "07500.0")}, {"7500"})
+        self.assertEqual(canonical_number("2.540"), "2.54")
+        self.assertEqual(canonical_number(""), "")
+
+    def test_calculator_reads_a_day_and_a_year_apart(self):
+        from jarvisrag.answer.math.router import _numbers
+
+        self.assertEqual([str(v) for v in _numbers("Filed Jan 29,2003, paid $1,250.75")], ["29", "2003", "1250.75"])
+
+    def test_retrieval_does_not_count_dates_or_lists_as_amounts(self):
+        from jarvisrag.text.query import _value_numbers
+
+        self.assertEqual(_value_numbers("Filed Jan 29,2003 and again Jan 29, 2003 with samples 5,10,15."), [])
+        self.assertEqual(
+            _value_numbers("Totals of 1,234,567 and $1,250.75 at 15.5% were reported."),
+            ["1,234,567", "$1,250.75", "15.5%"],
+        )
+
+    def test_spoken_percent_list_and_odd_amount(self):
+        from jarvisrag.speech.wording import _normalize_spoken_semantics
+
+        self.assertEqual(
+            _normalize_spoken_semantics("Rates of 5,10% and 15% were tested."),
+            "Rates of 5, 10 percent and 15 percent were tested.",
+        )
+        spoken = _normalize_spoken_semantics("The note says $29,2003 was wired.")
+        self.assertIn("twenty-nine dollars", spoken)
+        self.assertNotIn("thousand", spoken)
+
+
 if __name__ == "__main__":
     unittest.main()

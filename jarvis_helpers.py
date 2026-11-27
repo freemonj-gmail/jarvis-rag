@@ -31,6 +31,14 @@ from jarvisrag.iotools import (
     time_limit,
 )
 
+from jarvisrag.common.numbers import (
+    canonical_number,
+    drop_thousands_commas,
+    INTEGER_PATTERN,
+    NUMBER_PATTERN,
+    number_value,
+)
+
 from jarvisrag.text.textproc import (
     is_low_information_text,
     normalize_text,
