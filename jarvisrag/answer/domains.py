@@ -203,7 +203,7 @@ def _evidence_email_paths(evidence_lines: list[str], domains: list) -> list[tupl
     carriers of an answer that sits in an attachment. Only labels that resolve to
     a file inside one of ``domains``' corpus directories count, so launch-folder
     and reference-corpus lines are ignored."""
-    from jarvisrag.extraction.extractors import _EMAIL_EXTENSIONS
+    from jarvisrag.extraction.cache import _EMAIL_EXTENSIONS
 
     corpus_dirs = [d.get("corpus_dir") for d in domains or [] if d.get("corpus_dir")]
     found: list[tuple[str, str]] = []
@@ -236,11 +236,9 @@ def _attachment_evidence_lines(query: str, evidence_lines: list[str], domains: l
     retrieval applies to every chunk, so an unrelated attachment never dilutes
     the evidence. Bounded per turn by email count, file count, and file size."""
     from jarvisrag.answer.bootstrap import EXTRACTION_CACHE_DIR, file_extractor
-    from jarvisrag.extraction.extractors import (
-        _EMAIL_EXTENSIONS,
-        load_documents_with_cache,
-        staged_email_attachments,
-    )
+    from jarvisrag.extraction.cache import _EMAIL_EXTENSIONS
+    from jarvisrag.extraction.extractors import load_documents_with_cache
+    from jarvisrag.extraction.mail import staged_email_attachments
 
     snippet_chars = int(os.environ.get("JARVIS_QUERY_SNIPPET_CHARS", "6000"))
     terms = _query_terms(query)

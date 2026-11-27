@@ -746,6 +746,12 @@ jarvisrag/             # Umbrella package (organized by function)
   iotools/             # File I/O helpers (named to avoid shadowing stdlib io)
   text/                # Text processing + query parsing
   extraction/          # Extractors + indexing
+    extractors.py      #   extension -> reader map + cached directory loader
+    office.py          #   ZIP, Excel, PowerPoint, Docling/Unstructured, MHTML readers
+    pdf.py             #   PDF text, tables, and OCR fallback for scanned pages
+    images.py          #   image OCR engines + optional vision-language model
+    mail.py            #   Apple Mail (.emlx) messages + staged attachments
+    cache.py           #   per-file extraction cache (versions, signatures, format)
     pagepipe.py        #   confidence-routed page extraction pipeline
     apple_ocr.py       #   Apple Vision OCR engine (macOS, default document OCR)
     persistence.py     #   persistent index lifecycle (delta sync, stale-chunk cleanup)
@@ -782,6 +788,8 @@ jarvisrag/             # Umbrella package (organized by function)
     guard.py           #   outbound PII guard + external-content sanitizing
     registry.json      #   MCP connector registry (pure data)
   docsync/             # Remote-document refresh (SHA-256 + conditional GET)
+    sources.py         #   source recipe, fetch state, change-detected downloads
+    mail.py            #   Apple Mail staging: account/mailbox scope, attachment mirror
   evaluation/          # Privacy-safe retrieval, answer-quality, speech-wording and voice harnesses, regression gate
 scripts/               # Evaluation CLIs (evaluate_retrieval.py, evaluate_answers.py, evaluate_speech.py, evaluate_voice.py),
                        # benchmarks, and the out-of-process Chatterbox TTS worker

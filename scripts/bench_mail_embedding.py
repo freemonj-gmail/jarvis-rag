@@ -50,7 +50,7 @@ class AlignedTokenizer:
 
 
 def load_sample(corpus_dir: Path, cache_dir: Path, count: int, seed: int):
-    from jarvisrag.extraction.extractors import (
+    from jarvisrag.extraction.cache import (
         EXTRACTION_CACHE_VERSION,
         _deserialize_documents_from_cache,
         _extraction_cache_path,
@@ -190,7 +190,7 @@ def measure_pipeline(embed_model):
 
 def revise_sample_message(path: Path, corpus_dir: Path):
     """Revise only a copied header while preserving the original MIME body and plist."""
-    from jarvisrag.extraction.extractors import EmlxReader
+    from jarvisrag.extraction.mail import EmlxReader
 
     if not path.resolve().is_relative_to(corpus_dir.resolve()):
         raise ValueError("Refusing to revise a source outside the private pilot corpus.")

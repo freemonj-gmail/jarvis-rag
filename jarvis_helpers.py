@@ -75,20 +75,21 @@ from jarvisrag.extraction.persistence import (
 )
 
 from jarvisrag.extraction.extractors import (
-    CombinedPDFReader,
-    DeferredExtractor,
-    DoclingReader,
-    ExcelReader,
-    JpegExtractor,
-    PowerPointReader,
-    TablePDFReader,
-    ZipExtractor,
     docling_reader,
     file_extractor,
     has_files_with_extensions,
     jpeg_extractor,
     load_documents_with_cache,
 )
+from jarvisrag.extraction.images import JpegExtractor
+from jarvisrag.extraction.office import (
+    DeferredExtractor,
+    DoclingReader,
+    ExcelReader,
+    PowerPointReader,
+    ZipExtractor,
+)
+from jarvisrag.extraction.pdf import CombinedPDFReader, TablePDFReader
 
 from jarvisrag.text.query import (
     _FOLLOW_UP_PRONOUN_RE,
