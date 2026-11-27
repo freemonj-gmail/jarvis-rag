@@ -43,7 +43,7 @@ from jarvisrag.extraction.indexing import (
 from jarvisrag.extraction.persistence import build_or_load_persistent_index
 from jarvisrag.retrieval import build_hybrid_retriever
 from jarvisrag.iotools import Spinner, _is_port_open
-from jarvisrag.mcp.connector import load_mcp_registry
+from jarvisrag.mcp.registry import load_mcp_registry
 from jarvisrag.docsync import load_document_sources
 from jarvisrag.answer.runtime import QueryRuntime
 

@@ -8,7 +8,7 @@ import re
 
 from jarvisrag.config import debug_print
 from jarvisrag.iotools import Spinner
-from jarvisrag.mcp.connector import routing_term_matches
+from jarvisrag.mcp.registry import routing_term_matches
 from jarvisrag.retrieval import (
     _query_evidence_is_supported,
     _query_focused_snippet,

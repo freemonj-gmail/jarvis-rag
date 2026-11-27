@@ -1857,7 +1857,7 @@ class RoutingTermTests(unittest.TestCase):
     a word, never inside an unrelated word."""
 
     def test_term_matches_at_word_start_only(self):
-        from jarvisrag.mcp.connector import routing_term_matches
+        from jarvisrag.mcp.registry import routing_term_matches
         for term, text in (("irs", "Who was the first woman to win?"), ("opm", "the development plan"),
                            ("irc", "under these circumstances"), ("tax", "fix the syntax error")):
             self.assertFalse(routing_term_matches(term, text), (term, text))
@@ -1868,7 +1868,7 @@ class RoutingTermTests(unittest.TestCase):
 
     def test_connector_and_domain_routing_share_the_rule(self):
         from jarvisrag.answer.domains import _domains_for_turn
-        from jarvisrag.mcp.connector import MCPConnector
+        from jarvisrag.mcp.registry import MCPConnector
         connector = MCPConnector(name="tax", enabled=True, transport="http", url="", match_any=["irs", "tax"])
         self.assertFalse(connector.matches("Who was the first person to walk on Mars?"))
         self.assertTrue(connector.matches("When are taxes due?"))
