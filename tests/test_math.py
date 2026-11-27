@@ -1,6 +1,7 @@
 """Focused tests for the deterministic Jarvis calculator lane."""
 
 import os
+import unittest
 import sys
 from decimal import Decimal
 from typing import Any
@@ -23,519 +24,530 @@ class RecordingTTS:
         self.spoken.append(text() if callable(text) else text)
 
 
-def run_tests() -> None:
-    router = MathQueryRouter()
+class MathLaneTests(unittest.TestCase):
+    """The deterministic calculator lane, on its own and through handle_query."""
 
-    cases = {
-        "What is 0.1 + 0.2?": Decimal("0.3"),
-        "Please subtract 5 from 12": Decimal("7"),
-        "multiply 6 by 7": Decimal("42"),
-        "divide 20 by 4": Decimal("5"),
-        "What is (2 + 3) * 4?": Decimal("20"),
-        "What is 20% of 50?": Decimal("10"),
-        "What is 30 percent of 100 equal to?": Decimal("30"),
-        "Calculate 12.5 per cent of 80": Decimal("10.000"),
-        "30 is what percent of 80?": Decimal("37.500"),
-        "What percentage of 80 is 30?": Decimal("37.500"),
-        "What percent is 30 out of 80?": Decimal("37.500"),
-        "What is the percentage increase of 80 to 100?": Decimal("25"),
-        "What is the percentage increase from 80 to 100?": Decimal("25"),
-        "What is the percent decrease from 100 to 80?": Decimal("20"),
-        "What percent did revenue drop from 500 to 400?": Decimal("20"),
-        "If my total salary is $120,000 and I am getting a 5% increase, what is my new salary amount?": Decimal("126000.00"),
-        "Increase 200 by 15%": Decimal("230"),
-        "What is 20% off of 50?": Decimal("40"),
-        "Reduce 80 by 25 percent": Decimal("60"),
-        "What is the mean of 1, 2, 3, 4?": Decimal("2.5"),
-        "Find the median of 1, 9, 3, 5": Decimal("4"),
-        "What is the mode of 1, 2, 2, 3?": Decimal("2"),
-        "Calculate the population variance of 1, 2, 3": Decimal(2) / Decimal(3),
-        "What is the population standard deviation of 1, 1, 1?": Decimal("0"),
-        "What is the sample variance of 2, 4, 4, 4, 5, 5, 7, 9?": Decimal(32) / Decimal(7),
-        "What is the sample standard deviation of 2, 4, 6?": Decimal("2"),
-        "What is the probability of 3 favorable outcomes out of 10 total outcomes?": Decimal("0.3"),
-        "What is the chance of rolling a 4 on a fair 6-sided die?": Decimal(1) / Decimal(6),
-        "What is the chance of rolling a 9 on a fair 6-sided die?": Decimal("0"),
-        "For a six sided single dice, what is the probability of getting any number on that dice?": Decimal(1) / Decimal(6),
-        "What is the probability of a number on a six sided dice roll?": Decimal(1) / Decimal(6),
-        "What is the probability of a side on a single dice?": Decimal(1) / Decimal(6),
-        "What is the probability of a roll for any given side on a single dice?": Decimal(1) / Decimal(6),
-        "What is the probability of a 6 sided die?": Decimal(1) / Decimal(6),
-        "What is the probability of a coin flip?": Decimal("0.5"),
-        "On a 6-sided die, find the chance for one face.": Decimal(1) / Decimal(6),
-        "What chance does any face have when rolling a twelve-sided die?": Decimal(1) / Decimal(12),
-        "For a twenty-sided die, what is the probability of rolling seven?": Decimal(1) / Decimal(20),
-        "What is the probability of heads on a fair coin?": Decimal("0.5"),
-        "On a fair coin toss, what chance does tails have?": Decimal("0.5"),
-        "What is the probability of an even number on a 6-sided die?": Decimal("0.5"),
-        "What is the probability of rolling an odd number on a 20-sided die?": Decimal("0.5"),
-        "What is the probability of rolling a number greater than 4 on a 6-sided die?": Decimal(1) / Decimal(3),
-        "What is the probability of rolling at least 3 on a 6-sided die?": Decimal(2) / Decimal(3),
-        "What is the probability of exactly 2 successes in 4 trials with success probability of 50%?": Decimal("0.3750"),
-    }
-    for query, expected in cases.items():
-        result = router.solve(query)
-        assert result is not None, f"calculation was not recognized: {query!r}"
-        assert result.value == expected, f"wrong result for {query!r}: {result.value}"
-        assert result.response_text.endswith("."), result.response_text
+    def test_calculations(self):
+        router = MathQueryRouter()
+        cases = {
+            "What is 0.1 + 0.2?": Decimal("0.3"),
+            "Please subtract 5 from 12": Decimal("7"),
+            "multiply 6 by 7": Decimal("42"),
+            "divide 20 by 4": Decimal("5"),
+            "What is (2 + 3) * 4?": Decimal("20"),
+            "What is 20% of 50?": Decimal("10"),
+            "What is 30 percent of 100 equal to?": Decimal("30"),
+            "Calculate 12.5 per cent of 80": Decimal("10.000"),
+            "30 is what percent of 80?": Decimal("37.500"),
+            "What percentage of 80 is 30?": Decimal("37.500"),
+            "What percent is 30 out of 80?": Decimal("37.500"),
+            "What is the percentage increase of 80 to 100?": Decimal("25"),
+            "What is the percentage increase from 80 to 100?": Decimal("25"),
+            "What is the percent decrease from 100 to 80?": Decimal("20"),
+            "What percent did revenue drop from 500 to 400?": Decimal("20"),
+            "If my total salary is $120,000 and I am getting a 5% increase, what is my new salary amount?": Decimal("126000.00"),
+            "Increase 200 by 15%": Decimal("230"),
+            "What is 20% off of 50?": Decimal("40"),
+            "Reduce 80 by 25 percent": Decimal("60"),
+            "What is the mean of 1, 2, 3, 4?": Decimal("2.5"),
+            "Find the median of 1, 9, 3, 5": Decimal("4"),
+            "What is the mode of 1, 2, 2, 3?": Decimal("2"),
+            "Calculate the population variance of 1, 2, 3": Decimal(2) / Decimal(3),
+            "What is the population standard deviation of 1, 1, 1?": Decimal("0"),
+            "What is the sample variance of 2, 4, 4, 4, 5, 5, 7, 9?": Decimal(32) / Decimal(7),
+            "What is the sample standard deviation of 2, 4, 6?": Decimal("2"),
+            "What is the probability of 3 favorable outcomes out of 10 total outcomes?": Decimal("0.3"),
+            "What is the chance of rolling a 4 on a fair 6-sided die?": Decimal(1) / Decimal(6),
+            "What is the chance of rolling a 9 on a fair 6-sided die?": Decimal("0"),
+            "For a six sided single dice, what is the probability of getting any number on that dice?": Decimal(1) / Decimal(6),
+            "What is the probability of a number on a six sided dice roll?": Decimal(1) / Decimal(6),
+            "What is the probability of a side on a single dice?": Decimal(1) / Decimal(6),
+            "What is the probability of a roll for any given side on a single dice?": Decimal(1) / Decimal(6),
+            "What is the probability of a 6 sided die?": Decimal(1) / Decimal(6),
+            "What is the probability of a coin flip?": Decimal("0.5"),
+            "On a 6-sided die, find the chance for one face.": Decimal(1) / Decimal(6),
+            "What chance does any face have when rolling a twelve-sided die?": Decimal(1) / Decimal(12),
+            "For a twenty-sided die, what is the probability of rolling seven?": Decimal(1) / Decimal(20),
+            "What is the probability of heads on a fair coin?": Decimal("0.5"),
+            "On a fair coin toss, what chance does tails have?": Decimal("0.5"),
+            "What is the probability of an even number on a 6-sided die?": Decimal("0.5"),
+            "What is the probability of rolling an odd number on a 20-sided die?": Decimal("0.5"),
+            "What is the probability of rolling a number greater than 4 on a 6-sided die?": Decimal(1) / Decimal(3),
+            "What is the probability of rolling at least 3 on a 6-sided die?": Decimal(2) / Decimal(3),
+            "What is the probability of exactly 2 successes in 4 trials with success probability of 50%?": Decimal("0.3750"),
+        }
+        for query, expected in cases.items():
+            result = router.solve(query)
+            assert result is not None, f"calculation was not recognized: {query!r}"
+            assert result.value == expected, f"wrong result for {query!r}: {result.value}"
+            assert result.response_text.endswith("."), result.response_text
 
-    division_by_zero = router.solve("divide 10 by 0")
-    assert division_by_zero is not None
-    assert division_by_zero.value is None
-    assert "zero" in division_by_zero.response_text.lower()
+    def test_impossible_inputs_are_reported(self):
+        router = MathQueryRouter()
+        division_by_zero = router.solve("divide 10 by 0")
+        assert division_by_zero is not None
+        assert division_by_zero.value is None
+        assert "zero" in division_by_zero.response_text.lower()
+        no_mode = router.solve("What is the mode of 1, 2, 3?")
+        assert no_mode is not None
+        assert no_mode.value is None
+        assert "no single mode" in no_mode.response_text.lower()
+        zero_percentage_base = router.solve("30 is what percent of 0?")
+        assert zero_percentage_base is not None
+        assert zero_percentage_base.value is None
+        assert "zero" in zero_percentage_base.response_text.lower()
+        repeated_coin = router.solve("What is the probability of 2 heads on a fair coin?")
+        assert repeated_coin is not None
+        assert repeated_coin.value is None
+        assert "number of trials" in repeated_coin.response_text.lower()
+        unsupported_math = router.solve("What is 2 ** 8?")
+        assert unsupported_math is not None
+        assert unsupported_math.value is None
+        assert "only addition" in unsupported_math.response_text.lower()
 
-    no_mode = router.solve("What is the mode of 1, 2, 3?")
-    assert no_mode is not None
-    assert no_mode.value is None
-    assert "no single mode" in no_mode.response_text.lower()
+    def test_non_calculations_go_to_retrieval(self):
+        router = MathQueryRouter()
+        not_calculations = (
+            "What is the square root of 16?",
+            "How old is someone born on 2000-01-01?",
+            "What does the report mean?",
+            "Summarize the 2025 financial results.",
+            "What is probability?",
+            # Incidental numbers in prose are not a dataset; these belong to RAG.
+            "What is the average rainfall in 2020?",
+            "What was the average salary reported in 2024?",
+            "What is the variance in the 2024 budget?",
+            "What is the median home price mentioned in the report?",
+            "What was the average revenue for the Seattle office?",
+            # Questions about indexed material must never be answered by the calculator.
+            "What is the probability of default described in the filing?",
+            "What is the average of the values listed in the report?",
+            "According to the document, what percent of 80 is 30?",
+            # Operator words used as ordinary English are not operators.
+            "What did I take away from the meeting notes?",
+            "Summarize the difference between the two reports",
+            "How many are less than 5",
+        )
+        for query in not_calculations:
+            assert router.solve(query) is None, f"non-calculation was incorrectly routed: {query!r}"
 
-    zero_percentage_base = router.solve("30 is what percent of 0?")
-    assert zero_percentage_base is not None
-    assert zero_percentage_base.value is None
-    assert "zero" in zero_percentage_base.response_text.lower()
+    def test_multi_object_and_qualified_events(self):
+        router = MathQueryRouter()
+        for multi_object in (
+            "What is the probability of rolling a 7 with two dice?",
+            "What is the probability of two heads on a pair of coins?",
+        ):
+            result = router.solve(multi_object)
+            assert result is not None and result.value is None, multi_object
+            assert "single die or coin" in result.response_text.lower()
+        qualified_die_event = router.solve(
+            "For a six sided die, what is the probability of rolling a prime number?"
+        )
+        assert qualified_die_event is not None
+        assert qualified_die_event.value is None
+        assert "favorable outcomes" in qualified_die_event.response_text.lower()
 
-    repeated_coin = router.solve("What is the probability of 2 heads on a fair coin?")
-    assert repeated_coin is not None
-    assert repeated_coin.value is None
-    assert "number of trials" in repeated_coin.response_text.lower()
+    def test_percentage_turn_through_pipeline_is_spoken(self):
+        tts = RecordingTTS()
+        runtime = QueryRuntime(all_docs=[], llm=None, doc_retriever=None, tts=tts)
+        turn: dict[str, Any] = handle_query(
+            "30 is what percent of 80?",
+            runtime,
+        )
+        assert turn["response_text"] == (
+            "30 as a percentage of 80 equals 37.5 percent."
+        )
+        assert turn["evidence_lines"] == []
+        assert turn["calculation"] == {
+            "category": "arithmetic",
+            "operation": "percentage rate",
+            "expression": "30 as a percentage of 80",
+            "value": "37.5",
+            "currency": None,
+        }
+        assert tts.spoken == [
+            "30 as a percentage of 80 equals 37.5 percent."
+        ]
 
-    unsupported_math = router.solve("What is 2 ** 8?")
-    assert unsupported_math is not None
-    assert unsupported_math.value is None
-    assert "only addition" in unsupported_math.response_text.lower()
+    def test_follow_up_reuses_computed_salary(self):
+        # A follow-up may reuse the value the previous turn already computed.
+        chain_runtime = QueryRuntime(all_docs=[], llm=None, doc_retriever=None, tts=RecordingTTS())
+        first = handle_query(
+            "If my total salary is $120,000 and I am getting a 5% increase, what is my new salary amount?",
+            chain_runtime,
+        )
+        assert first["response_text"] == "$120,000.00 increased by 5 percent equals $126,000.00."
+        second = handle_query(
+            "If I am in a 24% tax bracket, what is my take home salary after taxes?",
+            chain_runtime,
+            first,
+        )
+        assert second["response_text"] == (
+            "$126,000.00 reduced by 24 percent equals $95,760.00. "
+            "This applies only the rate you gave; other withholdings and deductions are not included."
+        )
+        # Currency stated once is carried forward and spoken as dollars and cents.
+        assert _spoken_response_text(second["response_text"]).startswith("$126,000.00")
 
-    not_calculations = (
-        "What is the square root of 16?",
-        "How old is someone born on 2000-01-01?",
-        "What does the report mean?",
-        "Summarize the 2025 financial results.",
-        "What is probability?",
-        # Incidental numbers in prose are not a dataset; these belong to RAG.
-        "What is the average rainfall in 2020?",
-        "What was the average salary reported in 2024?",
-        "What is the variance in the 2024 budget?",
-        "What is the median home price mentioned in the report?",
-        "What was the average revenue for the Seattle office?",
-        # Questions about indexed material must never be answered by the calculator.
-        "What is the probability of default described in the filing?",
-        "What is the average of the values listed in the report?",
-        "According to the document, what percent of 80 is 30?",
-        # Operator words used as ordinary English are not operators.
-        "What did I take away from the meeting notes?",
-        "Summarize the difference between the two reports",
-        "How many are less than 5",
-    )
-    for query in not_calculations:
-        assert router.solve(query) is None, f"non-calculation was incorrectly routed: {query!r}"
+    def test_currency_is_formatted(self):
+        router = MathQueryRouter()
+        for query, expected in {
+            "What is 20% of $50?": "20 percent of $50.00 equals $10.00.",
+            "Add $1,200.50 and $300": "The sum of $1,200.50, $300.00 equals $1,500.50.",
+            "Subtract $30 from $80": "$80.00 minus $30.00 equals $50.00.",
+            "What is the average of $10, $20 and $60?": "The mean of $10.00, $20.00, $60.00 equals $30.00.",
+        }.items():
+            result = router.solve(query)
+            assert result is not None and result.response_text == expected, query
 
-    for multi_object in (
-        "What is the probability of rolling a 7 with two dice?",
-        "What is the probability of two heads on a pair of coins?",
-    ):
-        result = router.solve(multi_object)
-        assert result is not None and result.value is None, multi_object
-        assert "single die or coin" in result.response_text.lower()
+    def test_caveat_scope_and_missing_base(self):
+        router = MathQueryRouter()
+        # The caveat is scoped to net/take-home framing, not to plain arithmetic.
+        plain_reduction = router.solve("Reduce 80 by 25 percent")
+        assert plain_reduction is not None
+        assert plain_reduction.response_text == "80 reduced by 25 percent equals 60."
+        # With no prior calculation there is no base to reuse, so nothing is invented.
+        assert router.solve("If I am in a 24% tax bracket, what is my take home salary after taxes?") is None
 
-    qualified_die_event = router.solve(
-        "For a six sided die, what is the probability of rolling a prime number?"
-    )
-    assert qualified_die_event is not None
-    assert qualified_die_event.value is None
-    assert "favorable outcomes" in qualified_die_event.response_text.lower()
+    def test_follow_up_names_previous_answer_and_chains_steps(self):
+        router = MathQueryRouter()
+        # A follow-up may name the previous answer, or omit the base entirely.
+        prior = {"calculation": {"value": "50648.75", "currency": "$"}}
+        for query, expected in {
+            "Divide that by 4": "$50,648.75 divided by 4 equals $12,662.19.",
+            "Take away 27%": "$50,648.75 reduced by 27 percent equals $36,973.59.",
+            "Take away 27 percent": "$50,648.75 reduced by 27 percent equals $36,973.59.",
+            # 500 was given as a bare number, so it stays scalar.
+            "the difference between that and 500": "$50,648.75 minus 500 equals $50,148.75.",
+            "the difference between that and $500": "$50,648.75 minus $500.00 equals $50,148.75.",
+            "the difference between that and 500 dollars": "$50,648.75 minus $500.00 equals $50,148.75.",
+        }.items():
+            result = router.solve(query, prior)
+            assert result is not None and result.response_text == expected, query
+        # Steps joined by a connector are evaluated left to right.
+        for query in (
+            "Divide that by 4 and take away 27%",
+            "Divide the previous answer by 4 and take away 27 percent",
+            "divide by 4 then take away 27%",
+        ):
+            chained = router.solve(query, prior)
+            assert chained is not None and chained.value == Decimal("9243.396875"), query
 
-    tts = RecordingTTS()
-    runtime = QueryRuntime(all_docs=[], llm=None, doc_retriever=None, tts=tts)
-    turn: dict[str, Any] = handle_query(
-        "30 is what percent of 80?",
-        runtime,
-    )
-    assert turn["response_text"] == (
-        "30 as a percentage of 80 equals 37.5 percent."
-    )
-    assert turn["evidence_lines"] == []
-    assert turn["calculation"] == {
-        "category": "arithmetic",
-        "operation": "percentage rate",
-        "expression": "30 as a percentage of 80",
-        "value": "37.5",
-        "currency": None,
-    }
-    assert tts.spoken == [
-        "30 as a percentage of 80 equals 37.5 percent."
-    ]
+    def test_currency_follows_its_operand(self):
+        router = MathQueryRouter()
+        # Currency follows the operand that carries the marker, in either position,
+        # whether the marker is a symbol or the word.
+        for query, expected in {
+            "Multiply $50,648.75 by 4": "The product of $50,648.75, 4 equals $202,595.00.",
+            "Multiply 4 by $50,648.75": "The product of 4, $50,648.75 equals $202,595.00.",
+            "Multiply 4 by 3": "The product of 4, 3 equals 12.",
+            "Divide 100 by $8": "100 divided by $8.00 equals $12.50.",
+            "Add $1,200.50 and 300": "The sum of $1,200.50, 300 equals $1,500.50.",
+            "Multiply 500 dollars by 4": "The product of $500.00, 4 equals $2,000.00.",
+            "Multiply 4 by 500 dollars": "The product of 4, $500.00 equals $2,000.00.",
+            "Multiply 500 USD by 4": "The product of $500.00, 4 equals $2,000.00.",
+            "Add 1200 dollars and 300": "The sum of $1,200.00, 300 equals $1,500.00.",
+            "Subtract 30 dollars from 80 dollars": "$80.00 minus $30.00 equals $50.00.",
+        }.items():
+            result = router.solve(query)
+            assert result is not None and result.response_text == expected, query
 
-    # A follow-up may reuse the value the previous turn already computed.
-    chain_runtime = QueryRuntime(all_docs=[], llm=None, doc_retriever=None, tts=RecordingTTS())
-    first = handle_query(
-        "If my total salary is $120,000 and I am getting a 5% increase, what is my new salary amount?",
-        chain_runtime,
-    )
-    assert first["response_text"] == "$120,000.00 increased by 5 percent equals $126,000.00."
-    second = handle_query(
-        "If I am in a 24% tax bracket, what is my take home salary after taxes?",
-        chain_runtime,
-        first,
-    )
-    assert second["response_text"] == (
-        "$126,000.00 reduced by 24 percent equals $95,760.00. "
-        "This applies only the rate you gave; other withholdings and deductions are not included."
-    )
+    def test_operator_phrasings(self):
+        router = MathQueryRouter()
+        # Every operator answers to its symbol and to its spelled-out names.
+        for expected, phrasings in {
+            Decimal("48"): (
+                "What is 12 * 4",
+                "What is 12 times 4",
+                "What is 12 multiplied by 4",
+                "What is the product of 12 and 4",
+            ),
+            Decimal("12.5"): (
+                "What is 100 / 8",
+                "What is 100 divided by 8",
+                "What is the quotient of 100 and 8",
+            ),
+            Decimal("75"): (
+                "What is 90 - 15",
+                "What is 90 minus 15",
+                "What is 90 take away 15",
+                "What is the difference between 90 and 15",
+                "What is the difference of 90 and 15",
+            ),
+            Decimal("12"): (
+                "What is 5 + 7",
+                "What is 5 plus 7",
+                "What is the sum of 5 and 7",
+            ),
+            Decimal("25"): (
+                "What is 10% of 250",
+                "What is 10 percent of 250",
+            ),
+        }.items():
+            for query in phrasings:
+                result = router.solve(query)
+                assert result is not None and result.value == expected, query
 
-    # Currency stated once is carried forward and spoken as dollars and cents.
-    assert _spoken_response_text(second["response_text"]).startswith("$126,000.00")
-    for query, expected in {
-        "What is 20% of $50?": "20 percent of $50.00 equals $10.00.",
-        "Add $1,200.50 and $300": "The sum of $1,200.50, $300.00 equals $1,500.50.",
-        "Subtract $30 from $80": "$80.00 minus $30.00 equals $50.00.",
-        "What is the average of $10, $20 and $60?": "The mean of $10.00, $20.00, $60.00 equals $30.00.",
-    }.items():
-        result = router.solve(query)
-        assert result is not None and result.response_text == expected, query
+    def test_misspelled_operator_is_offered_as_correction(self):
+        # A misspelled operator is offered as a correction, not silently assumed.
+        misspelled_runtime = QueryRuntime(all_docs=[], llm=None, doc_retriever=None, tts=RecordingTTS())
+        base = handle_query("What is 25% of $200,000?", misspelled_runtime)
+        assert base["response_text"] == "25 percent of $200,000.00 equals $50,000.00."
+        corrected = handle_query("Multiple the previous answer by 4.", misspelled_runtime, base)
+        assert corrected["response_text"] == (
+            'Did you mean "multiply" instead of "Multiple"? '
+            "Read that way: The product of $50,000.00, 4 equals $200,000.00. "
+            "If not, ask again and I will search your documents instead."
+        ), corrected["response_text"]
+        # The closest spelling is not always the calculable one, so every candidate is tried.
+        for query, expected in (
+            ("Multiple 12 by 3", "multiply"),
+            ("Divde 12 by 3", "divide"),
+            ("Subtrac 3 from 12", "subtract"),
+        ):
+            found = suggest_math_correction(query)
+            assert found is not None and found[1] == expected, query
+        # No suggestion unless the respelling is what makes the query calculable.
+        for no_suggestion in (
+            "multiply 12 by 3",
+            "What is in the quarterly report for 2024",
+            "Show me the 3 attachments",
+            "What certification is shown in CISSP_Certificate.pdf?",
+            # Two near-miss words at once are too ambiguous to guess from.
+            "Multiple the divde by 3",
+        ):
+            assert suggest_math_correction(no_suggestion) is None, no_suggestion
 
-    # The caveat is scoped to net/take-home framing, not to plain arithmetic.
-    plain_reduction = router.solve("Reduce 80 by 25 percent")
-    assert plain_reduction is not None
-    assert plain_reduction.response_text == "80 reduced by 25 percent equals 60."
+    def test_compound_interest_and_loans(self):
+        router = MathQueryRouter()
+        # Compound interest and fixed-rate loan amortization.
+        finance_cases = {
+            "What is the compound interest on $10,000 at 5% for 3 years compounded monthly?":
+                "The compound interest on $10,000.00 at 5 percent for 3 years compounded monthly "
+                "is $1,614.72, for a future value of $11,614.72.",
+            "What is the future value of $5,000 invested at 4% for 10 years compounded quarterly?":
+                "The future value of $5,000.00 at 4 percent for 10 years compounded quarterly "
+                "is $7,444.32, including $2,444.32 of compound interest.",
+            "How much will $1,000 grow to at 6% compounded annually for 5 years?":
+                "The future value of $1,000.00 at 6 percent for 5 years compounded annually "
+                "is $1,338.23, including $338.23 of compound interest.",
+            # Duration given in months, and a principal with no currency marker stays symbol-free.
+            "What is the future value of $1,000 at 5% for 18 months compounded monthly?":
+                "The future value of $1,000.00 at 5 percent for 18 months compounded monthly "
+                "is $1,077.72, including $77.72 of compound interest.",
+            "Compound 2000 at 10% for 2 years compounded semiannually":
+                "The future value of 2,000.00 at 10 percent for 2 years compounded semiannually "
+                "is 2,431.01, including 431.01 of compound interest.",
+            "What is the monthly payment on a $200,000 loan at 6% for 30 years?":
+                "The monthly payment on a $200,000.00 loan at 6 percent for 30 years is $1,199.10, "
+                "with $231,676.38 in total interest over 360 payments.",
+            "Calculate the amortized monthly payment for a $30,000 car loan at 4.5% over 5 years.":
+                "The monthly payment on a $30,000.00 loan at 4.5 percent for 5 years is $559.29, "
+                "with $3,557.43 in total interest over 60 payments.",
+            # A zero-interest loan repays the principal in equal installments.
+            "What is the biweekly payment on a $10,000 loan at 0% for 2 years?":
+                "The biweekly payment on a $10,000.00 loan at 0 percent for 2 years is $192.31, "
+                "with $0.00 in total interest over 52 payments.",
+        }
+        for query, expected in finance_cases.items():
+            result = router.solve(query)
+            assert result is not None, f"finance case was not recognized: {query!r}"
+            assert result.category == "finance", query
+            assert result.response_text == expected, f"{query!r} -> {result.response_text!r}"
+        # Independently confirm the formulas with float math, rounded to cents.
+        expected_amount = round(10000.0 * (1 + (5.0 / 100) / 12) ** (12 * 3), 2)
+        compound = router.solve("What is the future value of $10,000 at 5% for 3 years compounded monthly?")
+        assert compound is not None
+        assert compound.value.quantize(Decimal("0.01")) == Decimal(str(expected_amount))
+        monthly_rate = (6.0 / 100) / 12
+        payments = 12 * 30
+        expected_payment = round(
+            200000.0 * (monthly_rate * (1 + monthly_rate) ** payments) / ((1 + monthly_rate) ** payments - 1), 2
+        )
+        payment = router.solve("What is the monthly payment on a $200,000 loan at 6% for 30 years?")
+        assert payment is not None
+        assert payment.value.quantize(Decimal("0.01")) == Decimal(str(expected_payment))
+        # A loan with no term is not a self-contained amortization, so a plain percentage still wins.
+        percent_of_loan = router.solve("What is 20% of a $200,000 loan?")
+        assert percent_of_loan is not None
+        assert percent_of_loan.response_text == "20 percent of $200,000.00 equals $40,000.00."
+        # A zero-length loan term is reported as an error rather than dividing by zero.
+        zero_term = router.solve("What is the monthly payment on a $1,000 loan at 5% for 0 years?")
+        assert zero_term is not None and zero_term.value is None
+        assert "greater than zero" in zero_term.response_text.lower()
+        # Finance wording without the numbers to compute it is left to retrieval.
+        for non_finance in (
+            "How does compound interest work?",
+            "What is my mortgage payment?",
+            "Explain the amortization schedule in the loan document.",
+        ):
+            assert router.solve(non_finance) is None, non_finance
 
-    # With no prior calculation there is no base to reuse, so nothing is invented.
-    assert router.solve("If I am in a 24% tax bracket, what is my take home salary after taxes?") is None
-
-    # A follow-up may name the previous answer, or omit the base entirely.
-    prior = {"calculation": {"value": "50648.75", "currency": "$"}}
-    for query, expected in {
-        "Divide that by 4": "$50,648.75 divided by 4 equals $12,662.19.",
-        "Take away 27%": "$50,648.75 reduced by 27 percent equals $36,973.59.",
-        "Take away 27 percent": "$50,648.75 reduced by 27 percent equals $36,973.59.",
-        # 500 was given as a bare number, so it stays scalar.
-        "the difference between that and 500": "$50,648.75 minus 500 equals $50,148.75.",
-        "the difference between that and $500": "$50,648.75 minus $500.00 equals $50,148.75.",
-        "the difference between that and 500 dollars": "$50,648.75 minus $500.00 equals $50,148.75.",
-    }.items():
-        result = router.solve(query, prior)
-        assert result is not None and result.response_text == expected, query
-
-    # Currency follows the operand that carries the marker, in either position,
-    # whether the marker is a symbol or the word.
-    for query, expected in {
-        "Multiply $50,648.75 by 4": "The product of $50,648.75, 4 equals $202,595.00.",
-        "Multiply 4 by $50,648.75": "The product of 4, $50,648.75 equals $202,595.00.",
-        "Multiply 4 by 3": "The product of 4, 3 equals 12.",
-        "Divide 100 by $8": "100 divided by $8.00 equals $12.50.",
-        "Add $1,200.50 and 300": "The sum of $1,200.50, 300 equals $1,500.50.",
-        "Multiply 500 dollars by 4": "The product of $500.00, 4 equals $2,000.00.",
-        "Multiply 4 by 500 dollars": "The product of 4, $500.00 equals $2,000.00.",
-        "Multiply 500 USD by 4": "The product of $500.00, 4 equals $2,000.00.",
-        "Add 1200 dollars and 300": "The sum of $1,200.00, 300 equals $1,500.00.",
-        "Subtract 30 dollars from 80 dollars": "$80.00 minus $30.00 equals $50.00.",
-    }.items():
-        result = router.solve(query)
-        assert result is not None and result.response_text == expected, query
-
-    # Steps joined by a connector are evaluated left to right.
-    for query in (
-        "Divide that by 4 and take away 27%",
-        "Divide the previous answer by 4 and take away 27 percent",
-        "divide by 4 then take away 27%",
-    ):
-        chained = router.solve(query, prior)
-        assert chained is not None and chained.value == Decimal("9243.396875"), query
-
-    # Every operator answers to its symbol and to its spelled-out names.
-    for expected, phrasings in {
-        Decimal("48"): (
-            "What is 12 * 4",
-            "What is 12 times 4",
-            "What is 12 multiplied by 4",
-            "What is the product of 12 and 4",
-        ),
-        Decimal("12.5"): (
-            "What is 100 / 8",
-            "What is 100 divided by 8",
-            "What is the quotient of 100 and 8",
-        ),
-        Decimal("75"): (
-            "What is 90 - 15",
-            "What is 90 minus 15",
-            "What is 90 take away 15",
-            "What is the difference between 90 and 15",
-            "What is the difference of 90 and 15",
-        ),
-        Decimal("12"): (
-            "What is 5 + 7",
-            "What is 5 plus 7",
-            "What is the sum of 5 and 7",
-        ),
-        Decimal("25"): (
-            "What is 10% of 250",
-            "What is 10 percent of 250",
-        ),
-    }.items():
-        for query in phrasings:
+    def test_ratios_and_proportions(self):
+        router = MathQueryRouter()
+        # Ratios: simplify to lowest terms, solve a proportion, and share a quantity.
+        ratio_cases = {
+            "Simplify the ratio 8 to 12": "The ratio 8 to 12 in simplest form is 2 to 3.",
+            "Reduce the ratio 100:250 to lowest terms": "The ratio 100 to 250 in simplest form is 2 to 5.",
+            "What is the ratio 2.5 to 5 in simplest form?": "The ratio 2.5 to 5 in simplest form is 1 to 2.",
+            "Simplify the ratio 4:8:12": "The ratio 4 to 8 to 12 in simplest form is 1 to 2 to 3.",
+            "Solve the proportion 3:4 = 9:x": "The unknown in the proportion 3 to 4 as 9 to x is 12.",
+            "Divide 100 in the ratio 2:3": "Dividing 100 in the ratio 2 to 3 gives 40 and 60.",
+            "Share $250 in the ratio 2:3": "Dividing $250.00 in the ratio 2 to 3 gives $100.00 and $150.00.",
+            "Split 120 in the ratio 1:2:3": "Dividing 120 in the ratio 1 to 2 to 3 gives 20 and 40 and 60.",
+        }
+        for query, expected in ratio_cases.items():
+            result = router.solve(query)
+            assert result is not None, f"ratio case was not recognized: {query!r}"
+            assert result.category == "ratio", query
+            assert result.response_text == expected, f"{query!r} -> {result.response_text!r}"
+        # A proportion's unknown may sit in any position, in colon or "is to ... as" form.
+        for query, expected in {
+            "3 is to 4 as 9 is to what?": Decimal("12"),
+            "Solve the proportion x:4 = 9:12": Decimal("3"),
+            "If 2:5 = x:20, solve for x": Decimal("8"),
+            "1 is to 3 as what is to 12": Decimal("4"),
+        }.items():
             result = router.solve(query)
             assert result is not None and result.value == expected, query
+            assert result.category == "ratio", query
+        # A proportion that would divide by zero is reported, not crashed.
+        bad_proportion = router.solve("Solve the proportion x:4 = 9:0")
+        assert bad_proportion is not None and bad_proportion.value is None
+        assert "zero" in bad_proportion.response_text.lower()
+        # Terms may carry currency symbols and thousands separators; the answer is money.
+        money_proportion = router.solve("solve the proportion $200,000:$5,000=$220,000:x.")
+        assert money_proportion is not None and money_proportion.category == "ratio"
+        assert money_proportion.response_text == (
+            "The unknown in the proportion $200,000.00 to $5,000.00 as $220,000.00 to x is $5,500.00."
+        )
+        assert router.solve("Divide $1,000 in the ratio 3:2").response_text == (
+            "Dividing $1,000.00 in the ratio 3 to 2 gives $600.00 and $400.00."
+        )
+        # Ratio intent must not steal plain division, percentages, or retrieval questions.
+        for non_ratio in (
+            "divide 20 by 4",
+            "Reduce 80 by 25 percent",
+            "What is the percentage increase from 80 to 100?",
+            "What is the ratio described in the report?",
+        ):
+            result = router.solve(non_ratio)
+            assert result is None or result.category != "ratio", non_ratio
+        # A ratio answer flows through the real query pipeline and is spoken.
+        ratio_runtime = QueryRuntime(all_docs=[], llm=None, doc_retriever=None, tts=RecordingTTS())
+        ratio_turn: dict[str, Any] = handle_query("Divide 100 in the ratio 2:3", ratio_runtime)
+        assert ratio_turn["response_text"] == "Dividing 100 in the ratio 2 to 3 gives 40 and 60."
+        assert ratio_turn["calculation"]["category"] == "ratio"
+        assert ratio_turn["calculation"]["value"] is None
 
-    # A misspelled operator is offered as a correction, not silently assumed.
-    misspelled_runtime = QueryRuntime(all_docs=[], llm=None, doc_retriever=None, tts=RecordingTTS())
-    base = handle_query("What is 25% of $200,000?", misspelled_runtime)
-    assert base["response_text"] == "25 percent of $200,000.00 equals $50,000.00."
-    corrected = handle_query("Multiple the previous answer by 4.", misspelled_runtime, base)
-    assert corrected["response_text"] == (
-        'Did you mean "multiply" instead of "Multiple"? '
-        "Read that way: The product of $50,000.00, 4 equals $200,000.00. "
-        "If not, ask again and I will search your documents instead."
-    ), corrected["response_text"]
+    def test_business_operations(self):
+        router = MathQueryRouter()
+        # Business & finance operations (exact wording).
+        business_cases = {
+            "What is the markup if cost is $40 and price is $50?":
+                "The markup on cost $40.00 at price $50.00 equals 25 percent.",
+            "What is the gross margin if cost is $40 and price is $50?":
+                "The margin on cost $40.00 at price $50.00 equals 20 percent.",
+            "What selling price gives a 30% markup on $40?":
+                "The price at 30 percent markup on $40.00 equals $52.00.",
+            "What price gives a 40% margin on a cost of $30?":
+                "The price at 40 percent margin on $30.00 equals $50.00.",
+            "What is the simple interest on $1,000 at 5% for 3 years?":
+                "The simple interest on $1,000.00 at 5 percent for 3 years is $150.00, for a total of $1,150.00.",
+            # No currency marker stays symbol-free but keeps two decimals for money math.
+            "What is the simple interest on 2,000 at 5% for 2 years?":
+                "The simple interest on 2,000.00 at 5 percent for 2 years is 200.00, for a total of 2,200.00.",
+            "What is the present value of $10,000 in 5 years at 4%?":
+                "The present value of $10,000.00 in 5 years at 4 percent compounded annually is $8,219.27.",
+            "What is the ROI if I invested $1,000 and got back $1,200?":
+                "The return on investment from $1,000.00 to $1,200.00 equals 20 percent.",
+            "What is the return on investment for a $200 profit on $1,000?":
+                "The return on investment for a $200.00 gain on $1,000.00 equals 20 percent.",
+            "Add 8% sales tax to $50":
+                "8 percent tax on $50.00 is $4.00, for a total of $54.00.",
+            "What is a 15% tip on $60?":
+                "15 percent tip on $60.00 is $9.00, for a total of $69.00.",
+            "What was the original price before a 20% discount if the sale price is $80?":
+                "The original price before a 20 percent discount on a $80.00 sale price equals $100.00.",
+            "Apply a 20% then 10% discount to $80":
+                "$80.00 after successive discounts of 20 percent then 10 percent equals $57.60.",
+            "What is the break-even quantity at a $50 price, $30 variable cost, and $10,000 fixed costs?":
+                "The break-even quantity at a $50.00 price, $30.00 variable cost, and $10,000.00 fixed costs is 500 units.",
+            "Straight-line depreciation of a $20,000 asset with a $2,000 salvage value over 5 years":
+                "The annual straight-line depreciation of a $20,000.00 asset with a $2,000.00 salvage value "
+                "over 5 years is $3,600.00 per year.",
+            "Using the rule of 72, how long to double at 6% growth?":
+                "The time to double at 6 percent growth (rule of 72) is 12 years.",
+            "Rule of 70 doubling time at 5%":
+                "The time to double at 5 percent growth (rule of 70) is 14 years.",
+        }
+        for query, expected in business_cases.items():
+            result = router.solve(query)
+            assert result is not None, f"business case was not recognized: {query!r}"
+            assert result.response_text == expected, f"{query!r} -> {result.response_text!r}"
+        # Magnitude shorthand (1M, 1.5M, 5k) is expanded to the full number before parsing.
+        assert router.solve("What is the CAGR from $1M to $1.5M over 3 years?").response_text == (
+            "The compound annual growth rate from $1,000,000.00 to $1,500,000.00 over 3 years "
+            "equals approximately 14.471424255333 percent."
+        )
+        assert router.solve("What is the simple interest on $2M at 5% for 3 years?").response_text == (
+            "The simple interest on $2,000,000.00 at 5 percent for 3 years is $300,000.00, "
+            "for a total of $2,300,000.00."
+        )
+        assert router.solve("Add 5k and 3k").value == Decimal("8000")
 
-    # The closest spelling is not always the calculable one, so every candidate is tried.
-    for query, expected in (
-        ("Multiple 12 by 3", "multiply"),
-        ("Divde 12 by 3", "divide"),
-        ("Subtrac 3 from 12", "subtract"),
-    ):
-        found = suggest_math_correction(query)
-        assert found is not None and found[1] == expected, query
+    def test_rate_precision_and_structured_values(self):
+        router = MathQueryRouter()
+        # Rate results that are not terminating are reported to full precision; check values.
+        cagr = router.solve("What is the CAGR from $1,000,000 to $1,500,000 over 3 years?")
+        assert cagr is not None and cagr.operation == "compound annual growth rate"
+        assert cagr.value.quantize(Decimal("0.0001")) == Decimal("14.4714")
+        effective = router.solve("What is the effective annual rate for 6% compounded monthly?")
+        assert effective is not None and effective.operation == "effective annual rate"
+        assert effective.value.quantize(Decimal("0.0001")) == Decimal("6.1678")
+        # A few structured values carry through for follow-ups and metadata.
+        assert router.solve("What is the markup if cost is $40 and price is $50?").value == Decimal("25")
+        assert router.solve("What is the simple interest on $1,000 at 5% for 3 years?").value == Decimal("150")
+        assert router.solve(
+            "What is the present value of $10,000 in 5 years at 4%?"
+        ).value.quantize(Decimal("0.01")) == Decimal("8219.27")
+        assert router.solve("Using the rule of 72, how long to double at 6% growth?").value == Decimal("12")
+        assert router.solve(
+            "What is the break-even quantity at a $50 price, $30 variable cost, and $10,000 fixed costs?"
+        ).value == Decimal("500")
 
-    # No suggestion unless the respelling is what makes the query calculable.
-    for no_suggestion in (
-        "multiply 12 by 3",
-        "What is in the quarterly report for 2024",
-        "Show me the 3 attachments",
-        "What certification is shown in CISSP_Certificate.pdf?",
-        # Two near-miss words at once are too ambiguous to guess from.
-        "Multiple the divde by 3",
-    ):
-        assert suggest_math_correction(no_suggestion) is None, no_suggestion
+    def test_guard_rails(self):
+        router = MathQueryRouter()
+        # Guard rails: impossible inputs are reported, not crashed.
+        bad_break_even = router.solve(
+            "What is the break-even quantity at a $30 price, $50 variable cost, and $10,000 fixed costs?"
+        )
+        assert bad_break_even is not None and bad_break_even.value is None
+        assert "exceed" in bad_break_even.response_text.lower()
+        bad_margin = router.solve("What price gives a 100% margin on a cost of $30?")
+        assert bad_margin is not None and bad_margin.value is None
+        assert "less than 100" in bad_margin.response_text.lower()
 
-    # Compound interest and fixed-rate loan amortization.
-    finance_cases = {
-        "What is the compound interest on $10,000 at 5% for 3 years compounded monthly?":
-            "The compound interest on $10,000.00 at 5 percent for 3 years compounded monthly "
-            "is $1,614.72, for a future value of $11,614.72.",
-        "What is the future value of $5,000 invested at 4% for 10 years compounded quarterly?":
-            "The future value of $5,000.00 at 4 percent for 10 years compounded quarterly "
-            "is $7,444.32, including $2,444.32 of compound interest.",
-        "How much will $1,000 grow to at 6% compounded annually for 5 years?":
-            "The future value of $1,000.00 at 6 percent for 5 years compounded annually "
-            "is $1,338.23, including $338.23 of compound interest.",
-        # Duration given in months, and a principal with no currency marker stays symbol-free.
-        "What is the future value of $1,000 at 5% for 18 months compounded monthly?":
-            "The future value of $1,000.00 at 5 percent for 18 months compounded monthly "
-            "is $1,077.72, including $77.72 of compound interest.",
-        "Compound 2000 at 10% for 2 years compounded semiannually":
-            "The future value of 2,000.00 at 10 percent for 2 years compounded semiannually "
-            "is 2,431.01, including 431.01 of compound interest.",
-        "What is the monthly payment on a $200,000 loan at 6% for 30 years?":
-            "The monthly payment on a $200,000.00 loan at 6 percent for 30 years is $1,199.10, "
-            "with $231,676.38 in total interest over 360 payments.",
-        "Calculate the amortized monthly payment for a $30,000 car loan at 4.5% over 5 years.":
-            "The monthly payment on a $30,000.00 loan at 4.5 percent for 5 years is $559.29, "
-            "with $3,557.43 in total interest over 60 payments.",
-        # A zero-interest loan repays the principal in equal installments.
-        "What is the biweekly payment on a $10,000 loan at 0% for 2 years?":
-            "The biweekly payment on a $10,000.00 loan at 0 percent for 2 years is $192.31, "
-            "with $0.00 in total interest over 52 payments.",
-    }
-    for query, expected in finance_cases.items():
-        result = router.solve(query)
-        assert result is not None, f"finance case was not recognized: {query!r}"
-        assert result.category == "finance", query
-        assert result.response_text == expected, f"{query!r} -> {result.response_text!r}"
-
-    # Independently confirm the formulas with float math, rounded to cents.
-    expected_amount = round(10000.0 * (1 + (5.0 / 100) / 12) ** (12 * 3), 2)
-    compound = router.solve("What is the future value of $10,000 at 5% for 3 years compounded monthly?")
-    assert compound is not None
-    assert compound.value.quantize(Decimal("0.01")) == Decimal(str(expected_amount))
-    monthly_rate = (6.0 / 100) / 12
-    payments = 12 * 30
-    expected_payment = round(
-        200000.0 * (monthly_rate * (1 + monthly_rate) ** payments) / ((1 + monthly_rate) ** payments - 1), 2
-    )
-    payment = router.solve("What is the monthly payment on a $200,000 loan at 6% for 30 years?")
-    assert payment is not None
-    assert payment.value.quantize(Decimal("0.01")) == Decimal(str(expected_payment))
-
-    # A loan with no term is not a self-contained amortization, so a plain percentage still wins.
-    percent_of_loan = router.solve("What is 20% of a $200,000 loan?")
-    assert percent_of_loan is not None
-    assert percent_of_loan.response_text == "20 percent of $200,000.00 equals $40,000.00."
-
-    # A zero-length loan term is reported as an error rather than dividing by zero.
-    zero_term = router.solve("What is the monthly payment on a $1,000 loan at 5% for 0 years?")
-    assert zero_term is not None and zero_term.value is None
-    assert "greater than zero" in zero_term.response_text.lower()
-
-    # Finance wording without the numbers to compute it is left to retrieval.
-    for non_finance in (
-        "How does compound interest work?",
-        "What is my mortgage payment?",
-        "Explain the amortization schedule in the loan document.",
-    ):
-        assert router.solve(non_finance) is None, non_finance
-
-    # Ratios: simplify to lowest terms, solve a proportion, and share a quantity.
-    ratio_cases = {
-        "Simplify the ratio 8 to 12": "The ratio 8 to 12 in simplest form is 2 to 3.",
-        "Reduce the ratio 100:250 to lowest terms": "The ratio 100 to 250 in simplest form is 2 to 5.",
-        "What is the ratio 2.5 to 5 in simplest form?": "The ratio 2.5 to 5 in simplest form is 1 to 2.",
-        "Simplify the ratio 4:8:12": "The ratio 4 to 8 to 12 in simplest form is 1 to 2 to 3.",
-        "Solve the proportion 3:4 = 9:x": "The unknown in the proportion 3 to 4 as 9 to x is 12.",
-        "Divide 100 in the ratio 2:3": "Dividing 100 in the ratio 2 to 3 gives 40 and 60.",
-        "Share $250 in the ratio 2:3": "Dividing $250.00 in the ratio 2 to 3 gives $100.00 and $150.00.",
-        "Split 120 in the ratio 1:2:3": "Dividing 120 in the ratio 1 to 2 to 3 gives 20 and 40 and 60.",
-    }
-    for query, expected in ratio_cases.items():
-        result = router.solve(query)
-        assert result is not None, f"ratio case was not recognized: {query!r}"
-        assert result.category == "ratio", query
-        assert result.response_text == expected, f"{query!r} -> {result.response_text!r}"
-
-    # A proportion's unknown may sit in any position, in colon or "is to ... as" form.
-    for query, expected in {
-        "3 is to 4 as 9 is to what?": Decimal("12"),
-        "Solve the proportion x:4 = 9:12": Decimal("3"),
-        "If 2:5 = x:20, solve for x": Decimal("8"),
-        "1 is to 3 as what is to 12": Decimal("4"),
-    }.items():
-        result = router.solve(query)
-        assert result is not None and result.value == expected, query
-        assert result.category == "ratio", query
-
-    # A proportion that would divide by zero is reported, not crashed.
-    bad_proportion = router.solve("Solve the proportion x:4 = 9:0")
-    assert bad_proportion is not None and bad_proportion.value is None
-    assert "zero" in bad_proportion.response_text.lower()
-
-    # Terms may carry currency symbols and thousands separators; the answer is money.
-    money_proportion = router.solve("solve the proportion $200,000:$5,000=$220,000:x.")
-    assert money_proportion is not None and money_proportion.category == "ratio"
-    assert money_proportion.response_text == (
-        "The unknown in the proportion $200,000.00 to $5,000.00 as $220,000.00 to x is $5,500.00."
-    )
-    assert router.solve("Divide $1,000 in the ratio 3:2").response_text == (
-        "Dividing $1,000.00 in the ratio 3 to 2 gives $600.00 and $400.00."
-    )
-
-    # Ratio intent must not steal plain division, percentages, or retrieval questions.
-    for non_ratio in (
-        "divide 20 by 4",
-        "Reduce 80 by 25 percent",
-        "What is the percentage increase from 80 to 100?",
-        "What is the ratio described in the report?",
-    ):
-        result = router.solve(non_ratio)
-        assert result is None or result.category != "ratio", non_ratio
-
-    # A ratio answer flows through the real query pipeline and is spoken.
-    ratio_runtime = QueryRuntime(all_docs=[], llm=None, doc_retriever=None, tts=RecordingTTS())
-    ratio_turn: dict[str, Any] = handle_query("Divide 100 in the ratio 2:3", ratio_runtime)
-    assert ratio_turn["response_text"] == "Dividing 100 in the ratio 2 to 3 gives 40 and 60."
-    assert ratio_turn["calculation"]["category"] == "ratio"
-    assert ratio_turn["calculation"]["value"] is None
-
-    # Business & finance operations (exact wording).
-    business_cases = {
-        "What is the markup if cost is $40 and price is $50?":
-            "The markup on cost $40.00 at price $50.00 equals 25 percent.",
-        "What is the gross margin if cost is $40 and price is $50?":
-            "The margin on cost $40.00 at price $50.00 equals 20 percent.",
-        "What selling price gives a 30% markup on $40?":
-            "The price at 30 percent markup on $40.00 equals $52.00.",
-        "What price gives a 40% margin on a cost of $30?":
-            "The price at 40 percent margin on $30.00 equals $50.00.",
-        "What is the simple interest on $1,000 at 5% for 3 years?":
-            "The simple interest on $1,000.00 at 5 percent for 3 years is $150.00, for a total of $1,150.00.",
-        # No currency marker stays symbol-free but keeps two decimals for money math.
-        "What is the simple interest on 2,000 at 5% for 2 years?":
-            "The simple interest on 2,000.00 at 5 percent for 2 years is 200.00, for a total of 2,200.00.",
-        "What is the present value of $10,000 in 5 years at 4%?":
-            "The present value of $10,000.00 in 5 years at 4 percent compounded annually is $8,219.27.",
-        "What is the ROI if I invested $1,000 and got back $1,200?":
-            "The return on investment from $1,000.00 to $1,200.00 equals 20 percent.",
-        "What is the return on investment for a $200 profit on $1,000?":
-            "The return on investment for a $200.00 gain on $1,000.00 equals 20 percent.",
-        "Add 8% sales tax to $50":
-            "8 percent tax on $50.00 is $4.00, for a total of $54.00.",
-        "What is a 15% tip on $60?":
-            "15 percent tip on $60.00 is $9.00, for a total of $69.00.",
-        "What was the original price before a 20% discount if the sale price is $80?":
-            "The original price before a 20 percent discount on a $80.00 sale price equals $100.00.",
-        "Apply a 20% then 10% discount to $80":
-            "$80.00 after successive discounts of 20 percent then 10 percent equals $57.60.",
-        "What is the break-even quantity at a $50 price, $30 variable cost, and $10,000 fixed costs?":
-            "The break-even quantity at a $50.00 price, $30.00 variable cost, and $10,000.00 fixed costs is 500 units.",
-        "Straight-line depreciation of a $20,000 asset with a $2,000 salvage value over 5 years":
-            "The annual straight-line depreciation of a $20,000.00 asset with a $2,000.00 salvage value "
-            "over 5 years is $3,600.00 per year.",
-        "Using the rule of 72, how long to double at 6% growth?":
-            "The time to double at 6 percent growth (rule of 72) is 12 years.",
-        "Rule of 70 doubling time at 5%":
-            "The time to double at 5 percent growth (rule of 70) is 14 years.",
-    }
-    for query, expected in business_cases.items():
-        result = router.solve(query)
-        assert result is not None, f"business case was not recognized: {query!r}"
-        assert result.response_text == expected, f"{query!r} -> {result.response_text!r}"
-
-    # Magnitude shorthand (1M, 1.5M, 5k) is expanded to the full number before parsing.
-    assert router.solve("What is the CAGR from $1M to $1.5M over 3 years?").response_text == (
-        "The compound annual growth rate from $1,000,000.00 to $1,500,000.00 over 3 years "
-        "equals approximately 14.471424255333 percent."
-    )
-    assert router.solve("What is the simple interest on $2M at 5% for 3 years?").response_text == (
-        "The simple interest on $2,000,000.00 at 5 percent for 3 years is $300,000.00, "
-        "for a total of $2,300,000.00."
-    )
-    assert router.solve("Add 5k and 3k").value == Decimal("8000")
-
-    # Rate results that are not terminating are reported to full precision; check values.
-    cagr = router.solve("What is the CAGR from $1,000,000 to $1,500,000 over 3 years?")
-    assert cagr is not None and cagr.operation == "compound annual growth rate"
-    assert cagr.value.quantize(Decimal("0.0001")) == Decimal("14.4714")
-    effective = router.solve("What is the effective annual rate for 6% compounded monthly?")
-    assert effective is not None and effective.operation == "effective annual rate"
-    assert effective.value.quantize(Decimal("0.0001")) == Decimal("6.1678")
-
-    # A few structured values carry through for follow-ups and metadata.
-    assert router.solve("What is the markup if cost is $40 and price is $50?").value == Decimal("25")
-    assert router.solve("What is the simple interest on $1,000 at 5% for 3 years?").value == Decimal("150")
-    assert router.solve(
-        "What is the present value of $10,000 in 5 years at 4%?"
-    ).value.quantize(Decimal("0.01")) == Decimal("8219.27")
-    assert router.solve("Using the rule of 72, how long to double at 6% growth?").value == Decimal("12")
-    assert router.solve(
-        "What is the break-even quantity at a $50 price, $30 variable cost, and $10,000 fixed costs?"
-    ).value == Decimal("500")
-
-    # Guard rails: impossible inputs are reported, not crashed.
-    bad_break_even = router.solve(
-        "What is the break-even quantity at a $30 price, $50 variable cost, and $10,000 fixed costs?"
-    )
-    assert bad_break_even is not None and bad_break_even.value is None
-    assert "exceed" in bad_break_even.response_text.lower()
-    bad_margin = router.solve("What price gives a 100% margin on a cost of $30?")
-    assert bad_margin is not None and bad_margin.value is None
-    assert "less than 100" in bad_margin.response_text.lower()
-
-    # The business lane must not hijack plain percentages, loans, or a tax-bracket reduction.
-    assert router.solve("What is 20% off of 50?").response_text == "50 reduced by 20 percent equals 40."
-    assert router.solve("What is 20% of 50?").response_text == "20 percent of 50 equals 10."
-    assert router.solve(
-        "What is the compound interest on $10,000 at 5% for 3 years compounded monthly?"
-    ).category == "finance"
-    bracket_runtime = QueryRuntime(all_docs=[], llm=None, doc_retriever=None, tts=RecordingTTS())
-    bracket_base = handle_query(
-        "If my total salary is $120,000 and I am getting a 5% increase, what is my new salary amount?",
-        bracket_runtime,
-    )
-    bracket_follow = handle_query(
-        "If I am in a 24% tax bracket, what is my take home salary after taxes?",
-        bracket_runtime,
-        bracket_base,
-    )
-    assert bracket_follow["response_text"].startswith("$126,000.00 reduced by 24 percent equals $95,760.00.")
-
-    print(f"math router tests passed ({len(cases)} calculations)")
+    def test_business_lane_does_not_hijack(self):
+        router = MathQueryRouter()
+        # The business lane must not hijack plain percentages, loans, or a tax-bracket reduction.
+        assert router.solve("What is 20% off of 50?").response_text == "50 reduced by 20 percent equals 40."
+        assert router.solve("What is 20% of 50?").response_text == "20 percent of 50 equals 10."
+        assert router.solve(
+            "What is the compound interest on $10,000 at 5% for 3 years compounded monthly?"
+        ).category == "finance"
+        bracket_runtime = QueryRuntime(all_docs=[], llm=None, doc_retriever=None, tts=RecordingTTS())
+        bracket_base = handle_query(
+            "If my total salary is $120,000 and I am getting a 5% increase, what is my new salary amount?",
+            bracket_runtime,
+        )
+        bracket_follow = handle_query(
+            "If I am in a 24% tax bracket, what is my take home salary after taxes?",
+            bracket_runtime,
+            bracket_base,
+        )
+        assert bracket_follow["response_text"].startswith("$126,000.00 reduced by 24 percent equals $95,760.00.")
 
 
 if __name__ == "__main__":
-    run_tests()
+    unittest.main()
